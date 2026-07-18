@@ -15,6 +15,7 @@ from datetime import date
 from uuid import UUID
 
 from constat_core.catalog.aws import (
+    CATALOG_VERSION,
     PostgresEOLInfo,
     extended_support_tier,
     postgres_eol_info,
@@ -206,5 +207,10 @@ def _make_insight(
             "pricing_usd_per_vcpu_hour": rate,
             "pricing_tier_label": "year_1_2" if tier == "year_1_2" else "year_3_plus",
             "recommendation": recommendation,
+            # Source-of-truth stamp: which catalog version produced this insight.
+            # Sales can cite "based on AWS RDS PG release calendar dated
+            # 2026-07-18" — defensible, traceable, auditable. V2: the version
+            # moves to whatever the reference_datasets provider exposes.
+            "catalog_version": CATALOG_VERSION,
         },
     )

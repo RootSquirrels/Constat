@@ -4,6 +4,7 @@ Update cadence: monthly, on AWS announcement. PRs welcome when AWS publishes cha
 """
 
 from constat_core.catalog.aws import (
+    CATALOG_VERSION,
     POSTGRES_EOL,
     RDS_INSTANCE_VCPU,
     PostgresEOLInfo,
@@ -14,6 +15,7 @@ from constat_core.catalog.aws import (
 )
 
 __all__ = [
+    "CATALOG_VERSION",
     "POSTGRES_EOL",
     "RDS_INSTANCE_VCPU",
     "PostgresEOLInfo",

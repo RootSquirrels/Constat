@@ -248,3 +248,31 @@ def test_graviton_pg11_emits_critical_with_year_3_rate():
     assert result.insights[0].payload["pricing_tier"] == "year_3_plus"
     # 8 vCPU * $0.20 * 730h = $1168/month
     assert result.insights[0].payload["pricing_usd_per_vcpu_hour"] == 0.20
+
+
+# ---- Catalog version (source-of-truth stamp) ------------------------------
+
+
+def test_catalog_version_constant_exists():
+    """The catalog exposes a version string. The sales conversation needs a
+    concrete date to cite ('based on AWS RDS PG release calendar dated
+    YYYY-MM-DD'). Without this constant, the only version is the docstring
+    'Last reviewed' note — unauditable from the payload alone."""
+    from constat_core.catalog.aws import CATALOG_VERSION
+
+    assert isinstance(CATALOG_VERSION, str)
+    # ISO date format: YYYY-MM-DD
+    assert len(CATALOG_VERSION) == 10
+    assert CATALOG_VERSION[4] == "-"
+    assert CATALOG_VERSION[7] == "-"
+
+
+def test_insight_payload_includes_catalog_version():
+    """Every emitted insight must carry the catalog version that produced it.
+    Regression guard: if someone refactors _make_insight and drops the field,
+    the sales defensibility silently regresses."""
+    from constat_core.catalog.aws import CATALOG_VERSION
+
+    result = evaluate(uuid4(), _pg_facts(11), today=date(2026, 7, 18))
+    assert len(result.insights) == 1
+    assert result.insights[0].payload["catalog_version"] == CATALOG_VERSION

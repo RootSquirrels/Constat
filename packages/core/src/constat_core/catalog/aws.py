@@ -13,6 +13,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+# Catalog version string. Bumped on every data update (EOL dates, pricing,
+# vCPU map, etc.) and surfaced in the rds_eol insight payload so the sales
+# conversation can cite a concrete source-of-truth date: "based on AWS RDS
+# PG release calendar dated 2026-07-18". When V2 swaps the dicts for a
+# reference_datasets table, this constant moves to the same provider.
+CATALOG_VERSION = "2026-07-18"
+
 
 @dataclass(frozen=True)
 class PostgresEOLInfo:
