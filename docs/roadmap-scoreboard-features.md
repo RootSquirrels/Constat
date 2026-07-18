@@ -119,7 +119,7 @@ pas de Docker sur la machine), `ruff check`/`format` propres, `mypy` core propre
 | États loading/error | **FAIT** | `loading.tsx`/`error.tsx` sur les 4 pages de données. |
 | Export CSV par insight | **FAIT** | `GET /insights/export.csv` (mêmes filtres que la liste, cap 500) + bouton sur la page insights. |
 | Tenant #2 e2e (GUC header) | **REFUSÉ pour l'instant** | Seuil non atteint : aucun tenant #2. AGENTS.md acte le mono-tenant V1 ; la règle du jeu (« rien avant son seuil ») s'applique à cette action comme aux autres. |
-| e2e web Playwright | **REFUSÉ pour l'instant** | Web = quelques pages pilote ; coût toolchain > valeur. Seuil : la surface web grandit ou un client payant arrive. |
+| e2e web Playwright | **FAIT (1 test, seuil global non atteint)** | `apps/web/tests/e2e/restitution.spec.ts` (commit `bffa653`) — smoke test mocké sur `/restitution` via `page.route()`, pas d'API réelle nécessaire. Ajouté sur **demande explicite** du pitch commercial, **pas** par atteinte du seuil. Le seuil initial (« surface web > 1 page ou client payant ») reste pertinent pour la suite complète : les 4 autres pages (`/status`, `/accounts`, `/insight-runs`, `/chargeback`) n'ont pas de test e2e et n'en auront pas tant que la surface n'augmente pas ou qu'un client ne le demande. |
 | 3 restitutions réelles (Adéquation 5) | **HORS CODE** | Activité POC, pas du code. |
 
 ### Vague 1 (insights)
