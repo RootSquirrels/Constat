@@ -132,6 +132,9 @@ class ObservationORM(Base):
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    source_run_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("source_runs.id", ondelete="SET NULL")
+    )
 
 
 class FactORM(Base):
@@ -172,6 +175,9 @@ class FactORM(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    last_source_run_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("source_runs.id", ondelete="SET NULL")
     )
 
 

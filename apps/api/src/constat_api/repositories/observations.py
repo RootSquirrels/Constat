@@ -2,21 +2,34 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from constat_core.models import Observation
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import ObservationORM
 
 
-def insert_observation(session: Session, observation: Observation) -> Observation:
+def insert_observation(
+    session: Session,
+    observation: Observation,
+    *,
+    source_run_id: UUID | None = None,
+) -> Observation:
+    """Append an observation, optionally chained to its source run.
+
+    `source_run_id` is set by the collector. Without it, the observation is
+    not chained to a scope-completeness proof (acceptable for synthetic/test
+    data, never for production data).
+    """
     orm = ObservationORM(
         id=observation.id or uuid4(),
         resource_id=observation.resource_id,
         source=observation.source,
         observed_at=observation.observed_at,
         payload=observation.payload,
+        source_run_id=source_run_id,
     )
     session.add(orm)
     session.flush()
@@ -30,7 +43,4 @@ def insert_observation(session: Session, observation: Observation) -> Observatio
 
 
 def count_observations(session: Session) -> int:
-    from sqlalchemy import func as sa_func
-    from sqlalchemy import select
-
-    return int(session.execute(select(sa_func.count(ObservationORM.id))).scalar_one())
+    return int(session.execute(select(func.count(ObservationORM.id))).scalar_one())

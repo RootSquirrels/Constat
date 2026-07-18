@@ -157,13 +157,15 @@ def collect_target(
 
                 if not dry_run:
                     obs = db_to_observation(resource.id, db, observed_at)
-                    observations_repo.insert_observation(session, obs)
+                    observations_repo.insert_observation(session, obs, source_run_id=run.id)
 
                     # `account_id` here is the INTERNAL account UUID stringified,
                     # because `facts.account_id` is a FK to accounts.id (UUID type).
                     facts = db_to_facts(resource.id, str(account.id), db, observed_at)
-                    facts_repo.insert_facts(session, facts)
-                    facts_written += len(facts)
+                    inserted, updated = facts_repo.upsert_facts(
+                        session, facts, source_run_id=run.id
+                    )
+                    facts_written += inserted + updated
                     observations_written += 1
 
                 resources_written += 1

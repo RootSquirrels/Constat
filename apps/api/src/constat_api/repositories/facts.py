@@ -1,7 +1,12 @@
 """Facts repository.
 
-For V1 we just append. Upsert by (resource_id, namespace, key) — "current fact"
-— is a follow-up when the write pattern is clear.
+V1 design: facts is a current-state table (one row per natural key).
+observed_at is the timestamp of the most recent observation, NOT part of the key.
+last_source_run_id chains the fact to the run that observed it last, so the
+runner can verify scope-completeness.
+
+For history, use `observations` (raw payloads, append-only) and `source_runs`
+(when did we scan). If we ever need per-fact history, add `fact_history` then.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ def _orm_to_pydantic(orm: FactORM) -> Fact:
 def list_facts_for_resource(
     session: Session, resource_id: UUID, *, observed_at: datetime | None = None
 ) -> list[Fact]:
-    """List facts for one resource. If observed_at is given, only the latest <= that point."""
+    """List current facts for one resource. If observed_at is given, only the latest <= that point."""
     stmt = select(FactORM).where(FactORM.resource_id == resource_id)
     if observed_at is not None:
         stmt = stmt.where(FactORM.observed_at <= observed_at)
@@ -42,8 +47,19 @@ def list_facts_for_resource(
     return [_orm_to_pydantic(row) for row in session.execute(stmt).scalars()]
 
 
+def list_facts_for_account(session: Session, account_id: UUID) -> list[Fact]:
+    """List current facts scoped to an account (no resource_id)."""
+    stmt = (
+        select(FactORM)
+        .where(FactORM.account_id == account_id, FactORM.resource_id.is_(None))
+        .order_by(FactORM.namespace, FactORM.key)
+    )
+    return [_orm_to_pydantic(row) for row in session.execute(stmt).scalars()]
+
+
 def insert_facts(session: Session, facts: list[Fact]) -> int:
-    """Bulk-insert facts. Returns the number of rows inserted."""
+    """Bulk-insert facts. Caller is responsible for uniqueness (use upsert_facts
+    in production code paths). Returns the number of rows inserted."""
     orm_rows = [
         FactORM(
             id=f.id or uuid4(),
@@ -61,3 +77,56 @@ def insert_facts(session: Session, facts: list[Fact]) -> int:
     session.add_all(orm_rows)
     session.flush()
     return len(orm_rows)
+
+
+def upsert_facts(
+    session: Session,
+    facts: list[Fact],
+    *,
+    source_run_id: UUID | None = None,
+) -> tuple[int, int]:
+    """Insert or update facts by natural key (tenant, resource, namespace, key, source).
+
+    On update: bumps value, value_state, observed_at, last_source_run_id.
+    On insert: sets last_source_run_id.
+
+    Returns (inserted, updated) counts.
+    """
+    inserted = 0
+    updated = 0
+
+    for f in facts:
+        existing = session.execute(
+            select(FactORM).where(
+                FactORM.resource_id == f.resource_id,
+                FactORM.namespace == f.namespace,
+                FactORM.key == f.key,
+                FactORM.source == f.source,
+            )
+        ).scalar_one_or_none()
+
+        if existing is not None:
+            existing.value = f.value
+            existing.value_state = f.value_state.value
+            existing.observed_at = f.observed_at
+            existing.last_source_run_id = source_run_id
+            updated += 1
+        else:
+            session.add(
+                FactORM(
+                    id=f.id or uuid4(),
+                    resource_id=f.resource_id,
+                    account_id=UUID(f.account_id) if f.account_id else None,
+                    namespace=f.namespace,
+                    key=f.key,
+                    value=f.value,
+                    value_state=f.value_state.value,
+                    source=f.source,
+                    observed_at=f.observed_at,
+                    last_source_run_id=source_run_id,
+                )
+            )
+            inserted += 1
+
+    session.flush()
+    return inserted, updated
