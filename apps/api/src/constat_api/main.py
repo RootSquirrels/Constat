@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from constat_api.routers import (
+    accounts,
     aws,
     focus,
     health,
@@ -50,3 +51,4 @@ app.include_router(focus.router)
 app.include_router(aws.router)
 app.include_router(runner.router)
 app.include_router(status.router)
+app.include_router(accounts.router)

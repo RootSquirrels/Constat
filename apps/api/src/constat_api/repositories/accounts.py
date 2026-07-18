@@ -23,3 +23,17 @@ def get_or_create(session: Session, external_id: str, name: str | None = None) -
     session.add(acc)
     session.flush()
     return acc
+
+
+def list_accounts(
+    session: Session, *, limit: int = 100, offset: int = 0
+) -> list[AccountORM]:
+    """List accounts, newest first. Used by /accounts (UX/ops P2 item 10)."""
+    return list(
+        session.execute(
+            select(AccountORM)
+            .order_by(AccountORM.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        ).scalars()
+    )
