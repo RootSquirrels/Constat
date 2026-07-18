@@ -1,0 +1,15 @@
+[project]
+name = "constat-ebs-gp2-to-gp3"
+version = "0.0.0"
+description = "Insight: EBS gp2 → gp3 migration (storage cost, no behavior change)"
+requires-python = ">=3.13"
+dependencies = [
+    "constat-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/constat_ebs_gp2_to_gp3"]

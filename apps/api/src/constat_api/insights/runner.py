@@ -39,6 +39,7 @@ from constat_chargeback.resolver import (
     build_insights,
 )
 from constat_core.models import Fact, Inconclusive, Insight
+from constat_ebs_gp2_to_gp3.resolver import evaluate as ebs_gp2_to_gp3_evaluate
 from constat_focus.loader import FocusCharge
 from constat_mysql_eol.resolver import evaluate as mysql_eol_evaluate
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
@@ -59,7 +60,10 @@ from constat_api.settings import DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
-# V1: hardcoded source name. V2 will have multiple sources per resource type.
+# Default source for the legacy RDS-only path. Each rule declares its own
+# source via RULE_SOURCES; this constant is kept for callers that
+# historically used `latest_successful_run(..., source=DEFAULT_SOURCE)`
+# without a rule name (audit/inconclusive-cleanup paths).
 DEFAULT_SOURCE = "aws_rds"
 
 # Freshness window for scope proof (audit F-02). A successful source_run
@@ -90,17 +94,43 @@ RESOURCE_RULES: dict[str, ResourceEvaluateFn] = {
     "rds_eol": rds_eol_evaluate,
     "mysql_eol": mysql_eol_evaluate,
     "aurora_eol": aurora_eol_evaluate,
+    "ebs_gp2_to_gp3": ebs_gp2_to_gp3_evaluate,
+}
+
+
+# Source name per rule. Scope-completeness is per (account, region,
+# resource_type, source): a successful RDS scan does NOT prove EC2 scope
+# and vice-versa. Each rule must declare its source here so the runner's
+# `_is_scope_proven` looks up the right source_run.
+#
+# Adding a new resource rule = one entry here. The rule package is free
+# to expose a SOURCE constant (mysql_eol, rds_eol, ebs_gp2_to_gp3 all
+# do); the dict below is the single source of truth for the runner.
+RULE_SOURCES: dict[str, str] = {
+    "rds_eol": "aws_rds",
+    "mysql_eol": "aws_rds",
+    "aurora_eol": "aws_rds",
+    "ebs_gp2_to_gp3": "aws_ec2",
 }
 
 
 def _is_scope_proven(
-    session: Session, resource: ResourceORM, *, max_age: timedelta | None = None
+    session: Session,
+    resource: ResourceORM,
+    *,
+    source: str = DEFAULT_SOURCE,
+    max_age: timedelta | None = None,
 ) -> bool:
     """True if a successful source_run exists for this resource's scope.
 
     A 'successful' run is status='success' (not 'failed' or 'running').
     Without this proof, we cannot claim MATCH/NO_MATCH; we must emit
     INCONCLUSIVE (the GTM promise: never guess).
+
+    `source` defaults to the legacy RDS source for backward-compat with
+    callers that don't know about multi-source scopes; resource-based
+    rules pass the source declared in RULE_SOURCES so an RDS scan
+    doesn't accidentally prove an EC2 scope (or vice-versa).
 
     When max_age is set, the run must also be fresher than max_age
     (audit F-02): an old scan no longer proves the scope.
@@ -110,7 +140,7 @@ def _is_scope_proven(
         account_id=resource.account_id,
         region=resource.region,
         resource_type=resource.resource_type,
-        source=DEFAULT_SOURCE,
+        source=source,
         max_age=max_age,
     )
     return run is not None
@@ -122,6 +152,7 @@ def _scope_inconclusive(
     *,
     rule_name: str,
     scope_max_age: timedelta | None,
+    source: str = DEFAULT_SOURCE,
 ) -> Inconclusive | None:
     """Return the scope-level Inconclusive for this resource, or None if proven.
 
@@ -129,8 +160,11 @@ def _scope_inconclusive(
     - scope_not_proven: no successful source_run exists at all.
     - scope_stale: a successful run exists but is older than scope_max_age;
       the human-readable reason carries the run age.
+
+    `source` selects which source_run to check (RDS, EC2, ...). Resource
+    rules pass the source declared in RULE_SOURCES.
     """
-    if _is_scope_proven(session, resource, max_age=scope_max_age):
+    if _is_scope_proven(session, resource, source=source, max_age=scope_max_age):
         return None
     account_id = str(resource.account_id) if resource.account_id else None
     latest = source_runs_repo.latest_successful_run(
@@ -138,7 +172,7 @@ def _scope_inconclusive(
         account_id=resource.account_id,
         region=resource.region,
         resource_type=resource.resource_type,
-        source=DEFAULT_SOURCE,
+        source=source,
     )
     if latest is None:
         return Inconclusive(
@@ -190,6 +224,7 @@ def _evaluate_resource(
     rule_name: str,
     evaluate_fn: ResourceEvaluateFn,
     pydantic_facts: list[Fact],
+    source: str = DEFAULT_SOURCE,
     today: date | None = None,
     scope_max_age: timedelta | None = None,
 ) -> tuple[list[Insight], list[Inconclusive]]:
@@ -199,11 +234,19 @@ def _evaluate_resource(
     by the caller (audit F-16: one query for all resources, grouped in
     memory — no per-resource N+1).
 
+    `source` is the connector name (RDS, EC2, ...) used to look up the
+    resource's scope-completeness proof. Defaults to DEFAULT_SOURCE for
+    callers that haven't been updated for multi-source scopes.
+
     Returns the objects (not the IDs) so the caller controls the transaction
     boundary and the run metadata.
     """
     scope_inc = _scope_inconclusive(
-        session, resource, rule_name=rule_name, scope_max_age=scope_max_age
+        session,
+        resource,
+        rule_name=rule_name,
+        scope_max_age=scope_max_age,
+        source=source,
     )
     if scope_inc is not None:
         return [], [scope_inc]
@@ -327,6 +370,9 @@ def run_resource_rule(
     if rule_name not in RESOURCE_RULES:
         raise ValueError(f"unknown resource rule: {rule_name} (supports: {sorted(RESOURCE_RULES)})")
     evaluate_fn = RESOURCE_RULES[rule_name]
+    # Each rule declares its source. The scope check looks up source_runs
+    # by this name, so a successful RDS scan does NOT prove EC2 scope.
+    source = RULE_SOURCES.get(rule_name, DEFAULT_SOURCE)
 
     run = InsightRunORM(
         tenant_id=DEFAULT_TENANT_ID,
@@ -360,6 +406,7 @@ def run_resource_rule(
                 rule_name=rule_name,
                 evaluate_fn=evaluate_fn,
                 pydantic_facts=facts_by_resource.get(resource.id, []),
+                source=source,
                 today=today,
                 scope_max_age=scope_max_age,
             )
@@ -420,6 +467,16 @@ def run_aurora_eol(
 ) -> RunResult:
     """Thin wrapper: run the aurora_eol rule via the generic runner."""
     return run_resource_rule(session, "aurora_eol", today=today, scope_max_age=scope_max_age)
+
+
+def run_ebs_gp2_to_gp3(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the ebs_gp2_to_gp3 rule via the generic runner."""
+    return run_resource_rule(session, "ebs_gp2_to_gp3", today=today, scope_max_age=scope_max_age)
 
 
 def run_chargeback(
@@ -552,6 +609,7 @@ RUNNERS: dict[str, RunnerFn] = {
     "rds_eol": run_rds_eol,
     "mysql_eol": run_mysql_eol,
     "aurora_eol": run_aurora_eol,
+    "ebs_gp2_to_gp3": run_ebs_gp2_to_gp3,
     "chargeback": run_chargeback,
 }
 

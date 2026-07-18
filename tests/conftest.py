@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC_PATHS = [
     ROOT / "packages" / "core" / "src",
     ROOT / "packages" / "connectors" / "aws_rds" / "src",
+    ROOT / "packages" / "connectors" / "aws_ec2" / "src",
     ROOT / "packages" / "connectors" / "focus" / "src",
     ROOT / "packages" / "insights" / "rds_eol" / "src",
     ROOT / "packages" / "insights" / "chargeback" / "src",

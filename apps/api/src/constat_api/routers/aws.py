@@ -36,6 +36,11 @@ class TargetIn(BaseModel):
     external_id: str | None = None
     name: str | None = None
     regions: list[str] | None = None
+    # Selects which AWS resource types to scan. Default (None) = RDS only
+    # for V1 backward compat. Known keys: "rds", "ec2_volume",
+    # "ec2_snapshot", "ec2_instance". Unknown keys are rejected at the
+    # collector layer (HTTP 422).
+    resource_types: list[str] | None = None
 
     @model_validator(mode="after")
     def _role_arn_requires_external_id(self) -> TargetIn:
@@ -105,6 +110,7 @@ def trigger_aws_collect(
             external_id=t.external_id,
             name=t.name,
             regions=tuple(t.regions) if t.regions else None,
+            resource_types=tuple(t.resource_types) if t.resource_types else None,
         )
         for t in body.targets
     ]
