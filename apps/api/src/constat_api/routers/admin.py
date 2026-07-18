@@ -40,8 +40,6 @@ def cleanup_inconclusives(
     the response — there is no idempotency token; calling twice in
     the same hour is safe (second call deletes 0).
     """
-    deleted = inconclusive_repo.delete_older_than(
-        session, older_than_days=older_than_days
-    )
+    deleted = inconclusive_repo.delete_older_than(session, older_than_days=older_than_days)
     session.commit()
     return CleanupResponse(older_than_days=older_than_days, deleted=deleted)

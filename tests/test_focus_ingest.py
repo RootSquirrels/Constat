@@ -187,9 +187,7 @@ def test_ingest_supports_parquet(session: Session, tmp_path: Path) -> None:
     assert charges[0].billed_cost == 250.0
 
 
-def test_ingest_reports_rows_total_and_rows_skipped(
-    session: Session, tmp_path: Path
-) -> None:
+def test_ingest_reports_rows_total_and_rows_skipped(session: Session, tmp_path: Path) -> None:
     """UX/ops P2 item 7: the DAF wants to know how many rows we ingested
     and how many were dropped, without grepping logs.
 

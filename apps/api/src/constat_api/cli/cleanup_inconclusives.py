@@ -46,8 +46,7 @@ def run_cleanup(
                 stmt = stmt.where(InconclusiveORM.rule_name == rule_name)
             eligible = session.execute(stmt).scalars().all()
             logger.info(
-                "DRY RUN: %d inconclusive record(s) older than %d days"
-                " (rule=%s) would be deleted",
+                "DRY RUN: %d inconclusive record(s) older than %d days (rule=%s) would be deleted",
                 len(eligible),
                 older_than_days,
                 rule_name or "*",
@@ -58,9 +57,7 @@ def run_cleanup(
         # the CLI/HTTP path, we accept all rules in one call (the typical
         # operation is "clean the whole table"). If the user wants per-rule
         # cleanup, we add it later.
-        deleted = inconclusive_repo.delete_older_than(
-            session, older_than_days=older_than_days
-        )
+        deleted = inconclusive_repo.delete_older_than(session, older_than_days=older_than_days)
         session.commit()
         logger.info(
             "Deleted %d inconclusive record(s) older than %d days",
@@ -71,9 +68,7 @@ def run_cleanup(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Delete inconclusive records older than N days."
-    )
+    parser = argparse.ArgumentParser(description="Delete inconclusive records older than N days.")
     parser.add_argument(
         "--older-than",
         type=int,

@@ -143,7 +143,9 @@ def get_status(session: Session = Depends(get_db)) -> StatusResponse:
             LastRun(
                 rule_name=last_run_row.rule_name,
                 started_at=last_run_row.started_at.isoformat() if last_run_row.started_at else "",
-                finished_at=last_run_row.finished_at.isoformat() if last_run_row.finished_at else None,
+                finished_at=last_run_row.finished_at.isoformat()
+                if last_run_row.finished_at
+                else None,
                 status=last_run_row.status,
                 resources_scanned=last_run_row.resources_scanned,
                 insights_emitted=last_run_row.insights_emitted,

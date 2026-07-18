@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from constat_api.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-
-from constat_api.middleware import REQUEST_ID_HEADER, RequestIDMiddleware
 
 
 def _build_app() -> FastAPI:

@@ -11,7 +11,7 @@ Version: `0.5.0` (from `apps/api/src/constat_api/main.py`)
 
 Interactive docs: `/docs` (Swagger UI) and `/redoc`, served by FastAPI.
 
-## The 6 routers
+## The 9 routers
 
 | Router | Prefix | Purpose | Code |
 |---|---|---|---|
@@ -21,10 +21,13 @@ Interactive docs: `/docs` (Swagger UI) and `/redoc`, served by FastAPI.
 | `inconclusive` | `/inconclusives` | List "we don't know" records | `apps/api/src/constat_api/routers/inconclusive.py` |
 | `insight-runs` | `/insight-runs` | Audit history of rule executions | `apps/api/src/constat_api/routers/insight_runs.py` |
 | `aws` (collect) | `/collect/aws` | Trigger an AWS scan | `apps/api/src/constat_api/routers/aws.py` |
-| `focus` (collect) | `/collect/focus` | Ingest a FOCUS CSV | `apps/api/src/constat_api/routers/focus.py` |
+| `focus` (collect) | `/collect/focus` | Ingest a FOCUS CSV/Parquet | `apps/api/src/constat_api/routers/focus.py` |
+| `status` | `/status` | One-glance fleet snapshot (counts, freshness, last runs) | `apps/api/src/constat_api/routers/status.py` |
+| `accounts` | `/accounts` | List observed accounts (AWS / FOCUS BillingAccountId) | `apps/api/src/constat_api/routers/accounts.py` |
+| `admin` | `/admin` | Scheduled cleanup of `inconclusive` (UX/ops P2 item 8) | `apps/api/src/constat_api/routers/admin.py` |
 
-(That's 7 router modules but 6 prefixes — `/insights` is shared by the
-list endpoints and the run endpoint.)
+The `insights` prefix is shared by the list endpoints and the run
+endpoint. The other 8 routers each own their prefix.
 
 ## `GET /health`
 
@@ -272,20 +275,23 @@ Ingest a FOCUS 1.0 CSV.
 ```json
 {
   "account_external_id": "111111111111",
-  "csv_path": "/srv/cur/focus-2026-07.csv",
+  "file_path": "/srv/cur/focus-2026-07.csv",
   "account_name": "prod-eu"
 }
 ```
 
-- `csv_path` is a server-side path. The server process must have read
-  access. File upload (multipart) is V2.
+- `file_path` is a server-side path to a FOCUS 1.0 CSV or Parquet
+  file. The server process must have read access. File upload
+  (multipart) is V2.
 - `account_name` is optional, stored on `accounts.name`.
 
 **Response 200**:
 ```json
 {
   "account_id": "1a2b…",
-  "rows_read": 12804,
+  "rows_total": 12804,
+  "rows_read": 12799,
+  "rows_skipped": 5,
   "rows_written": 87,
   "inserted": 87,
   "updated": 0,
@@ -293,14 +299,116 @@ Ingest a FOCUS 1.0 CSV.
 }
 ```
 
-`rows_read` is the raw FOCUS row count; `rows_written` is the
-count after the in-memory `(service, period)` aggregation
-(`packages/connectors/focus/src/constat_focus/aggregator.py::aggregate_for_storage`).
+UX/ops P2 item 7 — quality stats:
+
+- `rows_total`: every data row in the file. For CSV, the line count
+  minus 1 (header). For Parquet, `pq.read_metadata().num_rows`.
+- `rows_read`: the rows that parsed successfully (yielded a
+  `FocusCharge`).
+- `rows_skipped`: `rows_total - rows_read`. Rows that the loader
+  logged and dropped (e.g. unparseable `ChargePeriodStart`). The
+  DAF answers "we ingested 1000 lines, 5 were broken" without
+  grepping logs.
 
 **Errors**:
-- 404 if `csv_path` does not exist
+- 404 if `file_path` does not exist
+- 500 if the file is missing required FOCUS 1.0 columns (see
+  `packages/connectors/focus/src/constat_focus/loader.py::FOCUS_REQUIRED_COLUMNS`)
 - 500 if the CSV is missing required FOCUS 1.0 columns (see
   `packages/connectors/focus/src/constat_focus/loader.py::FOCUS_REQUIRED_COLUMNS`)
+
+## `GET /status`
+
+One-glance fleet snapshot. The DAF / ops / pilot-customer entry-point:
+"how are we doing right now?". Powers the `/status` page in the web
+app. Renders in ~10ms on the pilot volume.
+
+**Response 200**:
+```json
+{
+  "generated_at": "2026-07-18T15:00:00Z",
+  "accounts": 3,
+  "resources_total": 187,
+  "resources_active": 185,
+  "insights_total": 12,
+  "insights_by_severity": { "critical": 2, "warning": 7, "info": 3 },
+  "inconclusive_total": 4,
+  "last_insight_run": {
+    "rule_name": "rds_eol",
+    "started_at": "2026-07-18T14:55:00Z",
+    "finished_at": "2026-07-18T14:55:04Z",
+    "status": "success",
+    "resources_scanned": 17,
+    "insights_emitted": 3
+  },
+  "last_source_run": {
+    "account_external_id": "111111111111",
+    "region": "eu-west-1",
+    "resource_type": "AWS::RDS::DBInstance",
+    "finished_at": "2026-07-18T14:50:23Z",
+    "status": "success",
+    "resources_found": 17
+  },
+  "source_run_freshness_seconds": 583
+}
+```
+
+- `resources_active` excludes retired resources. `resources_total - resources_active`
+  is the count of resources that have been proven gone (rare in V1; we don't
+  ship a retirement job yet).
+- `source_run_freshness_seconds` is the age of the most recent scan. The page
+  shows red when >6h (SLO breach), amber when >1h, green when <1h. null when
+  we have never scanned (pilot day 1).
+- All counts are `COUNT(*)` against the index; latency is bounded by the
+  index count, not the row count. If this ever becomes slow, cache the
+  response for 30s — the DAF does not need second-precision.
+
+## `GET /accounts`
+
+List the AWS accounts / FOCUS BillingAccountIds that have been
+observed (via the AWS collector or the FOCUS ingestion path). Powers
+the `/accounts` page.
+
+**Query parameters**:
+- `limit: int = 100` (1..500)
+- `offset: int = 0`
+
+**Response 200**:
+```json
+[
+  {
+    "id": "1a2b3c4d-...",
+    "external_id": "111111111111",
+    "name": "prod-eu",
+    "created_at": "2026-07-15T10:00:00Z"
+  }
+]
+```
+
+Newest first. An account is created lazily by the first encounter —
+either an AWS scan that calls `accounts_repo.get_or_create` or a FOCUS
+ingest for the same `BillingAccountId`.
+
+## `POST /admin/cleanup-inconclusives`
+
+UX/ops P2 item 8: scheduled cleanup of the `inconclusive` table.
+The `inconclusive` table grows without bound; a "missing fact" listed
+6 months ago is no longer actionable. An external scheduler (cron,
+k8s CronJob, Task Scheduler) calls this endpoint. See
+[`../operations/inconclusive-cleanup.md`](../operations/inconclusive-cleanup.md)
+for the recommended cadence.
+
+**Query parameters**:
+- `older_than_days: int = 30` (1..365)
+
+**Response 200**:
+```json
+{ "older_than_days": 30, "deleted": 17 }
+```
+
+Idempotent. Calling twice in the same hour is safe (the second call
+deletes 0 records, because the first call already cleared them).
+No body required.
 
 ## Error semantics (all endpoints)
 
@@ -323,9 +431,20 @@ surfaces them as a banner; it does not crash the page.
 These are deliberate V2 decisions, not gaps. Don't add them in V1
 without a one-paragraph justification in the PR.
 
-- **Auth.** No token check, no rate limit. Internal deployment only.
+- **OIDC / OAuth.** V1 uses a single shared API key (the
+  `X-API-Key` header) compared against `CONSTAT_API_KEY` in
+  constant time (`hmac.compare_digest`). When `CONSTAT_API_KEY` is
+  unset (dev), auth is open and a startup warning is logged.
   V2: OIDC for users, OAuth2 client credentials for service
-  accounts (per the GTM doc, ADR-10 of the strategic brief).
+  accounts (per the GTM doc, ADR-10 of the strategic brief). The
+  `Depends(verify_api_key)` interface stays the same — swap is
+  one-line.
+- **Idempotency on `/collect/aws` and `/insights/run`.** V1: a
+  network retry can re-trigger. The `source_runs` partial unique
+  index protects `/collect/aws` (second call returns "scan already
+  in progress"). `/insights/run` will produce two `insight_runs`
+  rows. The `Idempotency-Key` header is supported in a follow-up
+  (P1 item 2).
 - **Async `/insights/run`.** V1 blocks. A scan over 50 accounts is
   5-10 minutes. V2: a `runs` resource with `POST /insights/run`
   returning 202 + a run id, then `GET /insights/runs/{id}` to poll.
@@ -335,6 +454,21 @@ without a one-paragraph justification in the PR.
   FastAPI; we don't ship a checked-in `openapi.json` yet.
 - **Webhooks.** Run finished, new insight — V2.
 - **Bulk export.** Async export to S3 with a presigned URL — V2.
+
+## Request ID (correlation)
+
+UX/ops P2 item 9: every response carries an `X-Request-ID` header.
+The middleware (`apps/api/src/constat_api/middleware.py::RequestIDMiddleware`)
+takes the caller's `X-Request-ID` if present (preserves tracing
+across services) or generates a UUID4. The id is:
+
+- echoed in the `X-Request-ID` response header
+- bound to a structlog contextvar so every log line for the request
+  carries `request_id=<id>` in its JSON output
+- accessible to handlers via `request.state.request_id`
+
+Logs are JSON (via `CONSTAT_LOG_JSON=1`) in prod, colored plain text
+in dev. See [`../operations/logging.md`](../operations/logging.md).
 
 ## See also
 
