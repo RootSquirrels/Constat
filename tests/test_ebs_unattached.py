@@ -1,11 +1,8 @@
 """Tests for the ebs_unattached insight rule + runner wiring.
 
-Coverage target: 13 tests. The 5 ebs_gp2_to_gp3 test files (62 tests)
-over-tested this kind of rule; here we focus on what proves the contract:
-- 3-state contract (MATCH / NO_MATCH / INCONCLUSIVE)
-- The key behavioral difference from gp2_to_gp3 (state-driven, not type-driven)
-- The catalog version stamp (defensibility for sales)
-- The runner integration (registration + source + end-to-end)
+Three concerns: the 3-state contract (MATCH / NO_MATCH / INCONCLUSIVE),
+the catalog version stamp, and the runner integration (registration +
+source binding + end-to-end).
 """
 
 from __future__ import annotations
@@ -68,7 +65,8 @@ def _available_facts(
 
 
 def test_available_gp2_volume_emits_match() -> None:
-    """The headline case: an unattached gp2 volume = monthly waste."""
+    """The headline case: a gp2 available volume emits one insight with
+    the monthly waste in $."""
     result = evaluate(uuid4(), _available_facts(size_gb=100, volume_type="gp2"))
 
     assert result.is_conclusive
@@ -266,8 +264,8 @@ def test_run_ebs_unattached_emits_insight_for_available_volume(session: Session)
 
 
 def test_run_ebs_unattached_emits_inconclusive_without_ec2_scope(session: Session) -> None:
-    """No aws_ec2 source_run -> INCONCLUSIVE for every available volume
-    (multi-source scope fix: RDS scans don't prove EC2 scope)."""
+    """No aws_ec2 source_run -> INCONCLUSIVE for every available volume:
+    an RDS scan does not prove EC2 scope."""
     acc = _seed_account(session)
     # NO _seed_ec2_scope_proof call
     _seed_volume_with_facts(

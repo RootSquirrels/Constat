@@ -60,35 +60,3 @@ Same scale as `ebs_gp2_to_gp3` for dashboard consistency:
    (`aws ec2 create-snapshot --volume-id <id>`), then delete
    (`aws ec2 delete-volume --volume-id <id>`).
 4. Confirm in the next scan that the volume is gone.
-
-## Test coverage (15 tests, single file `tests/test_ebs_unattached.py`)
-
-- 1 MATCH (the headline case)
-- 1 severity threshold test (3 boundaries in 1 test)
-- 1 NO_MATCH for `in-use` + 4 parametrized NO_MATCH for transient states
-- 3 INCONCLUSIVE for missing facts (state, size, type)
-- 1 INCONCLUSIVE for unknown volume type (defensive against catalog gaps)
-- 1 catalog version stamp regression guard
-- 2 runner registration tests (RESOURCE_RULES + RULE_SOURCES)
-- 1 end-to-end: gp2 1000 GB available volume → 1 insight, WARNING
-- 1 end-to-end: no scope proof → INCONCLUSIVE
-
-Note: this is half the test count of `ebs_gp2_to_gp3` (15 vs 28 in
-the resolver + runner). The contract is identical (MATCH / NO_MATCH
-/ INCONCLUSIVE) so the test surface is the same; the difference is
-in the boundary cases (severity thresholds, missing facts) which
-we cover with 1 test each rather than 4.
-
-## Scoreboard impact
-
-- Insights Engine 4.5 → 4.5/5 (4 → 5 rules live)
-- Connecteurs 4.5/5 unchanged (reuses the same `aws_ec2` connector)
-
-## What this rule does NOT do (V2 scope)
-
-- Does not flag volumes that have been unattached for a long time
-  (could add a `last_attached_at` field and a "30+ days unattached"
-  severity bump).
-- Does not estimate the cost of restoration (snapshot + re-attach).
-- Does not handle encrypted-vs-unencrypted as a separate dimension
-  (the rule treats them the same — both cost the storage rate).

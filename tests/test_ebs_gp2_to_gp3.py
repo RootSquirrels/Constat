@@ -2,16 +2,10 @@
 
 Three resolver outcomes:
 - MATCH: a gp2 volume with a real saving. Emits one Insight.
-- NO_MATCH: a non-gp2 volume, OR a gp2 below the noise threshold.
-  No insight emitted (the runner treats an empty insights list as
-  NO_MATCH for the operator).
-- INCONCLUSIVE: a missing fact that blocks assessment (no type, no size,
-  or both). The runner emits an Inconclusive record so the user sees
-  the gap in their data — never a silent skip (criterion n°15).
-
-The catalog must be present in the imported module; if AWS publishes a
-new gp2-to-gp3 pricing change and the catalog isn't updated, these
-tests will fail and force the review.
+- NO_MATCH: a non-gp2 volume, or a gp2 below the noise threshold.
+- INCONCLUSIVE: a missing fact that blocks assessment (criterion n°15:
+  the runner emits an Inconclusive record so the user sees the gap in
+  their data — never a silent skip).
 """
 
 from __future__ import annotations

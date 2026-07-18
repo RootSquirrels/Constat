@@ -4,9 +4,9 @@ Mirrors the aws_rds connector pattern: the caller owns the boto3 Session
 (so we can support cross-account AssumeRole). This module only translates
 AWS API responses into canonical Resources / Facts / Observations.
 
-The vertical slice (V1.0) covers three resource types:
+Three resource types:
 - AWS::EC2::Volume   (EBS volumes, gp2/gp3/io1/io2/st1/sc1/magnetic)
-- AWS::EC2::Snapshot (EBS snapshots, owner=self or owner=other)
+- AWS::EC2::Snapshot (EBS snapshots, owner=self)
 - AWS::EC2::Instance (EC2 instances, all states)
 
 Per-region pagination uses the boto3 paginator + the same adaptive
@@ -37,8 +37,7 @@ INSTANCE_RESOURCE_TYPE = "AWS::EC2::Instance"
 
 SOURCE_NAME = "aws_ec2"
 
-# Default region set. Same default as aws_rds so a typical V1 prospect
-# scan doesn't need a regions list. Tunable per tenant.
+# Default region set. Same default as aws_rds. Tunable per tenant.
 DEFAULT_REGIONS: list[str] = [
     "eu-west-1",
     "eu-west-2",

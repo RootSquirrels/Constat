@@ -1,17 +1,7 @@
 """End-to-end tests for the ebs_gp2_to_gp3 rule wired through the runner.
 
-What this exercises:
-1. The rule is registered in RESOURCE_RULES (so run_resource_rule finds it).
-2. The rule's source is in RULE_SOURCES (so scope-completeness uses
-   `aws_ec2`, not the legacy `aws_rds` default — an RDS scan does
-   NOT prove EC2 scope and vice-versa).
-3. The runner emits one Insight per gp2 volume after a successful
-   EC2 scan (one source_run per (region, resource_type=AWS::EC2::Volume,
-   source=aws_ec2)).
-4. The runner emits an INCONCLUSIVE when the scope isn't proven
-   (e.g. only an RDS scan exists, no EC2 scan).
-5. The runner emits an INCONCLUSIVE when facts are missing.
-6. Delete-and-replace (audit F-03): a second run clears the first.
+The key behavioral claim: an RDS scan does NOT prove EC2 scope, and the
+rule must emit INCONCLUSIVE in that case.
 """
 
 from __future__ import annotations

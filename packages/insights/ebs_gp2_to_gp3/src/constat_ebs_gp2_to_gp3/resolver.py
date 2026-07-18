@@ -3,24 +3,21 @@
 The cheapest, most defensible FinOps win: AWS EBS gp2 costs $0.10/GB-month,
 gp3 costs $0.08/GB-month for the same storage. A 20% storage saving, with
 no behavior change and no migration window — gp3 is the default for new
-volumes since 2021 and is API-compatible (just resize / change-type in
-place, online, no downtime).
+volumes since 2021 and is API-compatible (resize / change-type in place,
+online, no downtime).
 
-This rule emits a MATCH insight for every volume with type=gp2, sized
-in GB, with the monthly storage savings stamped on the payload. NO_MATCH
-for every other volume type. INCONCLUSIVE when a fact is missing (no
-size, no type).
+MATCH: a volume with type=gp2 and a real saving > $0.50/month.
+NO_MATCH: any other volume type.
+INCONCLUSIVE: a fact is missing (no type, no size) or the catalog
+  can't price the volume.
 
-Like mysql_eol/aurora_eol, the payload carries an explicit monthly
-saving (`storage_savings_monthly_usd`) stamped `value_basis=ESTIMATED`:
-the figure is catalog-derived until a FOCUS line confirms the actual
-charge (per roadmap vague 1). The price basis is US East (single-region
-in V1), so non-us-east-1 prospects see estimates that are 1-3% off the
-real number.
+Payload carries the monthly saving stamped `value_basis=ESTIMATED`
+(catalog-derived until a FOCUS line confirms the actual charge).
+Price basis is US East; non-us-east-1 prospects see estimates that are
+1-3% off the real number.
 
-V1 scope: a per-volume insight. The dedupe rule "one volume = one insight"
-is enforced by the runner's delete-and-replace (audit F-03). Re-running
-the rule does not accumulate duplicates.
+The dedupe rule "one volume = one insight" is enforced by the runner's
+delete-and-replace. Re-running the rule does not accumulate duplicates.
 """
 
 from __future__ import annotations
@@ -143,9 +140,8 @@ def evaluate(
     savings = round(current_monthly - target_monthly, 2)
 
     if savings < MIN_SAVINGS_USD_PER_MONTH:
-        # Below the noise threshold. NO_MATCH, not an insight — keeps
-        # the dashboard clean for prospects running thousands of small
-        # EBS volumes (Lambda's /tmp, ECS scratch, etc.).
+        # Below the noise threshold: NO_MATCH, not an insight. Keeps
+        # the dashboard clean for fleets with many tiny scratch volumes.
         return InsightResult()
 
     return InsightResult(
@@ -171,12 +167,9 @@ def _make_insight(
     target_monthly_usd: float,
     savings_monthly_usd: float,
 ) -> Insight:
-    # Severity by saving size. The thresholds are pragmatic: $10/month
-    # is "a coffee a month" — not worth a ticket unless the fleet
-    # aggregates to something bigger. $50/month is "real money" — the
-    # operator notices. $500/month is "this is a fleet-level problem".
-    # These thresholds are intentionally conservative; the operator
-    # dashboard can be sorted by savings to surface the biggest wins.
+    # Severity thresholds: $50/month is "a real number" the operator
+    # notices; $500/month is "a fleet-level problem". The dashboard
+    # sorts by $ to surface the biggest wins regardless of severity.
     if savings_monthly_usd >= 500:
         severity = Severity.CRITICAL
     elif savings_monthly_usd >= 50:
@@ -207,13 +200,8 @@ def _make_insight(
             "savings_pct": round(100 * savings_monthly_usd / current_monthly_usd, 1)
             if current_monthly_usd > 0
             else 0.0,
-            # Catalog-derived estimate until a FOCUS line confirms the actual
-            # charge. V2 reconciliation flips this to ACTUAL.
             "value_basis": "ESTIMATED",
             "recommendation": recommendation,
-            # Source-of-truth stamp: which catalog version produced this insight.
-            # Sales can cite "based on EBS pricing dated 2026-07-18" —
-            # defensible, traceable, auditable from the payload alone.
             "catalog_version": EBS_CATALOG_VERSION,
         },
     )

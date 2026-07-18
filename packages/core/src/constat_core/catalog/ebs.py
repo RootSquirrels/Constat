@@ -1,4 +1,4 @@
-"""EBS pricing catalog. Versioned by date in the module docstring.
+"""EBS pricing catalog.
 
 Last reviewed: 2026-07-18. Update when AWS publishes changes.
 
@@ -7,22 +7,18 @@ Sources:
 - EBS volume types: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html
 - Snapshot pricing: https://aws.amazon.com/ebs/pricing/#Snapshots
 
-The catalog is US East (N. Virginia) by default. Other regions have
-small premiums (a few percent), so V1 estimates use US East pricing and
-flag `value_basis=ESTIMATED`. V2 will read region-specific pricing
-from the AWS Pricing API (or a precomputed table) and flip the basis
-to ACTUAL on reconciliation.
+The catalog is US East (N. Virginia). Other regions have small
+premiums (1-3%), so insights flag `value_basis=ESTIMATED` to surface
+the approximation. Multi-region pricing is not yet catalogued.
 
 EBS pricing has two components per volume type:
 - Storage cost ($/GB-month) — what you pay for the provisioned size.
 - Provisioned IOPS/throughput cost — only for io1/io2/gp3 (gp3 includes
   a baseline 3000 IOPS / 125 MB/s; extra IOPS/throughput is metered).
 
-For the `ebs.gp2_to_gp3` insight we only need the storage rate, since
-the rule is "your gp2 is paying storage rate X, gp3 would pay storage
-rate Y for the same size". IOPS/throughput are out of scope for V1
-(this rule) — the actual charge depends on workload, which we don't
-observe.
+This catalog exposes only the storage rate. The IOPS/throughput
+charges are workload-dependent (we don't observe the workload) and
+belong in a future catalog extension.
 
 Pricing table (US East, 2026-07-18):
 
@@ -43,10 +39,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Catalog version stamp. Same string as catalog/aws.py uses — both are
-# reviewed on the same day, so they share the version. When the data
-# goes out of sync (e.g. AWS changes gp3 pricing), bump the global
-# CATALOG_VERSION in catalog/aws.py and re-export it here.
+# Version stamp shared with catalog/aws.py — both are reviewed on the
+# same day. Bump the global CATALOG_VERSION when this goes out of
+# sync with the RDS catalog (different review cadences).
 EBS_CATALOG_VERSION = "2026-07-18"
 
 
@@ -54,9 +49,9 @@ EBS_CATALOG_VERSION = "2026-07-18"
 class EbsPrice:
     """Per-GB-month storage cost for one EBS volume type in one region.
 
-    `source_url` is the AWS pricing page used at review time. Operators
-    can audit the price by clicking through. The `review_date` is when
-    this row was last cross-checked against the source.
+    `source_url` is the AWS pricing page used at review time. The
+    `review_date` is when this row was last cross-checked against the
+    source.
     """
 
     volume_type: str
@@ -65,8 +60,7 @@ class EbsPrice:
     review_date: str  # ISO date string
 
 
-# US East (N. Virginia) pricing. V1's single-region basis. V2 will add
-# other regions, and the price lookup will accept a region arg.
+# US East (N. Virginia) pricing.
 EBS_PRICING: dict[str, EbsPrice] = {
     "gp2": EbsPrice(
         volume_type="gp2",
@@ -155,13 +149,11 @@ def ebs_snapshot_price_per_gb_month(tier: str) -> EbsSnapshotPrice | None:
 
 
 def monthly_storage_cost(volume_type: str, size_gb: int) -> float | None:
-    """Convenience: $/month for a volume of `size_gb` of `volume_type`.
+    """$/month for a volume of `size_gb` of `volume_type`. Storage line
+    only — does not include provisioned IOPS/throughput charges, which
+    are workload-dependent and not catalogued here.
 
-    Returns None if the volume type isn't catalogued. io1/io2 require
-    a separate IOPS charge — this helper only covers the storage line,
-    so the gp2→gp3 insight (which compares storage-only) can use it
-    directly. A future `ebs.io_overspend` rule would compute the
-    full cost.
+    Returns None if the volume type isn't catalogued.
     """
     price = ebs_price_per_gb_month(volume_type)
     if price is None or size_gb is None:

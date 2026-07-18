@@ -1,22 +1,20 @@
 """EBS unattached insight.
 
 An EBS volume is "unattached" when it has no consumer (state="available",
-no Attachments). The volume is paying storage cost for nothing. This is
-the second-largest FinOps win after gp2_to_gp3 for typical fleets: an
-operator often has 5-20% of their EBS footprint unattached (old
-databases, dev sandboxes, forgotten scratch volumes).
+no Attachments). The volume is paying storage cost for nothing.
 
-MATCH: state="available" + size known -> 1 insight with monthly waste.
-NO_MATCH: any other state (in-use, deleting, error). Error state is
-intentionally NO_MATCH, not INCONCLUSIVE: the volume still costs money,
-but we don't know if it's "transiently broken" or "permanently dead" —
-the operator can investigate from the inventory view.
-INCONCLUSIVE: missing state or size fact.
+MATCH: state="available" + size+type known -> 1 insight with monthly waste.
+NO_MATCH: any other state (in-use, creating, deleting, error, deleted).
+  Error state is intentionally NO_MATCH, not INCONCLUSIVE: the volume
+  still costs money, but we don't know if it's "transiently broken" or
+  "permanently dead" — the operator can investigate from the inventory
+  view.
+INCONCLUSIVE: missing state / size / type fact, or a volume type not in
+  the catalog (defensive against future AWS types).
 
-Severity matches gp2_to_gp3 thresholds (>= $500 CRITICAL, >= $50 WARNING)
+Severity matches the gp2_to_gp3 thresholds ($500/CRITICAL, $50/WARNING)
 for dashboard consistency. value_basis=ESTIMATED until FOCUS reconciles.
-catalog_version stamped on every insight payload (same pattern as
-rds_eol / ebs_gp2_to_gp3).
+catalog_version stamped on every insight payload.
 """
 
 from __future__ import annotations
