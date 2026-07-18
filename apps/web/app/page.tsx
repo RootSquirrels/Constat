@@ -94,6 +94,24 @@ export default async function Home() {
             One-glance fleet view: counts, freshness, last runs.
           </p>
         </Link>
+        <Link
+          href="/insights/inbox"
+          style={{
+            display: "block",
+            padding: "1.5rem",
+            border: "1px solid #fde68a",
+            borderRadius: 8,
+            backgroundColor: "#fffbeb",
+            textDecoration: "none",
+            color: "inherit",
+          }}
+        >
+          <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>Inbox</h2>
+          <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
+            Operator triage: ack, start, resolve, dismiss the daily
+            insight list.
+          </p>
+        </Link>
       </section>
     </main>
   );

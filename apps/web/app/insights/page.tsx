@@ -51,6 +51,13 @@ export default async function InsightsPage() {
           ? "No insights yet."
           : `${total} insight${total === 1 ? "" : "s"} across ${sevWithCount} severity level${sevWithCount === 1 ? "" : "s"}.`}
         {" · "}
+        <Link
+          href="/insights/inbox"
+          style={{ color: "#92400e", fontWeight: 500 }}
+        >
+          triage queue →
+        </Link>
+        {" · "}
         <a href={insightsCsvUrl({ limit: 500 })} style={{ color: "#4b5563" }}>
           Export CSV
         </a>

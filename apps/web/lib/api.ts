@@ -1,11 +1,23 @@
 // API client for the Constat backend.
-// Server-side fetch (called from React Server Components). NEXT_PUBLIC_API_URL
-// is read at build time; default points at the dev API on :8000.
+//
+// Calls go through the Next.js proxy at /api/proxy/* (see
+// app/api/proxy/[...path]/route.ts) which injects the X-API-Key
+// server-side. The browser never sees the key. NEXT_PUBLIC_API_URL
+// is kept for direct server-to-server calls (the proxy itself reads
+// it from the server env, not from NEXT_PUBLIC_*).
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Every browser-side fetch goes through this prefix. The proxy
+// strips it before forwarding to the backend.
+const PROXY_PREFIX = "/api/proxy";
 
 export type Severity = "info" | "warning" | "critical";
+
+export type AckStatus =
+  | "acknowledged"
+  | "in_progress"
+  | "resolved"
+  | "dismissed";
 
 export interface Insight {
   id: string;
@@ -16,6 +28,11 @@ export interface Insight {
   title: string;
   payload: Record<string, unknown>;
   computed_at: string; // ISO 8601
+  // P1 item 1: operator acknowledgment. NULL ack_status = "open"
+  // (not yet triaged). PATCH /insights/{id} to set.
+  ack_status: AckStatus | null;
+  ack_at: string | null;
+  ack_by: string | null;
 }
 
 export interface Inconclusive {
@@ -36,6 +53,8 @@ export interface ListInsightsParams {
   rule_name?: string;
   severity?: Severity;
   account_id?: string;
+  // "open" (virtual) | "acknowledged" | "in_progress" | "resolved" | "dismissed"
+  ack_status?: "open" | AckStatus;
   limit?: number;
   offset?: number;
 }
@@ -108,7 +127,13 @@ class ApiError extends Error {
 }
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const url = `${API_URL}${path}`;
+  // Browser-side calls go through the Next.js proxy. The proxy reads
+  // CONSTAT_API_KEY from server env and adds X-API-Key. The key never
+  // touches the client bundle.
+  const url =
+    typeof window === "undefined"
+      ? `${API_URL}${path}` // server-side: direct to backend
+      : `${PROXY_PREFIX}${path}`; // browser: through the proxy
   const res = await fetch(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -137,6 +162,12 @@ export const api = {
     fetchJson<Insight[]>(`/insights${buildQuery(params)}`),
 
   getInsight: (id: string) => fetchJson<Insight>(`/insights/${id}`),
+
+  patchInsight: (id: string, ack_status: AckStatus, ack_by?: string) =>
+    fetchJson<Insight>(`/insights/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ack_status, ack_by: ack_by ?? null }),
+    }),
 
   listInconclusive: (params: ListInconclusiveParams = {}) =>
     fetchJson<Inconclusive[]>(`/inconclusives${buildQuery(params)}`),
@@ -181,8 +212,9 @@ export function insightValueBasis(insight: Insight): ValueBasis {
 }
 
 // Direct browser URL for the CSV export (no fetch — the browser downloads it).
+// Goes through the proxy so the API key is injected server-side.
 export function insightsCsvUrl(params: ListInsightsParams = {}): string {
-  return `${API_URL}/insights/export.csv${buildQuery(params)}`;
+  return `${PROXY_PREFIX}/insights/export.csv${buildQuery(params)}`;
 }
 
 export { ApiError, API_URL };
