@@ -22,6 +22,7 @@ from constat_api.routers import (
     insight_runs,
     insights,
     runner,
+    status,
 )
 from constat_api.settings import settings
 
@@ -48,3 +49,4 @@ app.include_router(insight_runs.router)
 app.include_router(focus.router)
 app.include_router(aws.router)
 app.include_router(runner.router)
+app.include_router(status.router)
