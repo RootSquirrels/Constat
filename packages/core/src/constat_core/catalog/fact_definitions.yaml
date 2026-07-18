@@ -60,6 +60,8 @@ facts:
     producer: aws_rds
     consumers:
       - rds_eol
+      - mysql_eol
+      - aurora_eol
     since: "2026-07-18"
 
   - namespace: aws.rds
@@ -73,6 +75,8 @@ facts:
     producer: aws_rds
     consumers:
       - rds_eol
+      - mysql_eol
+      - aurora_eol
     since: "2026-07-18"
 
   - namespace: aws.rds
@@ -100,4 +104,272 @@ facts:
     producer: aws_rds
     consumers:
       - rds_eol
+      - mysql_eol
+      - aurora_eol
+    since: "2026-07-18"
+
+  # ------------------------------------------------------------------
+  # aws.ec2.volume.* — produced by the aws_ec2 connector
+  # (packages/connectors/aws_ec2, volume_to_facts).
+  # ------------------------------------------------------------------
+
+  - namespace: aws.ec2.volume
+    key: size_gb
+    value_type: integer
+    description: |
+      Provisioned volume size in GiB. UNKNOWN when DescribeVolumes
+      omits `Size`. Cost input for every EBS rule.
+    minimum: 1
+    producer: aws_ec2
+    consumers:
+      - ebs_unattached
+      - ebs_gp2_to_gp3
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: volume_type
+    value_type: string
+    description: |
+      EBS volume type. An uncatalogued type (a future io3) yields
+      INCONCLUSIVE in the rules, never a $0 insight.
+    allowed_values:
+      - gp2
+      - gp3
+      - io1
+      - io2
+      - st1
+      - sc1
+      - standard
+    producer: aws_ec2
+    consumers:
+      - ebs_unattached
+      - ebs_gp2_to_gp3
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: state
+    value_type: string
+    description: |
+      Volume lifecycle state. `available` = attached to nothing —
+      the ebs_unattached trigger.
+    allowed_values:
+      - available
+      - in-use
+      - creating
+      - deleting
+      - deleted
+      - error
+    producer: aws_ec2
+    consumers:
+      - ebs_unattached
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: encrypted
+    value_type: boolean
+    description: |
+      Encryption-at-rest flag. Collected for the future security
+      angle; no V1 consumer.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: iops
+    value_type: integer
+    description: |
+      Provisioned IOPS (io1/io2/gp3). The IOPS cost component is
+      deliberately NOT priced in V1 (workload-dependent).
+    minimum: 0
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: throughput
+    value_type: integer
+    description: Provisioned throughput in MiB/s (gp3/st1). Archive only in V1.
+    minimum: 0
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: attached_instance_id
+    value_type: string
+    description: |
+      Instance the volume is attached to (first attachment), e.g.
+      "i-0abc123". UNKNOWN when unattached.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: attached_device
+    value_type: string
+    description: Device name of the first attachment, e.g. "/dev/xvda". Archive only.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.volume
+    key: create_time
+    value_type: date
+    description: Volume creation timestamp (ISO). Archive only in V1.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  # ------------------------------------------------------------------
+  # aws.ec2.snapshot.* — snapshot_to_facts + the correlation post-pass
+  # (volume_exists spans two jobs' scans; written per region after
+  # all jobs succeed).
+  # ------------------------------------------------------------------
+
+  - namespace: aws.ec2.snapshot
+    key: state
+    value_type: string
+    description: |
+      Snapshot lifecycle state. Only `completed` snapshots are
+      billable evidence for snapshot_orphan.
+    allowed_values:
+      - pending
+      - completed
+      - error
+      - recoverable
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: size_gb
+    value_type: integer
+    description: Source volume size in GiB (snapshots bill per stored GB).
+    minimum: 1
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: storage_tier
+    value_type: string
+    description: |
+      Snapshot storage tier. Absent in older API responses — the
+      rule defaults to `standard` pricing and says so.
+    allowed_values:
+      - standard
+      - archive
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: volume_id
+    value_type: string
+    description: Source volume id, e.g. "vol-0abc123". Input of the correlation post-pass.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: start_time
+    value_type: date
+    description: Snapshot creation timestamp (ISO). Drives snapshot_age_days in the insight.
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: description
+    value_type: string
+    description: |
+      Free-text description. AWS writes "ami-..." into AMI-owned
+      snapshots' descriptions; snapshot_orphan treats any ami-
+      reference as NO_MATCH (conservative — DescribeImages
+      corroboration is V2). KNOWN with empty string is meaningful
+      (manual snapshot, no description).
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.snapshot
+    key: volume_exists
+    value_type: boolean
+    description: |
+      Correlation fact written by the collector's per-region
+      post-pass: True when the source volume appeared in THIS
+      region's volume scan. ABSENT (not False) when the volume job
+      failed or didn't run — absence of proof, so the rule goes
+      INCONCLUSIVE instead of guessing.
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-18"
+
+  # ------------------------------------------------------------------
+  # aws.ec2.instance.* — instance_to_facts + the correlation post-pass.
+  # ------------------------------------------------------------------
+
+  - namespace: aws.ec2.instance
+    key: state
+    value_type: string
+    description: |
+      Instance lifecycle state. `stopped` is the
+      ec2_stopped_with_storage trigger.
+    allowed_values:
+      - pending
+      - running
+      - shutting-down
+      - terminated
+      - stopping
+      - stopped
+    producer: aws_ec2
+    consumers:
+      - ec2_stopped_with_storage
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.instance
+    key: instance_type
+    value_type: string
+    description: Instance type, e.g. "m5.xlarge". Archive only in V1 (rightsizing is vague 2).
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.instance
+    key: launch_time
+    value_type: date
+    description: Launch timestamp (ISO). Archive only in V1.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.instance
+    key: block_device_volume_ids
+    value_type: json
+    description: |
+      EBS volume ids from BlockDeviceMappings (list of strings).
+      Always KNOWN — an empty list is a real observation ("no EBS
+      block devices"), not a gap.
+    producer: aws_ec2
+    consumers: []
+    since: "2026-07-18"
+
+  - namespace: aws.ec2.instance
+    key: attached_volumes
+    value_type: json
+    description: |
+      Correlation fact written by the collector's per-region
+      post-pass, for stopped instances only: list of
+      {volume_id, size_gb, volume_type} resolved against THIS
+      region's volume scan. ABSENT when the volume job failed or
+      didn't run — the rule goes INCONCLUSIVE, never guesses.
+    producer: aws_ec2
+    consumers:
+      - ec2_stopped_with_storage
     since: "2026-07-18"

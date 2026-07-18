@@ -33,19 +33,37 @@ The test is the contract. There is no runtime enforcement in V1.
 
 ## What is in the registry today
 
-Four facts, all under `aws.rds.*`, all produced by the
-`aws_rds` connector:
+Facts from two producers: `aws_rds` (4 facts under `aws.rds.*`) and
+`aws_ec2` (21 facts under `aws.ec2.volume.*`, `aws.ec2.snapshot.*`,
+`aws.ec2.instance.*`). Headlines:
 
 | Key | Type | Producer | Consumers |
 |---|---|---|---|
-| `aws.rds.engine` | string (enum) | `aws_rds` | `rds_eol` |
-| `aws.rds.engine_version` | string (regex) | `aws_rds` | `rds_eol` |
+| `aws.rds.engine` | string (enum) | `aws_rds` | `rds_eol`, `mysql_eol`, `aurora_eol` |
+| `aws.rds.engine_version` | string (regex) | `aws_rds` | `rds_eol`, `mysql_eol`, `aurora_eol` |
 | `aws.rds.instance_class` | string (regex) | `aws_rds` | _(collected for archive)_ |
-| `aws.rds.vcpu` | integer (0..1024) | `aws_rds` | `rds_eol` |
+| `aws.rds.vcpu` | integer (0..1024) | `aws_rds` | `rds_eol`, `mysql_eol`, `aurora_eol` |
+| `aws.ec2.volume.{size_gb,volume_type,state}` | int / enum / enum | `aws_ec2` | `ebs_unattached`, `ebs_gp2_to_gp3` |
+| `aws.ec2.snapshot.*` (state, size_gb, storage_tier, volume_id, start_time, description) | mixed | `aws_ec2` | `snapshot_orphan` |
+| `aws.ec2.snapshot.volume_exists` | boolean | `aws_ec2` (correlation post-pass) | `snapshot_orphan` |
+| `aws.ec2.instance.{state,attached_volumes}` | enum / json | `aws_ec2` | `ec2_stopped_with_storage` |
+
+The remaining `aws.ec2.*` entries (encrypted, iops, throughput,
+attached_instance_id, attached_device, create_time, instance_type,
+launch_time, block_device_volume_ids) are collected for archive with
+`consumers: []` — the full table is the YAML itself, which is the
+source of truth.
+
+Two facts deserve a callout: `volume_exists` and `attached_volumes`
+are **correlation facts** — they span two scan jobs (snapshot×volume,
+instance×volume) and are written by the collector's per-region
+post-pass only when both jobs succeeded. They are ABSENT (not False)
+when proof is missing, which is what turns the rules INCONCLUSIVE
+instead of wrong.
 
 `aws.rds.instance_class` is intentionally listed with
 `consumers: []`: the connector publishes it for the vCPU lookup
-(and for future filters), but no V1 insight reads it directly.
+(and for future filters), but no insight reads it directly.
 The test allows this — a registry entry with no consumer is OK
 **iff** the producer is in the registry's known-producers list.
 

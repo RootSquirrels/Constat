@@ -45,6 +45,32 @@ EXPECTED_PRODUCED: dict[str, list[tuple[str, str]]] = {
         ("aws.rds", "instance_class"),
         ("aws.rds", "vcpu"),
     ],
+    "aws_ec2": [
+        # from packages/connectors/aws_ec2/src/constat_aws_ec2/collector.py
+        # (volume_to_facts / snapshot_to_facts / instance_to_facts /
+        #  correlation_facts post-pass)
+        ("aws.ec2.volume", "size_gb"),
+        ("aws.ec2.volume", "volume_type"),
+        ("aws.ec2.volume", "state"),
+        ("aws.ec2.volume", "encrypted"),
+        ("aws.ec2.volume", "iops"),
+        ("aws.ec2.volume", "throughput"),
+        ("aws.ec2.volume", "attached_instance_id"),
+        ("aws.ec2.volume", "attached_device"),
+        ("aws.ec2.volume", "create_time"),
+        ("aws.ec2.snapshot", "state"),
+        ("aws.ec2.snapshot", "size_gb"),
+        ("aws.ec2.snapshot", "storage_tier"),
+        ("aws.ec2.snapshot", "volume_id"),
+        ("aws.ec2.snapshot", "start_time"),
+        ("aws.ec2.snapshot", "description"),
+        ("aws.ec2.snapshot", "volume_exists"),
+        ("aws.ec2.instance", "state"),
+        ("aws.ec2.instance", "instance_type"),
+        ("aws.ec2.instance", "launch_time"),
+        ("aws.ec2.instance", "block_device_volume_ids"),
+        ("aws.ec2.instance", "attached_volumes"),
+    ],
 }
 
 EXPECTED_CONSUMED: dict[str, list[tuple[str, str]]] = {
@@ -54,6 +80,38 @@ EXPECTED_CONSUMED: dict[str, list[tuple[str, str]]] = {
         ("aws.rds", "engine_version"),
         ("aws.rds", "vcpu"),
     ],
+    "mysql_eol": [
+        ("aws.rds", "engine"),
+        ("aws.rds", "engine_version"),
+        ("aws.rds", "vcpu"),
+    ],
+    "aurora_eol": [
+        ("aws.rds", "engine"),
+        ("aws.rds", "engine_version"),
+        ("aws.rds", "vcpu"),
+    ],
+    "ebs_unattached": [
+        ("aws.ec2.volume", "state"),
+        ("aws.ec2.volume", "size_gb"),
+        ("aws.ec2.volume", "volume_type"),
+    ],
+    "ebs_gp2_to_gp3": [
+        ("aws.ec2.volume", "volume_type"),
+        ("aws.ec2.volume", "size_gb"),
+    ],
+    "snapshot_orphan": [
+        ("aws.ec2.snapshot", "state"),
+        ("aws.ec2.snapshot", "size_gb"),
+        ("aws.ec2.snapshot", "storage_tier"),
+        ("aws.ec2.snapshot", "volume_exists"),
+        ("aws.ec2.snapshot", "description"),
+        ("aws.ec2.snapshot", "start_time"),
+    ],
+    "ec2_stopped_with_storage": [
+        ("aws.ec2.instance", "state"),
+        ("aws.ec2.instance", "attached_volumes"),
+    ],
+    # chargeback consumes no facts (FOCUS-ingested data, not connector facts).
 }
 
 
