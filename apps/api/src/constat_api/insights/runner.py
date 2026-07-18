@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from constat_chargeback.resolver import aggregate, build_insights
+from constat_chargeback.resolver import aggregate_by_period, build_insights
 from constat_core.models import Fact, Inconclusive
 from constat_focus.loader import FocusCharge
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
@@ -237,7 +237,7 @@ def run_chargeback(session: Session, *, period_label: str = "all-time") -> RunRe
                 continue
 
             charges = [_focus_charge_to_pydantic(c) for c in orm_charges]
-            aggregated = aggregate(charges)
+            aggregated = aggregate_by_period(charges)
             insights = build_insights(aggregated, period_label=period_label)
             for insight in insights:
                 insights_repo.insert_insight(session, insight)

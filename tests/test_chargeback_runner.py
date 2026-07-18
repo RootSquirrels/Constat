@@ -77,8 +77,9 @@ def test_chargeback_runner_emits_one_insight_per_service(session: Session) -> No
     assert services == {"AmazonRDS", "AmazonEC2"}
 
 
-def test_chargeback_runner_aggregates_across_periods(session: Session) -> None:
-    """V1: aggregate across all periods per (account, service)."""
+def test_chargeback_runner_emits_one_insight_per_period(session: Session) -> None:
+    """V1 (per-period): one insight per (account, service, period).
+    This is the monthly-trend view: the DAF can see drift over time."""
     acc = _account(session, "111111111111")
     _add_focus(
         session,
@@ -100,12 +101,17 @@ def test_chargeback_runner_aggregates_across_periods(session: Session) -> None:
     )
 
     result = run_chargeback(session)
-    assert result.insights_emitted == 1  # one tuple, two periods aggregated
-    insight = session.query(InsightORM).one()
-    assert insight.payload["service"] == "AmazonRDS"
-    assert insight.payload["billed_cost_usd"] == 250.0
-    assert insight.payload["amortized_cost_usd"] == 250.0
-    assert insight.payload["period_label"] == "all-time"
+    assert result.insights_emitted == 2  # 2 periods, 2 insights
+
+    rows = session.query(InsightORM).all()
+    periods = {(r.payload["period_start"], r.payload["period_end"]) for r in rows}
+    assert periods == {
+        ("2026-06-01", "2026-06-30"),
+        ("2026-07-01", "2026-07-31"),
+    }
+    # Per-period amounts: 100 and 150, not aggregated.
+    amounts = {r.payload["billed_cost_usd"] for r in rows}
+    assert amounts == {100.0, 150.0}
 
 
 def test_chargeback_runner_emits_drift_with_correct_severity(session: Session) -> None:

@@ -14,7 +14,15 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from constat_api.routers import aws, focus, health, inconclusive, insights, runner
+from constat_api.routers import (
+    aws,
+    focus,
+    health,
+    inconclusive,
+    insight_runs,
+    insights,
+    runner,
+)
 from constat_api.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -22,7 +30,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title=settings.api_title,
     description="Cloud inventory observability — the écart chiffré.",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 app.add_middleware(
@@ -36,6 +44,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(insights.router)
 app.include_router(inconclusive.router)
+app.include_router(insight_runs.router)
 app.include_router(focus.router)
 app.include_router(aws.router)
 app.include_router(runner.router)
