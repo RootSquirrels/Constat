@@ -30,11 +30,14 @@ DEFAULT_REGIONS: list[str] = [
     "us-west-2",
 ]
 
-# Adaptive retry config: 5 attempts, exponential backoff, client-side
-# rate limiting via the Adaptive mode. Better than the default 'standard'
-# mode for throttling-heavy workloads. V1: applied per client.
+# Adaptive retry mode (roadmap scoreboard "Collecte & résilience"):
+# client-side rate limiting kicks in on throttling responses and the
+# backoff is jittered by default, so a throttled fleet-wide scan backs
+# off smoothly instead of hammering the API in lockstep. 10 attempts
+# because a full-region paginated scan must survive a multi-minute
+# throttling window. Module constant so callers can override per client.
 ADAPTIVE_RETRY_CONFIG = BotoConfig(
-    retries={"mode": "adaptive", "max_attempts": 5},
+    retries={"mode": "adaptive", "max_attempts": 10},
     connect_timeout=10,
     read_timeout=30,
 )
@@ -51,8 +54,9 @@ def collect_db_instances(
 
     Each yielded dict has an extra `_region` key (string).
 
-    Uses adaptive retry mode (5 attempts, client-side rate limiting) so a
-    transient throttling blip doesn't immediately fail the region.
+    Uses adaptive retry mode (10 attempts, client-side rate limiting,
+    jittered backoff) so a transient throttling blip doesn't immediately
+    fail the region.
     """
     regions = regions or DEFAULT_REGIONS
     for region in regions:

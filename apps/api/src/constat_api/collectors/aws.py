@@ -8,6 +8,8 @@ Design:
 - Dependency injection for testability: assume_role_fn and scan_fn are
   injectable. Production uses defaults that hit real boto3.
 - Dry-run: skip writes, still call AWS (validate IAM + region coverage).
+- Targeted re-scan: `TargetAccount.regions` scopes a run to any subset,
+  so one failed region can be re-scanned without re-scanning the rest.
 - Circuit breaker: after N consecutive region errors, skip the rest
   of the regions. The intuition: if 2 regions in a row hit AccessDenied
   (or worse, network errors), the rest of the regions are likely
@@ -27,6 +29,7 @@ from uuid import uuid4
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from constat_aws_rds.collector import (
+    ADAPTIVE_RETRY_CONFIG,
     DEFAULT_REGIONS,
     collect_db_instances,
     db_to_facts,
@@ -119,7 +122,10 @@ def _assume_role(base_session: boto3.Session, target: TargetAccount) -> boto3.Se
             "without an ExternalId (confused-deputy risk)."
         )
 
-    sts = base_session.client("sts")
+    # Same adaptive retry policy as the RDS scan clients (shared constant
+    # from constat_aws_rds.collector): STS throttles too, and a failed
+    # AssumeRole fails the whole target, not just one region.
+    sts = base_session.client("sts", config=ADAPTIVE_RETRY_CONFIG)
     kwargs: dict[str, Any] = {
         "RoleArn": target.role_arn,
         "RoleSessionName": f"constat-{uuid4()}",

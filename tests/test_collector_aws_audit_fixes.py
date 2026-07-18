@@ -247,7 +247,12 @@ def test_f06_assume_role_passes_external_id_to_sts() -> None:
 
     _assume_role(base, target)
 
-    base.client.assert_called_once_with("sts")
+    # The STS client is created with the shared adaptive retry config
+    # (ADAPTIVE_RETRY_CONFIG); assert the service name and that a retry
+    # config is passed, without pinning the exact object here.
+    base.client.assert_called_once()
+    assert base.client.call_args.args == ("sts",)
+    assert base.client.call_args.kwargs["config"] is not None
     sts_kwargs = base.client.return_value.assume_role.call_args.kwargs
     assert sts_kwargs["RoleArn"] == target.role_arn
     assert sts_kwargs["ExternalId"] == "shared-secret"
