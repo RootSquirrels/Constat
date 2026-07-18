@@ -39,11 +39,11 @@ def list_inconclusive_endpoint(
 def get_inconclusive_endpoint(
     inconclusive_id: UUID, session: Session = Depends(get_db)
 ) -> Inconclusive:
-    item = repo.list_inconclusive(session, limit=500)  # small-n lookup; V2: add get_by_id
-    match = next((i for i in item if i.id == inconclusive_id), None)
-    if match is None:
+    """O(1) lookup via repo.get_inconclusive. Replaces the previous small-N scan."""
+    item = repo.get_inconclusive(session, inconclusive_id)
+    if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="inconclusive not found")
-    return match
+    return item
 
 
 @router.post("", response_model=Inconclusive, status_code=status.HTTP_201_CREATED)

@@ -21,6 +21,7 @@ node_modules/
 .next/
 out/
 *.tsbuildinfo
+apps/web/tsconfig.tsbuildinfo
 
 # Env / secrets
 .env
