@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from constat_core.models import Insight, Severity
@@ -21,6 +22,9 @@ def _orm_to_pydantic(orm: InsightORM) -> Insight:
         title=orm.title,
         payload=orm.payload,
         computed_at=orm.computed_at,
+        ack_status=orm.ack_status,
+        ack_at=orm.ack_at,
+        ack_by=orm.ack_by,
     )
 
 
@@ -61,6 +65,10 @@ def insert_insight(session: Session, insight: Insight) -> Insight:
         title=insight.title,
         payload=insight.payload,
         computed_at=insight.computed_at,
+        # ack_* fields are operator-driven, never set on insert.
+        ack_status=None,
+        ack_at=None,
+        ack_by=None,
     )
     session.add(orm)
     session.flush()
@@ -88,3 +96,49 @@ def count_insights(session: Session, *, rule_name: str | None = None) -> int:
     if rule_name is not None:
         stmt = stmt.where(InsightORM.rule_name == rule_name)
     return int(session.execute(stmt).scalar_one())
+
+
+# Acknowledged ack_status values. Defined once so the router and
+# tests share the truth source. Pydantic-side validation is in the
+# PATCH body model; this list is the canonical set.
+ACK_STATUSES: frozenset[str] = frozenset(
+    {"acknowledged", "in_progress", "resolved", "dismissed"}
+)
+
+
+def update_ack(
+    session: Session,
+    insight_id: UUID,
+    *,
+    ack_status: str,
+    ack_by: str | None = None,
+    ack_at: datetime | None = None,
+) -> Insight | None:
+    """Update the operator-acknowledgment fields on one insight.
+
+    Server-set semantics: `ack_at` is set to `datetime.now(UTC)` if
+    the caller doesn't pass it. The caller is the PATCH endpoint,
+    which is the only path that should ever write these fields.
+
+    Returns the updated Insight, or None if the insight doesn't exist
+    (the row is not visible across tenants, so None also covers
+    "wrong tenant").
+    """
+    from datetime import UTC, datetime
+
+    from constat_api.orm import InsightORM
+
+    if ack_status not in ACK_STATUSES:
+        raise ValueError(
+            f"invalid ack_status {ack_status!r}; must be one of {sorted(ACK_STATUSES)}"
+        )
+
+    orm = session.get(InsightORM, insight_id)
+    if orm is None:
+        return None
+
+    orm.ack_status = ack_status
+    orm.ack_by = ack_by
+    orm.ack_at = ack_at if ack_at is not None else datetime.now(tz=UTC)
+    session.flush()
+    return _orm_to_pydantic(orm)

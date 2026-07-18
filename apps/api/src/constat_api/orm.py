@@ -278,6 +278,10 @@ class InsightORM(Base):
         CheckConstraint(
             "resource_id IS NOT NULL OR account_id IS NOT NULL", name="insight_scope_present"
         ),
+        CheckConstraint(
+            "ack_status IN ('acknowledged', 'in_progress', 'resolved', 'dismissed')",
+            name="insights_ack_status_check",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
@@ -297,6 +301,12 @@ class InsightORM(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # P1 item 1: operator acknowledgment. NULL = "open / not yet
+    # triaged". The runner / collector never writes these; only the
+    # PATCH /insights/{id} endpoint does. ack_at is server-set.
+    ack_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    ack_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ack_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class InsightRunORM(Base):

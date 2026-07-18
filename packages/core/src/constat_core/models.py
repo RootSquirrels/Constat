@@ -71,6 +71,12 @@ class Insight(BaseModel):
     """A computed gap. The `payload` carries enough evidence to be proven.
 
     `resource_id` is null for account-level insights (e.g. total chargeback drift).
+
+    P1 item 1: operator acknowledgment. The three `ack_*` fields let
+    the pilot's operator triage the daily critical list: which ones
+    are in flight, which are resolved, which were dismissed. NULL
+    ack_status means "open / not yet triaged". Last write wins in
+    V1; history is V2 (a separate `insight_acks` table).
     """
 
     id: UUID | None = None
@@ -83,6 +89,9 @@ class Insight(BaseModel):
     computed_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=__import__("datetime").timezone.utc)
     )
+    ack_status: str | None = None  # 'acknowledged' | 'in_progress' | 'resolved' | 'dismissed'
+    ack_at: datetime | None = None  # server-set on PATCH
+    ack_by: str | None = None  # free-form operator identifier
 
 
 class Inconclusive(BaseModel):
