@@ -5,6 +5,7 @@ description = "Constat stable contract — models, namespaces, catalog"
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.7",
+    "pyyaml>=6.0",
 ]
 
 [build-system]

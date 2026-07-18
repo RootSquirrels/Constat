@@ -1,0 +1,103 @@
+# Fact definitions registry (V1 — test-time only).
+#
+# Every fact published to the `facts` table by a connector, and every
+# fact read by an insight, must have an entry here. A pytest test
+# (tests/test_fact_definitions.py) cross-checks the producer code, the
+# consumer code, and this file. CI fails if any side drifts.
+#
+# Why a registry at all (vs the V2 FactDefinitionRegistry the strategic
+# doc mentions): a YAML + test catches the 80% of bugs that matter
+# (typos in namespace.key, missing entries, producer/consumer drift)
+# with 5% of the maintenance cost. When V2's runtime registry lands,
+# this YAML is the input for the migration — no data migration, just
+# promotion of the schema.
+#
+# Adding a fact (3 steps, all required):
+#   1. Add the entry here.
+#   2. Update EXPECTED_PRODUCED or EXPECTED_CONSUMED in the test.
+#   3. Bump `last_reviewed` to today's date and put it in the PR title.
+#
+# When AWS publishes changes (new engine, new instance class), this
+# file is the place to start. The catalog of EOL dates and vCPU
+# (`catalog/aws.py`) is separate — that data is reference, not Fact.
+#
+# Schema per entry:
+#   namespace, key           — the namespaced key
+#   value_type               — string | integer | decimal | boolean | date | json
+#   description              — one-line purpose
+#   allowed_values           — list of accepted values (optional, for enums)
+#   pattern                  — regex the string value must match (optional)
+#   minimum / maximum        — bounds for numeric values (optional)
+#   producer                 — connector module that publishes this fact
+#   consumers                — list of insight rules that read it
+#   since                    — date this entry was added (audit trail)
+
+schema_version: 1
+last_reviewed: "2026-07-18"
+
+facts:
+  - namespace: aws.rds
+    key: engine
+    value_type: string
+    description: |
+      RDS engine family. UNKNOWN when the API call succeeded but
+      `Engine` was empty or missing. V1 insight rules only act on
+      "postgres"; anything else is a NO_MATCH.
+    allowed_values:
+      - aurora-mysql
+      - aurora-postgresql
+      - mariadb
+      - mysql
+      - oracle-ee
+      - oracle-se
+      - oracle-se1
+      - oracle-se2
+      - postgres
+      - sqlserver-ee
+      - sqlserver-ex
+      - sqlserver-se
+      - sqlserver-web
+    producer: aws_rds
+    consumers:
+      - rds_eol
+    since: "2026-07-18"
+
+  - namespace: aws.rds
+    key: engine_version
+    value_type: string
+    description: |
+      RDS engine version, e.g. "14.7". V1 parses the major component
+      for the EOL lookup. Malformed strings produce INCONCLUSIVE with
+      `reason = "aws.rds.engine_version.malformed"`.
+    pattern: "^[0-9]+(\\.[0-9]+){0,2}$"
+    producer: aws_rds
+    consumers:
+      - rds_eol
+    since: "2026-07-18"
+
+  - namespace: aws.rds
+    key: instance_class
+    value_type: string
+    description: |
+      RDS instance class, e.g. "db.m5.xlarge". UNKNOWN when missing
+      from the API or not in the catalog. Not consumed by any V1
+      insight (kept for vCPU derivation and future use).
+    pattern: "^db\\.[a-z0-9]+\\.[a-z0-9]+$"
+    producer: aws_rds
+    consumers: []  # collected for archive; no V1 consumer
+    since: "2026-07-18"
+
+  - namespace: aws.rds
+    key: vcpu
+    value_type: integer
+    description: |
+      vCPU count for the instance class, looked up from the catalog
+      (`catalog.aws.RDS_INSTANCE_VCPU`). UNKNOWN when the class is
+      not in the catalog (e.g. a new Graviton class AWS published
+      and we haven't mirrored yet).
+    minimum: 0
+    maximum: 1024
+    producer: aws_rds
+    consumers:
+      - rds_eol
+    since: "2026-07-18"
