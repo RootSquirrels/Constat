@@ -9,10 +9,15 @@ Two layers:
 
 2. Integration tests (Postgres, `@pytest.mark.postgres`): the real
    2-tenant scenario against a live database. They apply migrations
-   0001 -> 0011 to a fresh schema, seed two tenants, and verify that
+   0001 -> latest to a fresh schema, seed two tenants, and verify that
    cross-tenant SELECT/INSERT is denied on every RLS table. They require
    `CONSTAT_TEST_DATABASE_URL` (and the `psycopg` driver); without them
    they skip cleanly. CI runs them in the Postgres job.
+
+3. Runtime-role tests (also Postgres-marked): the §11.2 non-owner
+   control. They connect as `constat_app` (migration 0012) via
+   `CONSTAT_TEST_APP_DATABASE_URL` and verify the role can do DML but
+   no DDL, cannot ALTER POLICY, and is fully bound by RLS.
 """
 
 from __future__ import annotations
@@ -528,3 +533,86 @@ def _count_where_external(conn: Any, external_id: str) -> int:
     return conn.execute(
         "SELECT count(*) FROM accounts WHERE external_id = %s", (external_id,)
     ).fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
+# Integration: the §11.2 runtime role (constat_app, migration 0012)
+# ---------------------------------------------------------------------------
+#
+# The owner role (constat) runs migrations and owns every table/policy.
+# The runtime role the API should connect as is constat_app: non-owner,
+# non-superuser, no BYPASSRLS, DML-only. These tests connect as
+# constat_app and verify the three sides of that contract:
+#   - DDL is denied (CREATE TABLE, ALTER POLICY — it owns nothing, so it
+#     cannot weaken the tenant isolation policies)
+#   - RLS still binds it: without the GUC, or with another tenant's GUC,
+#     it sees zero rows; with its own tenant GUC it sees its rows
+# The role must still set `app.current_tenant_id` per transaction —
+# exactly like apps/api/src/constat_api/tenant.py does for the API.
+
+APP_DATABASE_URL = os.environ.get(
+    "CONSTAT_TEST_APP_DATABASE_URL",
+    "postgresql://constat_app:constat@localhost:5432/constat",
+)
+
+
+@requires_postgres
+@pytest.mark.postgres
+class TestRuntimeRole:
+    """The non-owner runtime role (§11.2). Runs only with a live Postgres
+    where migration 0012 has been applied (pg_seeded does that)."""
+
+    def _connect_app(self) -> Any:
+        psycopg = _psycopg()
+        try:
+            return psycopg.connect(APP_DATABASE_URL, autocommit=True)
+        except psycopg.OperationalError as exc:
+            pytest.skip(
+                f"cannot connect as constat_app ({exc}) — set "
+                "CONSTAT_TEST_APP_DATABASE_URL and apply migration 0012"
+            )
+
+    def test_role_exists_without_bypassrls(self, pg_seeded: str) -> None:
+        """The §11.2 attributes: LOGIN, non-superuser, no BYPASSRLS."""
+        with _connect(pg_seeded) as conn:
+            row = conn.execute(
+                "SELECT rolcanlogin, rolsuper, rolbypassrls FROM pg_roles"
+                " WHERE rolname = 'constat_app'"
+            ).fetchone()
+        assert row is not None, "role constat_app missing — migration 0012 not applied?"
+        assert row == (True, False, False)
+
+    def test_alter_policy_denied(self, pg_seeded: str) -> None:
+        """Only the table owner can ALTER POLICY; constat_app owns nothing,
+        so it cannot weaken tenant isolation."""
+        with (
+            self._connect_app() as conn,
+            pytest.raises(Exception, match="must be owner"),
+        ):
+            conn.execute("ALTER POLICY tenant_isolation_accounts ON accounts USING (true)")
+
+    def test_create_table_denied(self, pg_seeded: str) -> None:
+        """DML-only: no CREATE on schema public."""
+        with (
+            self._connect_app() as conn,
+            pytest.raises(Exception, match="permission denied for schema"),
+        ):
+            conn.execute("CREATE TABLE public.evil (id int)")
+
+    def test_cross_tenant_select_returns_nothing(self, pg_seeded: str) -> None:
+        """RLS binds the non-owner role: another tenant's GUC => 0 rows,
+        and no GUC at all => 0 rows (the safe default)."""
+        with self._connect_app() as conn:
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 0, f"{table}: rows visible without tenant context"
+            _set_tenant(conn, TENANT_B)
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 0, f"{table}: constat_app sees tenant A rows"
+
+    def test_own_tenant_select_sees_seeded_rows(self, pg_seeded: str) -> None:
+        """Sanity: the DML grants actually work — with tenant A's GUC the
+        runtime role reads exactly the seeded rows."""
+        with self._connect_app() as conn:
+            _set_tenant(conn, TENANT_A)
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 1, f"{table}: constat_app can't see tenant A row"
