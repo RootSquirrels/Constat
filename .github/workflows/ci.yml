@@ -66,6 +66,50 @@ jobs:
       - name: Test
         run: uv run pytest -v
 
+      - name: Supply-chain audit (pip-audit)
+        # Advisory until the findings baseline is triaged — flip
+        # continue-on-error to false once the baseline is clean.
+        continue-on-error: true
+        run: uv run --with pip-audit pip-audit --strict
+
+  postgres-rls:
+    # Separate job (P0-2 hardening): the RLS suite is the audit-grade
+    # proof that tenant isolation works against a real Postgres, not
+    # sqlite. Splitting it out gives the PR UI a single named check
+    # (was: a buried step inside `python` whose failure could be hidden
+    # by an earlier migration step). Both URLs are required:
+    # CONSTAT_TEST_DATABASE_URL is the owner role (can create policies
+    # and seed); CONSTAT_TEST_APP_DATABASE_URL is the non-owner runtime
+    # role (migration 0012) that must fail on ALTER POLICY.
+    name: Postgres RLS
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: constat
+          POSTGRES_PASSWORD: constat
+          POSTGRES_DB: constat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U constat -d constat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync dependencies
+        run: uv sync --frozen --all-extras --all-packages
+
       - name: Test (Postgres RLS)
         # psycopg is injected here only: it is not a project dependency
         # (the API is dialect-agnostic, tests run on sqlite by default).
@@ -75,12 +119,6 @@ jobs:
           CONSTAT_TEST_DATABASE_URL: postgresql://constat:constat@localhost:5432/constat
           CONSTAT_TEST_APP_DATABASE_URL: postgresql://constat_app:constat@localhost:5432/constat
         run: uv run --frozen --with "psycopg[binary]>=3.1" pytest tests/test_rls.py -m postgres -v
-
-      - name: Supply-chain audit (pip-audit)
-        # Advisory until the findings baseline is triaged — flip
-        # continue-on-error to false once the baseline is clean.
-        continue-on-error: true
-        run: uv run --with pip-audit pip-audit --strict
 
   web:
     runs-on: ubuntu-latest
