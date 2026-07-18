@@ -10,10 +10,12 @@ resolution-markers = [
 members = [
     "constat",
     "constat-api",
+    "constat-aurora-eol",
     "constat-aws-rds",
     "constat-chargeback",
     "constat-core",
     "constat-focus",
+    "constat-mysql-eol",
     "constat-rds-eol",
 ]
 
@@ -201,10 +203,12 @@ name = "constat-api"
 version = "0.0.0"
 source = { editable = "apps/api" }
 dependencies = [
+    { name = "constat-aurora-eol" },
     { name = "constat-aws-rds" },
     { name = "constat-chargeback" },
     { name = "constat-core" },
     { name = "constat-focus" },
+    { name = "constat-mysql-eol" },
     { name = "constat-rds-eol" },
     { name = "fastapi" },
     { name = "prometheus-client" },
@@ -217,10 +221,12 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "constat-aurora-eol", editable = "packages/insights/aurora_eol" },
     { name = "constat-aws-rds", editable = "packages/connectors/aws_rds" },
     { name = "constat-chargeback", editable = "packages/insights/chargeback" },
     { name = "constat-core", editable = "packages/core" },
     { name = "constat-focus", editable = "packages/connectors/focus" },
+    { name = "constat-mysql-eol", editable = "packages/insights/mysql_eol" },
     { name = "constat-rds-eol", editable = "packages/insights/rds_eol" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "prometheus-client", specifier = ">=0.20" },
@@ -230,6 +236,17 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
+
+[[package]]
+name = "constat-aurora-eol"
+version = "0.0.0"
+source = { editable = "packages/insights/aurora_eol" }
+dependencies = [
+    { name = "constat-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "constat-core", editable = "packages/core" }]
 
 [[package]]
 name = "constat-aws-rds"
@@ -290,6 +307,17 @@ requires-dist = [
     { name = "constat-core", editable = "packages/core" },
     { name = "pyarrow", specifier = ">=23.0" },
 ]
+
+[[package]]
+name = "constat-mysql-eol"
+version = "0.0.0"
+source = { editable = "packages/insights/mysql_eol" }
+dependencies = [
+    { name = "constat-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "constat-core", editable = "packages/core" }]
 
 [[package]]
 name = "constat-rds-eol"

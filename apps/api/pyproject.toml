@@ -8,6 +8,8 @@ dependencies = [
     "constat-aws-rds",
     "constat-focus",
     "constat-rds-eol",
+    "constat-mysql-eol",
+    "constat-aurora-eol",
     "constat-chargeback",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

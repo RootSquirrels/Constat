@@ -1,8 +1,11 @@
 """Insight runner: orchestrates rule evaluation across resources/facts.
 
 Two rule types:
-- Resource-based (rds_eol): for each resource, fetch facts, evaluate.
-  Scope-completeness via source_runs (AWS scan must have succeeded).
+- Resource-based (rds_eol, mysql_eol, aurora_eol): for each resource,
+  fetch facts, evaluate. Scope-completeness via source_runs (AWS scan
+  must have succeeded). All resource rules share a single generic
+  runner, `run_resource_rule`, dispatched through the RESOURCE_RULES
+  registry ({rule_name: evaluate_fn}).
 - Account-based (chargeback): for each (account, service) tuple in
   focus_charges, aggregate costs, emit drift insights. No source_run
   check (FOCUS is ingested manually; "completeness" = "user gave us data").
@@ -27,14 +30,17 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
+from constat_aurora_eol.resolver import evaluate as aurora_eol_evaluate
 from constat_chargeback.resolver import (
     aggregate_by_period,
     aggregate_by_tag,
     build_insights,
 )
-from constat_core.models import Fact, Inconclusive
+from constat_core.models import Fact, Inconclusive, Insight
 from constat_focus.loader import FocusCharge
+from constat_mysql_eol.resolver import evaluate as mysql_eol_evaluate
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
 from sqlalchemy.orm import Session
 
@@ -72,6 +78,21 @@ class RunResult:
     period_label: str = ""  # for account-based rules: which period was aggregated
 
 
+# Signature shared by all resource-based rule resolvers: each package
+# defines its own InsightResult, but they all expose the same contract
+# (.insights, .inconclusive_reasons, .is_conclusive), which is all the
+# runner relies on.
+ResourceEvaluateFn = Callable[..., Any]
+
+# Resource-based rule registry: rule_name -> resolver evaluate function.
+# Adding a new resource rule = one resolver package + one line here.
+RESOURCE_RULES: dict[str, ResourceEvaluateFn] = {
+    "rds_eol": rds_eol_evaluate,
+    "mysql_eol": mysql_eol_evaluate,
+    "aurora_eol": aurora_eol_evaluate,
+}
+
+
 def _is_scope_proven(
     session: Session, resource: ResourceORM, *, max_age: timedelta | None = None
 ) -> bool:
@@ -99,6 +120,7 @@ def _scope_inconclusive(
     session: Session,
     resource: ResourceORM,
     *,
+    rule_name: str,
     scope_max_age: timedelta | None,
 ) -> Inconclusive | None:
     """Return the scope-level Inconclusive for this resource, or None if proven.
@@ -120,7 +142,7 @@ def _scope_inconclusive(
     )
     if latest is None:
         return Inconclusive(
-            rule_name="rds_eol",
+            rule_name=rule_name,
             resource_id=resource.id,
             account_id=account_id,
             missing_facts=["scope_not_proven"],
@@ -128,7 +150,7 @@ def _scope_inconclusive(
         )
     age = _age_since(latest.finished_at) if latest.finished_at else None
     return Inconclusive(
-        rule_name="rds_eol",
+        rule_name=rule_name,
         resource_id=resource.id,
         account_id=account_id,
         missing_facts=["scope_stale"],
@@ -165,10 +187,12 @@ def _evaluate_resource(
     session: Session,
     resource: ResourceORM,
     *,
+    rule_name: str,
+    evaluate_fn: ResourceEvaluateFn,
     pydantic_facts: list[Fact],
     today: date | None = None,
     scope_max_age: timedelta | None = None,
-) -> tuple[list, list[Inconclusive]]:
+) -> tuple[list[Insight], list[Inconclusive]]:
     """Evaluate a single resource. Returns (insights, inconclusive) for the caller to insert.
 
     `pydantic_facts` is this resource's slice of the bulk fact fetch done
@@ -178,14 +202,16 @@ def _evaluate_resource(
     Returns the objects (not the IDs) so the caller controls the transaction
     boundary and the run metadata.
     """
-    scope_inc = _scope_inconclusive(session, resource, scope_max_age=scope_max_age)
+    scope_inc = _scope_inconclusive(
+        session, resource, rule_name=rule_name, scope_max_age=scope_max_age
+    )
     if scope_inc is not None:
         return [], [scope_inc]
 
     if not pydantic_facts:
         return [], [
             Inconclusive(
-                rule_name="rds_eol",
+                rule_name=rule_name,
                 resource_id=resource.id,
                 account_id=str(resource.account_id) if resource.account_id else None,
                 missing_facts=["<no facts>"],
@@ -193,13 +219,13 @@ def _evaluate_resource(
             )
         ]
 
-    result = rds_eol_evaluate(resource.id, pydantic_facts, today=today)
+    result = evaluate_fn(resource.id, pydantic_facts, today=today)
 
     inconclusive: list[Inconclusive] = []
     if not result.is_conclusive:
         inconclusive.append(
             Inconclusive(
-                rule_name="rds_eol",
+                rule_name=rule_name,
                 resource_id=resource.id,
                 account_id=str(resource.account_id) if resource.account_id else None,
                 missing_facts=result.inconclusive_reasons,
@@ -276,13 +302,14 @@ def _load_per_row_tags_for(
     return by_charge
 
 
-def run_rds_eol(
+def run_resource_rule(
     session: Session,
+    rule_name: str,
     *,
     today: date | None = None,
     scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
 ) -> RunResult:
-    """Run the rds_eol rule across all resources. Emits insights and inconclusive.
+    """Run a resource-based rule across all resources. Emits insights and inconclusive.
 
     Wraps everything in a single insight_run row for auditability.
 
@@ -291,14 +318,19 @@ def run_rds_eol(
     never accumulate duplicates.
 
     Args:
+        rule_name: key in RESOURCE_RULES (rds_eol, mysql_eol, aurora_eol).
         today: injected "current date" for the EOL computation (tests).
         scope_max_age: freshness window for the scope proof (audit F-02).
             A successful source_run older than this sends the resource to
             INCONCLUSIVE scope_stale. None disables the freshness check.
     """
+    if rule_name not in RESOURCE_RULES:
+        raise ValueError(f"unknown resource rule: {rule_name} (supports: {sorted(RESOURCE_RULES)})")
+    evaluate_fn = RESOURCE_RULES[rule_name]
+
     run = InsightRunORM(
         tenant_id=DEFAULT_TENANT_ID,
-        rule_name="rds_eol",
+        rule_name=rule_name,
         status="running",
     )
     session.add(run)
@@ -308,8 +340,8 @@ def run_rds_eol(
     resources = session.query(ResourceORM).all()
 
     # F-03: clear the rule's previous output before writing fresh results.
-    insights_repo.delete_insights_for_rule(session, "rds_eol")
-    inconclusive_repo.delete_inconclusive_for_rule(session, "rds_eol")
+    insights_repo.delete_insights_for_rule(session, rule_name)
+    inconclusive_repo.delete_inconclusive_for_rule(session, rule_name)
 
     # F-16: one bulk query for all resources' facts, grouped in memory.
     facts_by_resource: dict = {}
@@ -325,6 +357,8 @@ def run_rds_eol(
             insights, inconclusive = _evaluate_resource(
                 session,
                 resource,
+                rule_name=rule_name,
+                evaluate_fn=evaluate_fn,
                 pydantic_facts=facts_by_resource.get(resource.id, []),
                 today=today,
                 scope_max_age=scope_max_age,
@@ -332,11 +366,11 @@ def run_rds_eol(
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
-                record_insight_emitted(rule="rds_eol", severity=insight.severity.value)
+                record_insight_emitted(rule=rule_name, severity=insight.severity.value)
             for inc in inconclusive:
                 inconclusive_repo.insert_inconclusive(session, inc)
                 inconclusive_emitted += 1
-                record_inconclusive(rule="rds_eol", reason=inc.reason or "unspecified")
+                record_inconclusive(rule=rule_name, reason=inc.reason or "unspecified")
         except Exception as exc:
             errors.append(f"{resource.id}: {exc}")
             logger.exception("Resource %s failed", resource.id)
@@ -347,15 +381,45 @@ def run_rds_eol(
     run.insights_emitted = insights_emitted
     session.commit()
 
-    record_insight_run_duration(rule="rds_eol", duration_seconds=time.monotonic() - started)
+    record_insight_run_duration(rule=rule_name, duration_seconds=time.monotonic() - started)
 
     return RunResult(
-        rule_name="rds_eol",
+        rule_name=rule_name,
         resources_scanned=len(resources),
         insights_emitted=insights_emitted,
         inconclusive_emitted=inconclusive_emitted,
         errors=errors,
     )
+
+
+def run_rds_eol(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin back-compat wrapper: run the rds_eol rule via the generic runner."""
+    return run_resource_rule(session, "rds_eol", today=today, scope_max_age=scope_max_age)
+
+
+def run_mysql_eol(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the mysql_eol rule via the generic runner."""
+    return run_resource_rule(session, "mysql_eol", today=today, scope_max_age=scope_max_age)
+
+
+def run_aurora_eol(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the aurora_eol rule via the generic runner."""
+    return run_resource_rule(session, "aurora_eol", today=today, scope_max_age=scope_max_age)
 
 
 def run_chargeback(
@@ -486,6 +550,8 @@ RunnerFn = Callable[..., RunResult]
 
 RUNNERS: dict[str, RunnerFn] = {
     "rds_eol": run_rds_eol,
+    "mysql_eol": run_mysql_eol,
+    "aurora_eol": run_aurora_eol,
     "chargeback": run_chargeback,
 }
 
@@ -501,8 +567,8 @@ def run_rule(
     """Dispatch to the rule's runner. Raises ValueError on unknown rule."""
     if rule_name not in RUNNERS:
         raise ValueError(f"unknown rule: {rule_name} (V1 supports: {sorted(RUNNERS)})")
-    if rule_name == "rds_eol":
-        return run_rds_eol(session, today=today)
     if rule_name == "chargeback":
         return run_chargeback(session, period_label=period_label, tag_key=tag_key)
-    raise ValueError(f"runner dispatch failed for {rule_name}")
+    # All other RUNNERS entries are resource-based rules sharing the
+    # generic runner semantics.
+    return run_resource_rule(session, rule_name, today=today)

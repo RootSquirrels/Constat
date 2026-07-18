@@ -11,6 +11,8 @@ members = [
     "packages/connectors/aws_rds",
     "packages/connectors/focus",
     "packages/insights/rds_eol",
+    "packages/insights/mysql_eol",
+    "packages/insights/aurora_eol",
     "packages/insights/chargeback",
     "apps/api",
 ]
@@ -22,6 +24,8 @@ constat-core = { workspace = true }
 constat-aws-rds = { workspace = true }
 constat-focus = { workspace = true }
 constat-rds-eol = { workspace = true }
+constat-mysql-eol = { workspace = true }
+constat-aurora-eol = { workspace = true }
 constat-chargeback = { workspace = true }
 
 [tool.uv]
@@ -46,6 +50,8 @@ pythonpath = [
     "packages/connectors/aws_rds/src",
     "packages/connectors/focus/src",
     "packages/insights/rds_eol/src",
+    "packages/insights/mysql_eol/src",
+    "packages/insights/aurora_eol/src",
     "packages/insights/chargeback/src",
     "apps/api/src",
 ]

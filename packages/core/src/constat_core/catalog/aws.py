@@ -3,8 +3,12 @@
 Last reviewed: 2026-07-18. Update when AWS publishes changes.
 
 Sources:
-- EOL dates: https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-release-calendar.html
-- Extended Support pricing: https://aws.amazon.com/rds/postgresql/pricing/
+- RDS PostgreSQL EOL dates: https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-release-calendar.html
+- RDS MySQL EOL dates: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MySQL.Concepts.VersionMgmt.html
+- Aurora MySQL EOL dates: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraMySQLReleaseNotes/AuroraMySQL.release-calendars.html
+- Aurora PostgreSQL EOL dates: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraPostgreSQLReleaseNotes/aurorapostgresql-release-calendar.html
+- Extended Support pricing: https://aws.amazon.com/rds/postgresql/pricing/ ,
+  https://aws.amazon.com/rds/mysql/pricing/ , https://aws.amazon.com/rds/aurora/pricing/
 - vCPU counts: https://aws.amazon.com/ec2/instance-types/
 """
 
@@ -195,3 +199,174 @@ def price_per_vcpu_hour(eol_info: PostgresEOLInfo, today: date) -> float:
         if tier == "year_1_2"
         else eol_info.year_3_plus_usd_per_vcpu_hour
     )
+
+
+# ---------------------------------------------------------------------------
+# MySQL / Aurora EOL + Extended Support
+#
+# Same shape as PostgresEOLInfo, with two nullable fields for behaviors AWS
+# documents differently across engines (reviewed 2026-07-18):
+# - `year_3_plus_usd_per_vcpu_hour` is None when the engine has NO year-3
+#   tier: Aurora MySQL bills the single year 1-2 rate for the entire
+#   Extended Support window (per the Aurora MySQL release calendar, the
+#   "start of year 3 pricing" column is "Not applicable", and the Aurora
+#   pricing page states year 3 pricing is Aurora-PostgreSQL-only).
+# - `year_3_start` is the exact calendar date year-3 pricing begins, taken
+#   from the AWS release calendars. It is NOT always EOL + 730 days (e.g.
+#   Aurora PostgreSQL 11: EOL 2024-02-29, year-3 starts 2026-04-01), so we
+#   store the published date rather than deriving it.
+#
+# Versions whose Extended Support pricing AWS has not published yet are
+# deliberately absent (e.g. RDS MySQL 8.4, Aurora MySQL 8.4): the insights
+# treat them as "no known EOL alert" instead of pricing on invented numbers.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EngineEOLInfo:
+    """Per-major-version EOL + Extended Support pricing tiering (MySQL/Aurora).
+
+    See PostgresEOLInfo for the shared semantics; the two nullable fields
+    are explained in the section comment above.
+    """
+
+    eol_date: date  # RDS/Aurora end of standard support
+    year_1_2_usd_per_vcpu_hour: float
+    year_3_plus_usd_per_vcpu_hour: float | None  # None = no year-3 tier
+    end_of_extended_support: date  # AWS force-upgrades after this
+    year_3_start: date | None = None  # None = no year-3 tier
+
+
+# Source: "MySQL on Amazon RDS versions" (reviewed 2026-07-18),
+# https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/MySQL.Concepts.VersionMgmt.html
+# Pricing: https://aws.amazon.com/rds/mysql/pricing/ (US East; year 1-2
+# $0.100/vCPU-hr, year 3 $0.200/vCPU-hr). MySQL major = X.Y (e.g. "8.0").
+# MySQL 5.7 end of Extended Support is 2029-06-30, extended from
+# 2027-02-28 by the 2026-06-17 AWS announcement.
+MYSQL_EOL: dict[str, EngineEOLInfo] = {
+    "5.7": EngineEOLInfo(
+        eol_date=date(2024, 2, 29),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2029, 6, 30),
+        year_3_start=date(2026, 3, 1),
+    ),
+    "8.0": EngineEOLInfo(
+        eol_date=date(2026, 7, 31),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2029, 7, 31),
+        year_3_start=date(2028, 8, 1),
+    ),
+    # 8.4 (RDS end of standard support 2029-07-31): Extended Support pricing
+    # not yet published by AWS — intentionally absent.
+}
+
+# Source: "Release calendars for Amazon Aurora MySQL" (reviewed 2026-07-18),
+# https://docs.aws.amazon.com/AmazonRDS/latest/AuroraMySQLReleaseNotes/AuroraMySQL.release-calendars.html
+# Pricing: https://aws.amazon.com/rds/aurora/pricing/ — per vCPU-hour for
+# provisioned instances; Aurora MySQL has NO year-3 tier (year-3 start date
+# "Not applicable" in the calendar; the pricing page restricts year 3
+# pricing to Aurora PostgreSQL). Keyed by Aurora major version
+# (2 = MySQL 5.7-compatible, 3 = MySQL 8.0-compatible).
+AURORA_MYSQL_EOL: dict[int, EngineEOLInfo] = {
+    2: EngineEOLInfo(
+        eol_date=date(2024, 10, 31),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=None,
+        end_of_extended_support=date(2029, 6, 30),
+        year_3_start=None,
+    ),
+    3: EngineEOLInfo(
+        eol_date=date(2028, 4, 30),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=None,
+        end_of_extended_support=date(2029, 7, 31),
+        year_3_start=None,
+    ),
+    # 8.4: Extended Support dates "to be determined" in the calendar —
+    # intentionally absent.
+}
+
+# Source: "Release calendars for Aurora PostgreSQL" (reviewed 2026-07-18),
+# https://docs.aws.amazon.com/AmazonRDS/latest/AuroraPostgreSQLReleaseNotes/aurorapostgresql-release-calendar.html
+# Pricing: https://aws.amazon.com/rds/aurora/pricing/ (US East; year 1-2
+# $0.100/vCPU-hr, year 3 $0.200/vCPU-hr — confirmed by the page's own
+# pricing example for Aurora PostgreSQL 12). Keyed by PostgreSQL major.
+AURORA_POSTGRES_EOL: dict[int, EngineEOLInfo] = {
+    11: EngineEOLInfo(
+        eol_date=date(2024, 2, 29),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2027, 3, 31),
+        year_3_start=date(2026, 4, 1),
+    ),
+    12: EngineEOLInfo(
+        eol_date=date(2025, 2, 28),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2028, 2, 29),
+        year_3_start=date(2027, 3, 1),
+    ),
+    13: EngineEOLInfo(
+        eol_date=date(2026, 2, 28),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2029, 2, 28),
+        year_3_start=date(2028, 3, 1),
+    ),
+    14: EngineEOLInfo(
+        eol_date=date(2027, 2, 28),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2030, 2, 28),
+        year_3_start=date(2029, 3, 1),
+    ),
+    15: EngineEOLInfo(
+        eol_date=date(2028, 2, 29),
+        year_1_2_usd_per_vcpu_hour=0.10,
+        year_3_plus_usd_per_vcpu_hour=0.20,
+        end_of_extended_support=date(2031, 2, 28),
+        year_3_start=date(2030, 3, 1),
+    ),
+    # 16+ are LTS as of 2026-07. When AWS publishes EOL for them, add here.
+}
+
+
+def mysql_eol_info(major: str) -> EngineEOLInfo | None:
+    """Return EOL info for an RDS MySQL major version ("5.7", "8.0"), or None."""
+    return MYSQL_EOL.get(major)
+
+
+def aurora_mysql_eol_info(major_version: int) -> EngineEOLInfo | None:
+    """Return EOL info for an Aurora MySQL major version (2, 3), or None."""
+    return AURORA_MYSQL_EOL.get(major_version)
+
+
+def aurora_postgres_eol_info(major_version: int) -> EngineEOLInfo | None:
+    """Return EOL info for an Aurora PostgreSQL major version, or None."""
+    return AURORA_POSTGRES_EOL.get(major_version)
+
+
+def engine_extended_support_tier(info: EngineEOLInfo, today: date) -> str:
+    """Return 'year_1_2' or 'year_3_plus' using the published year-3 start date.
+
+    Engines with no year-3 tier (Aurora MySQL) always return 'year_1_2'.
+    """
+    if (
+        info.year_3_start is not None
+        and info.year_3_plus_usd_per_vcpu_hour is not None
+        and today >= info.year_3_start
+    ):
+        return "year_3_plus"
+    return "year_1_2"
+
+
+def engine_price_per_vcpu_hour(info: EngineEOLInfo, today: date) -> float:
+    """Return the current per-vCPU-hour Extended Support price, tiered."""
+    if engine_extended_support_tier(info, today) == "year_3_plus":
+        # engine_extended_support_tier only returns year_3_plus when the
+        # year-3 price is not None.
+        assert info.year_3_plus_usd_per_vcpu_hour is not None
+        return info.year_3_plus_usd_per_vcpu_hour
+    return info.year_1_2_usd_per_vcpu_hour
