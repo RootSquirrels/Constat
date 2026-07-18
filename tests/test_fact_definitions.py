@@ -28,13 +28,10 @@ When you add a fact:
 from __future__ import annotations
 
 import pytest
-
 from constat_core.catalog.fact_definitions import (
-    FactRegistry,
     VALID_VALUE_TYPES,
     load_registry,
 )
-
 
 # When a new connector or insight is added, add its facts here.
 # These are the facts the code ACTUALLY writes / reads. The YAML must
@@ -90,9 +87,7 @@ def test_registry_has_no_duplicate_keys() -> None:
     reg = load_registry()
     seen: set[tuple[str, str]] = set()
     for f in reg.facts:
-        assert (f.namespace, f.key) not in seen, (
-            f"Duplicate entry: {f.dotted_key()}"
-        )
+        assert (f.namespace, f.key) not in seen, f"Duplicate entry: {f.dotted_key()}"
         seen.add((f.namespace, f.key))
 
 
@@ -106,8 +101,8 @@ def test_every_produced_fact_is_in_registry() -> None:
             if (ns, key) not in registered:
                 missing.append(f"{producer} -> {ns}.{key}")
     assert not missing, (
-        f"The following facts are produced by code but missing from "
-        f"fact_definitions.yaml:\n  " + "\n  ".join(missing)
+        "The following facts are produced by code but missing from "
+        "fact_definitions.yaml:\n  " + "\n  ".join(missing)
     )
 
 
@@ -121,8 +116,8 @@ def test_every_consumed_fact_is_in_registry() -> None:
             if (ns, key) not in registered:
                 missing.append(f"{consumer} -> {ns}.{key}")
     assert not missing, (
-        f"The following facts are consumed by code but missing from "
-        f"fact_definitions.yaml:\n  " + "\n  ".join(missing)
+        "The following facts are consumed by code but missing from "
+        "fact_definitions.yaml:\n  " + "\n  ".join(missing)
     )
 
 
@@ -132,9 +127,6 @@ def test_no_orphan_entries() -> None:
     produced: set[tuple[str, str]] = {
         fact for facts in EXPECTED_PRODUCED.values() for fact in facts
     }
-    consumed: set[tuple[str, str]] = {
-        fact for facts in EXPECTED_CONSUMED.values() for fact in facts
-    }
     orphans: list[str] = []
     for f in reg.facts:
         key = (f.namespace, f.key)
@@ -143,9 +135,8 @@ def test_no_orphan_entries() -> None:
         # the produced list.
         if key not in produced and f.consumers:
             orphans.append(f.dotted_key())
-    assert not orphans, (
-        f"Orphan YAML entries (no producer, has consumer):\n  "
-        + "\n  ".join(orphans)
+    assert not orphans, "Orphan YAML entries (no producer, has consumer):\n  " + "\n  ".join(
+        orphans
     )
 
 
@@ -158,7 +149,8 @@ def test_registry_producer_references_are_known() -> None:
         if f.producer not in known_producers:
             unknown.append(f"{f.dotted_key()} -> producer={f.producer!r}")
     assert not unknown, (
-        f"YAML references unknown producers:\n  " + "\n  ".join(unknown)
+        "YAML references unknown producers:\n  "
+        + "\n  ".join(unknown)
         + f"\nKnown producers: {sorted(known_producers)}"
     )
 
@@ -173,7 +165,8 @@ def test_registry_consumer_references_are_known() -> None:
             if c not in known_consumers:
                 unknown.append(f"{f.dotted_key()} -> consumer={c!r}")
     assert not unknown, (
-        f"YAML references unknown consumers:\n  " + "\n  ".join(unknown)
+        "YAML references unknown consumers:\n  "
+        + "\n  ".join(unknown)
         + f"\nKnown consumers: {sorted(known_consumers)}"
     )
 
@@ -208,10 +201,8 @@ def test_registry_yaml_against_real_producer_code() -> None:
         pytest.skip("constat_aws_rds not on path; EXPECTED_PRODUCED is the source of truth")
 
     import inspect
-    from uuid import uuid4
-
-    from constat_core.models import Fact
     from datetime import UTC, datetime
+    from uuid import uuid4
 
     src = inspect.getsource(db_to_facts)
     # The producer should reference the 4 namespace+key combinations
@@ -249,6 +240,4 @@ def test_registry_yaml_against_real_producer_code() -> None:
         ("aws.rds", "instance_class"),
         ("aws.rds", "vcpu"),
     }
-    assert produced_keys == expected, (
-        f"Producer emits {produced_keys}, registry expects {expected}"
-    )
+    assert produced_keys == expected, f"Producer emits {produced_keys}, registry expects {expected}"
