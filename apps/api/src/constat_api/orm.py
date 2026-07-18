@@ -30,6 +30,8 @@ from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import CHAR, JSON, TypeDecorator
 
+from constat_api.settings import DEFAULT_TENANT_ID
+
 
 class GUID(TypeDecorator):
     """Platform-independent UUID. Native UUID on Postgres, CHAR(36) elsewhere."""
@@ -77,6 +79,9 @@ class AccountORM(Base):
     __tablename__ = "accounts"
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     external_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     name: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -92,6 +97,9 @@ class ResourceORM(Base):
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     account_id: Mapped[UUID] = mapped_column(
         GUID(), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
     )
@@ -111,6 +119,9 @@ class ObservationORM(Base):
     __tablename__ = "observations"
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     resource_id: Mapped[UUID] = mapped_column(
         GUID(), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False
     )
@@ -125,6 +136,15 @@ class ObservationORM(Base):
 class FactORM(Base):
     __tablename__ = "facts"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "resource_id",
+            "namespace",
+            "key",
+            "source",
+            "observed_at",
+            name="uq_fact_snapshot",
+        ),
         CheckConstraint(
             "resource_id IS NOT NULL OR account_id IS NOT NULL", name="fact_scope_present"
         ),
@@ -134,6 +154,9 @@ class FactORM(Base):
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     resource_id: Mapped[UUID | None] = mapped_column(
         GUID(), ForeignKey("resources.id", ondelete="CASCADE")
     )
@@ -160,6 +183,9 @@ class FocusChargeORM(Base):
         BigInteger().with_variant(Integer, "sqlite"),
         primary_key=True,
         autoincrement=True,
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
     )
     account_id: Mapped[UUID] = mapped_column(
         GUID(), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
@@ -195,6 +221,9 @@ class InsightORM(Base):
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     rule_name: Mapped[str] = mapped_column(String, nullable=False)
     resource_id: Mapped[UUID | None] = mapped_column(
         GUID(), ForeignKey("resources.id", ondelete="CASCADE")
@@ -232,6 +261,9 @@ class InconclusiveORM(Base):
     __tablename__ = "inconclusive"
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     rule_name: Mapped[str] = mapped_column(String, nullable=False)
     resource_id: Mapped[UUID | None] = mapped_column(
         GUID(), ForeignKey("resources.id", ondelete="CASCADE")
