@@ -20,16 +20,20 @@ Constat/
 │   ├── core/                    # STABLE CONTRACT — models, namespaces, catalog constants
 │   ├── connectors/
 │   │   ├── aws_rds/             # boto3 RDS
+│   │   ├── aws_ec2/             # boto3 EC2/EBS (volumes, states, types)
 │   │   └── focus/               # FOCUS CSV/Parquet → Postgres
 │   └── insights/
 │       ├── rds_eol/             # rule: PG major < LTS → Extended Support → €/month
 │       ├── mysql_eol/           # rule: MySQL 5.7/8.0 Extended Support → €/month
 │       ├── aurora_eol/          # rule: Aurora MySQL/PG Extended Support → €/month
+│       ├── ebs_gp2_to_gp3/      # rule: gp2 volume → gp3 savings → €/month
+│       ├── ebs_unattached/      # rule: available volume → monthly waste
 │       └── chargeback/          # rule: per account × service, amortized vs brut
 ├── apps/
 │   ├── api/                     # FastAPI — orchestrator + REST
 │   └── web/                     # Next.js — "Insights" + "Chargeback" + "Restitution" views
 ├── db/migrations/               # SQL migrations (Alembic later)
+├── docs/pilot/                  # SLA pilote borné (projet, relecture juridique)
 ├── infra/                       # Terraform pilote (ECS+RDS+secrets) — not yet applied
 ├── deploy/prometheus/           # alerting rules
 ├── scripts/                     # bench_runner.py etc.
@@ -90,6 +94,11 @@ If you want to add a new namespace, open an issue first. We don't do EAV.
   `rds_eol` shape) + one entry in `RESOURCE_RULES` in
   `apps/api/src/constat_api/insights/runner.py`. Catalog pricing needs a source
   URL + review date; estimates carry `value_basis=ESTIMATED` until FOCUS confirms.
+- Any rule that emits money MUST be registered in `constat_core.monetary.MONETARY`
+  (payload key, value basis, kind) and mirrored in `apps/web/lib/api.ts`
+  (`RULE_MONETARY`) — the completeness/pin tests in
+  `tests/test_monetary_extraction.py` fail CI otherwise (ADR-13). Never sum
+  `ACCOUNTING_DELTA` amounts into a savings total.
 - Product position: V1 is sold **insights-first** (ADR-12 in `docs/adr/`). Do not
   promise a filterable inventory until it exists.
 

@@ -128,7 +128,9 @@ pas de Docker sur la machine), `ruff check`/`format` propres, `mypy` core propre
 |---|---|---|
 | `mysql.extended_support` | **FAIT** | `packages/insights/mysql_eol` + catalog MySQL 5.7/8.0 (dates et tarifs sourcés AWS, revus 2026-07-18). ~2× le gisement PG selon le marché. |
 | `aurora.extended_support` | **FAIT** | `packages/insights/aurora_eol` (aurora-mysql 2/3 + aurora-postgresql 11-15). Découverte catalog : pas de tier année-3 pour Aurora MySQL (contrairement à l'hypothèse du tableau) — sourcé. |
-| `ebs.unattached`, `snapshot.orphan`, `ec2.stopped_with_storage`, `ebs.gp2_to_gp3` | **PROCHAIN CHANTIER** | Exigent un **nouveau connecteur EC2/EBS** (DescribeVolumes/Snapshots/Instances + nouveaux scopes source_run + catalog prix EBS par type/région). Le collecteur actuel est RDS-only ; généraliser `collect_target` aux types non-RDS est un chantier dédié plutôt qu'un glissement dans cette passe. |
+| `ebs.gp2_to_gp3` | **FAIT** | `packages/insights/ebs_gp2_to_gp3` + catalog EBS — le connecteur EC2/EBS a été construit (scopes source_run propres, preuve d'absence préservée). Montant : `savings_monthly_usd` (registre ADR-13). |
+| `ebs.unattached` | **FAIT** | `packages/insights/ebs_unattached` — volumes `available` × tarif catalog (`monthly_waste_usd`). Type de volume absent du catalog ⇒ INCONCLUSIVE `catalog.volume_type_price_missing`, jamais d'insight « gratuit ». |
+| `snapshot.orphan`, `ec2.stopped_with_storage` | **PROCHAIN CHANTIER** | Même connecteur EBS/EC2 désormais en place ; restent DescribeSnapshots (croisement volumes × AMI) et DescribeInstances `stopped` + IP élastiques, plus leurs entrées catalog. |
 
 Le runner a été généralisé au passage (`RESOURCE_RULES` + `run_resource_rule`) :
 ajouter le prochain insight basé ressource = un package resolver + une ligne de registre.
@@ -140,6 +142,18 @@ ajouter le prochain insight basé ressource = un package resolver + une ligne de
   lisaient une clé qui n'existait dans aucun resolver).
 - `.gitignore` : tfvars/tfstate exclus (l'exemple reste tracké).
 - `known-issues.md` §2 : promesse §11.2 désormais tenue (0012), reste le runtime à basculer.
+
+### Comité d'évaluation client (2026-07-18, post-vague 1)
+
+- **Extraction des montants** : registre unique `constat_core.monetary` (ADR-13) —
+  chaque règle déclare sa clé de payload, sa base (ESTIMATED/ACTUAL) et sa nature
+  (`AVOIDABLE_SAVING` vs `ACCOUNTING_DELTA`, jamais agrégées ensemble). Test de
+  complétude : une règle dans RUNNERS sans décision monétaire casse la CI (la
+  dérive `ebs_unattached` a été attrapée exactement ainsi). Miroir TS épinglé par test.
+- **SLA pilote borné** : `docs/pilot/sla-pilote.md` (projet, relecture juridique
+  requise) — 5 comptes max, 90 jours, eu-west-3 + TLS, fraîcheur 24 h contractualisée,
+  réversibilité complète. Vérifié ligne à ligne contre le système réel (règles actives,
+  ack, template IAM, rétention, ALB+TLS).
 
 ### Rappel des refus actifs (seuils écrits, inchangés)
 
