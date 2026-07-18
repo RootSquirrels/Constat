@@ -34,10 +34,16 @@ def list_insights(
     rule_name: str | None = None,
     severity: Severity | None = None,
     account_id: UUID | None = None,
+    ack_status: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[Insight]:
-    """List current insights, newest first. Filters are optional."""
+    """List current insights, newest first. Filters are optional.
+
+    `ack_status='open'` is a virtual value: it filters to
+    `ack_status IS NULL`. Any other value matches the column
+    directly. The router validates the value before calling.
+    """
     stmt = select(InsightORM).order_by(InsightORM.computed_at.desc())
     if rule_name is not None:
         stmt = stmt.where(InsightORM.rule_name == rule_name)
@@ -45,6 +51,16 @@ def list_insights(
         stmt = stmt.where(InsightORM.severity == severity.value)
     if account_id is not None:
         stmt = stmt.where(InsightORM.account_id == account_id)
+    if ack_status is not None:
+        if ack_status == "open":
+            stmt = stmt.where(InsightORM.ack_status.is_(None))
+        elif ack_status in ACK_STATUSES:
+            stmt = stmt.where(InsightORM.ack_status == ack_status)
+        else:
+            # Router validates; this is defense in depth.
+            raise ValueError(
+                f"invalid ack_status {ack_status!r}; must be 'open' or one of {sorted(ACK_STATUSES)}"
+            )
     stmt = stmt.limit(limit).offset(offset)
     return [_orm_to_pydantic(row) for row in session.execute(stmt).scalars()]
 

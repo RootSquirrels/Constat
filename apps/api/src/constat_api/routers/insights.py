@@ -8,6 +8,7 @@ from uuid import UUID
 
 from constat_core.models import Insight, Severity
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from constat_api.auth import _get_settings, verify_api_key
@@ -27,15 +28,34 @@ def list_insights_endpoint(
     rule_name: str | None = Query(default=None),
     severity: Severity | None = Query(default=None),
     account_id: UUID | None = Query(default=None),
+    ack_status: str | None = Query(
+        default=None,
+        description=(
+            "Filter by operator-triage state. 'open' is a virtual value "
+            "meaning ack_status IS NULL; the other values match the "
+            "column directly (acknowledged | in_progress | resolved | dismissed)."
+        ),
+    ),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
 ) -> list[Insight]:
+    # Validate the filter value at the boundary so a typo returns 400
+    # rather than a ValueError leaking as 500 from the repo.
+    if ack_status is not None and ack_status != "open" and ack_status not in repo.ACK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"invalid ack_status {ack_status!r}; "
+                f"must be 'open' or one of {sorted(repo.ACK_STATUSES)}"
+            ),
+        )
     return repo.list_insights(
         session,
         rule_name=rule_name,
         severity=severity,
         account_id=account_id,
+        ack_status=ack_status,
         limit=limit,
         offset=offset,
     )
@@ -141,3 +161,54 @@ def create_insight_endpoint(
         )
     insight.payload = {**insight.payload, "source": "manual"}
     return repo.insert_insight(session, insight)
+
+
+# ----------------------------------------------------------------------------
+# Operator acknowledgment (P1 item 1)
+# ----------------------------------------------------------------------------
+
+
+class AckIn(BaseModel):
+    """Body for PATCH /insights/{id}.
+
+    `ack_status` is required (the point of the PATCH). `ack_by` is
+    optional but recommended; without it the audit trail says
+    "someone acked this, we don't know who". `ack_at` is server-set
+    and the client cannot override it.
+    """
+
+    ack_status: str
+    ack_by: str | None = None
+
+
+@router.patch("/{insight_id}", response_model=Insight)
+def patch_insight_endpoint(
+    insight_id: UUID,
+    body: AckIn,
+    session: Session = Depends(get_db),
+) -> Insight:
+    """Set the operator-triage state of an insight.
+
+    The V1 schema accepts four values plus a virtual "open" via
+    `ack_status: null` (see list endpoint). Last write wins; we do
+    not keep an audit log (V2 adds `insight_acks` for history).
+    """
+    if body.ack_status not in repo.ACK_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"invalid ack_status {body.ack_status!r}; "
+                f"must be one of {sorted(repo.ACK_STATUSES)}"
+            ),
+        )
+    updated = repo.update_ack(
+        session,
+        insight_id,
+        ack_status=body.ack_status,
+        ack_by=body.ack_by,
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="insight not found"
+        )
+    return updated
