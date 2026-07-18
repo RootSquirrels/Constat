@@ -1,5 +1,12 @@
 import Link from "next/link";
-import { api, ApiError, type Insight, type Inconclusive, type Severity } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  insightsCsvUrl,
+  type Insight,
+  type Inconclusive,
+  type Severity,
+} from "@/lib/api";
 import InsightCard from "@/components/InsightCard";
 
 export const dynamic = "force-dynamic"; // never cache; always fetch fresh
@@ -43,6 +50,10 @@ export default async function InsightsPage() {
         {total === 0
           ? "No insights yet."
           : `${total} insight${total === 1 ? "" : "s"} across ${sevWithCount} severity level${sevWithCount === 1 ? "" : "s"}.`}
+        {" · "}
+        <a href={insightsCsvUrl({ limit: 500 })} style={{ color: "#4b5563" }}>
+          Export CSV
+        </a>
       </p>
 
       {incTotal > 0 && (

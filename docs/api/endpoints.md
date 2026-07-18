@@ -79,6 +79,29 @@ List insights, with optional filters and pagination.
 ]
 ```
 
+## `GET /insights/export.csv`
+
+CSV export of the current insights — the artifact a prospect's champion
+circulates internally after a POC.
+
+**Query parameters**: same filters as `GET /insights` (`rule_name`,
+`severity`, `account_id`, `offset`), with `limit: int = 500` (1..500).
+
+**Response 200**: `text/csv` with `Content-Disposition: attachment;
+filename="insights.csv"`. One header row, then one row per insight,
+newest first:
+
+```
+rule_name,severity,title,resource_id,account_id,monthly_cost_usd,value_basis,computed_at
+```
+
+- `monthly_cost_usd` is read from the rule-specific payload key
+  (`drift_amortized_minus_billed_usd` for `chargeback`,
+  `ext_support_monthly_usd_estimate` for `rds_eol`); empty when the
+  payload carries no cost.
+- `value_basis` is `ACTUAL` for `chargeback` (FOCUS billing rows) and
+  `ESTIMATED` otherwise (catalog pricing, not yet FOCUS-confirmed).
+
 ## `GET /insights/{insight_id}`
 
 Fetch a single insight by id.

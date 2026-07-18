@@ -52,6 +52,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           >
             Chargeback
           </Link>
+          <Link
+            href="/restitution"
+            style={{ color: "#4b5563", textDecoration: "none", fontSize: "0.9rem" }}
+          >
+            Restitution
+          </Link>
         </nav>
         {children}
       </body>

@@ -90,3 +90,60 @@ d'absence reste prouvable) ; chaque tarif entre au catalog avec source URL + dat
 Le scoreboard monte par la **preuve** (tests, CI, runbooks datés), jamais par la techno.
 Les features montent la **valeur par démo** (lignes en €), jamais la surface.
 Tout le reste a un seuil écrit — et tant que le seuil n'est pas atteint, la réponse est non.
+
+---
+
+## Annexe — Statut d'exécution (2026-07-18)
+
+Vérification locale : **356 tests passés, 24 skippés** (Postgres RLS — CI fait foi,
+pas de Docker sur la machine), `ruff check`/`format` propres, `mypy` core propre,
+`npm run build` propre (route `/restitution` incluse).
+
+### Scoreboard
+
+| Action | Statut | Preuve / limite |
+|---|---|---|
+| Rôle PG runtime non-owner | **FAIT** | Migration `0012_runtime_role.sql` (`constat_app`, sans BYPASSRLS, DML only) + tests CI `TestRuntimeRole` (ALTER POLICY / CREATE TABLE refusés, RLS contraignante). Reste : faire tourner le pilote sous ce rôle (voir `docs/operations/deployment.md`). |
+| 3 alertes | **FAIT** | `deploy/prometheus/alerts.yml` (source_run failed, scope_stale ↑, 5xx ↑) + `docs/operations/alerting.md`. Métriques existantes réutilisées, aucune nouvelle. |
+| Backup/restore + runbook daté | **RUNBOOK FAIT, exécution EN ATTENTE** | `docs/operations/backup-restore.md`. Pas de Docker sur la machine de dev : l'exécution réelle est planifiée au déploiement pilote — le scoreboard ne doit PAS la compter avant. |
+| Rotation clé API documentée | **FAIT** | `docs/operations/api-key-rotation.md` (contrainte honnête : pas de zéro-downtime avec une clé lue au démarrage). |
+| pip-audit / npm audit en CI | **FAIT** | Steps advisory (`continue-on-error`) dans les deux jobs — à passer en bloquant après tri de la baseline. |
+| Backoff jitteré throttling | **FAIT** | Mode `adaptive` boto3 (10 tentatives) sur RDS + STS, testé par inspection de config. |
+| Re-scan ciblé d'une région | **DÉJÀ POSSIBLE, prouvé** | `TargetAccount.regions` le permettait ; test dédié ajouté (re-scan eu-west-1 sans toucher us-east-1). |
+| Test de concurrence 2 collectes | **DÉJÀ COUVERT** | `test_source_runs.py` (index partiel `status='running'`) — vérifié, pas de doublon ajouté. |
+| Bench 10 k ressources | **FAIT, mesuré** | `scripts/bench_runner.py` → **10k ressources en ~31-36 s, 162 MiB peak** (sqlite in-memory, Ryzen 5 3600). Linéaire ; 50 k ≈ 3 min. Conclusion documentée dans `docs/operations/benchmarks.md` : aucune optimisation justifiée, prochain point d'action = run Postgres à 50 k. |
+| Golden dataset FOCUS | **HARNAIS FAIT, vraie donnée EN ATTENTE** | `tests/fixtures/focus_golden_v1_0.csv` (43 colonnes officielles vérifiées contre le spec) + 6 tests. **Le harnais a immédiatement payé** : bug réel du loader (`Region` requis, renommé `RegionId`/`RegionName` en 1.0) trouvé et **corrigé** dans la foulée. Remplacement par un export AWS réel anonymisé : attend le 1er prospect. |
+| Terraform minimal | **ÉCRIT, non appliqué** | `infra/` (RDS + ECS Fargate + Secrets Manager + EventBridge quotidien) + `Dockerfile`. Aucun binaire terraform/docker/AWS sur la machine : label « unapplied/unvalidated » partout, fix-up attendu au premier `terraform validate`. |
+| Scans planifiés (quotidien) | **FAIT (infra)** | EventBridge Scheduler `cron(0 5 * * ? *)` → RunTask (collect + rds_eol + chargeback). Cadence calée sur la fenêtre de fraîcheur 24 h. |
+| Vue Restitution POC | **FAIT** | `/restitution` imprimable (CSS print), tableau €/mois + base ESTIMATED/ACTUAL, section « What we don't know » (INCONCLUSIVE), résumé chargeback, provenance. |
+| États loading/error | **FAIT** | `loading.tsx`/`error.tsx` sur les 4 pages de données. |
+| Export CSV par insight | **FAIT** | `GET /insights/export.csv` (mêmes filtres que la liste, cap 500) + bouton sur la page insights. |
+| Tenant #2 e2e (GUC header) | **REFUSÉ pour l'instant** | Seuil non atteint : aucun tenant #2. AGENTS.md acte le mono-tenant V1 ; la règle du jeu (« rien avant son seuil ») s'applique à cette action comme aux autres. |
+| e2e web Playwright | **REFUSÉ pour l'instant** | Web = quelques pages pilote ; coût toolchain > valeur. Seuil : la surface web grandit ou un client payant arrive. |
+| 3 restitutions réelles (Adéquation 5) | **HORS CODE** | Activité POC, pas du code. |
+
+### Vague 1 (insights)
+
+| Insight | Statut | Note |
+|---|---|---|
+| `mysql.extended_support` | **FAIT** | `packages/insights/mysql_eol` + catalog MySQL 5.7/8.0 (dates et tarifs sourcés AWS, revus 2026-07-18). ~2× le gisement PG selon le marché. |
+| `aurora.extended_support` | **FAIT** | `packages/insights/aurora_eol` (aurora-mysql 2/3 + aurora-postgresql 11-15). Découverte catalog : pas de tier année-3 pour Aurora MySQL (contrairement à l'hypothèse du tableau) — sourcé. |
+| `ebs.unattached`, `snapshot.orphan`, `ec2.stopped_with_storage`, `ebs.gp2_to_gp3` | **PROCHAIN CHANTIER** | Exigent un **nouveau connecteur EC2/EBS** (DescribeVolumes/Snapshots/Instances + nouveaux scopes source_run + catalog prix EBS par type/région). Le collecteur actuel est RDS-only ; généraliser `collect_target` aux types non-RDS est un chantier dédié plutôt qu'un glissement dans cette passe. |
+
+Le runner a été généralisé au passage (`RESOURCE_RULES` + `run_resource_rule`) :
+ajouter le prochain insight basé ressource = un package resolver + une ligne de registre.
+
+### Corrections de consolidation (cette passe)
+
+- **Loader FOCUS** : accepte `RegionId` (spec 1.0) avec fallback `Region` (pré-1.0) — bug trouvé par le golden dataset.
+- **Clé payload coût** : `extended_support_monthly_usd` partout (l'export CSV et le web
+  lisaient une clé qui n'existait dans aucun resolver).
+- `.gitignore` : tfvars/tfstate exclus (l'exemple reste tracké).
+- `known-issues.md` §2 : promesse §11.2 désormais tenue (0012), reste le runtime à basculer.
+
+### Rappel des refus actifs (seuils écrits, inchangés)
+
+Queue + workers (>5 comptes ou scan >60 s) · S3/Parquet (>10 M observations) ·
+multi-tenant effectif (tenant #2) · Trusted Advisor / Compute Optimizer / SSM
+(vagues 2-3, sur demande client ou après 2-3 POC) · inventaire filtrable (ADR-12,
+sur demande pilote).

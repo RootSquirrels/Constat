@@ -46,3 +46,11 @@ data/
 
 # Docker volumes (if mounted)
 volumes/
+
+# Terraform (pilot infra — see infra/). State and variable values are
+# local/secret; never commit them. Keep the example file tracked.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

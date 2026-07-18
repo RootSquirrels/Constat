@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in. WARNING: the repo .gitignore does
+# NOT yet cover *.tfvars / terraform state (2026-07-18) — never commit
+# real values, and add the ignore entries (see infra/README.md) before
+# the first apply. Prefer TF_VAR_* env vars for the sensitive ones.
+
+aws_region   = "eu-west-3"
+allowed_cidr = "203.0.113.10/32" # operator/prospect egress IP — keep tight
+image_tag    = "latest"
+
+# Sensitive — prefer `export TF_VAR_db_password=...` over writing here.
+db_password = "CHANGE-ME-long-random"
+api_key     = "CHANGE-ME-long-random"
+
+# JSON array of prospect accounts to scan daily (see variables.tf).
+scan_targets_json = "[{\"aws_account_id\":\"123456789012\",\"role_arn\":\"arn:aws:iam::123456789012:role/constat-collector\",\"external_id\":\"CHANGE-ME\",\"name\":\"prospect\",\"regions\":[\"eu-west-3\"]}]"

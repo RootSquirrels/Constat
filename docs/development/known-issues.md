@@ -45,11 +45,15 @@ Every tenant-scoped table now has a policy.
 **What doesn't yet (V1):**
 - The default tenant is hard-coded in
   `apps/api/src/constat_api/settings.py::DEFAULT_TENANT_ID`. V2
-  wires this from a request header / service-account context.
-- No `BYPASSRLS` discipline: the API role is the migration owner
-  for now. The doc's §11.2 promise — "rôle runtime non-owner, non-
-  superuser, sans BYPASSRLS" — is **not yet enforced**. Don't
-  promote to multi-tenant until this is fixed.
+  wires this from a request header / service-account context
+  (roadmap: gated on a real tenant #2).
+- ~~No `BYPASSRLS` discipline~~ **FIXED by migration 0012**: the
+  doc's §11.2 promise — "rôle runtime non-owner, non-superuser,
+  sans BYPASSRLS" — is now enforced. `constat_app` owns nothing,
+  cannot ALTER POLICY (CI-proven in `tests/test_rls.py::
+  TestRuntimeRole`). Remaining: the runtime must actually RUN as
+  `constat_app` in the pilot env (see `docs/operations/deployment.md`);
+  local dev still uses the owner role.
 - RLS is verified **only** via the CI Postgres job (Postgres
   service container + `CONSTAT_TEST_DATABASE_URL`). Local runs skip
   those tests unless you set the env var yourself.

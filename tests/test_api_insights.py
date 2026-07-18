@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -76,7 +78,7 @@ def test_create_and_get_insight(client: TestClient, session, manual_insights: No
         "account_id": str(acc.id),
         "severity": "warning",
         "title": "RDS PG 14 reaches EOL in 89 days",
-        "payload": {"days_to_eol": 89, "ext_support_monthly_usd_estimate": 584.0},
+        "payload": {"days_to_eol": 89, "extended_support_monthly_usd": 584.0},
     }
     response = client.post("/insights", json=payload)
     assert response.status_code == 201, response.text
@@ -160,3 +162,71 @@ def test_create_insight_uses_canonical_severity(client: TestClient, manual_insig
     }
     response = client.post("/insights", json=bad)
     assert response.status_code == 422
+
+
+def _seed_export_insights(session) -> None:
+    acc = _make_account(session)
+    session.add(
+        InsightORM(
+            id=uuid4(),
+            rule_name="rds_eol",
+            account_id=acc.id,
+            severity="critical",
+            title="RDS PostgreSQL 11 is in Extended Support",
+            payload={"extended_support_monthly_usd": 584.0},
+            computed_at=datetime(2026, 7, 18, tzinfo=UTC),
+        )
+    )
+    session.add(
+        InsightORM(
+            id=uuid4(),
+            rule_name="chargeback",
+            account_id=acc.id,
+            severity="info",
+            title="RDS on prod (2026-07): amortized up by $42.50",
+            payload={"drift_amortized_minus_billed_usd": 42.5},
+            computed_at=datetime(2026, 7, 18, 1, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+
+def test_export_insights_csv(client: TestClient, session) -> None:
+    _seed_export_insights(session)
+
+    response = client.get("/insights/export.csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+
+    rows = list(csv.reader(io.StringIO(response.text)))
+    assert rows[0] == [
+        "rule_name",
+        "severity",
+        "title",
+        "resource_id",
+        "account_id",
+        "monthly_cost_usd",
+        "value_basis",
+        "computed_at",
+    ]
+    assert len(rows) == 3
+    # Newest first, same ordering as GET /insights.
+    chargeback, rds = rows[1], rows[2]
+    assert chargeback[0] == "chargeback"
+    assert chargeback[5] == "42.50"
+    assert chargeback[6] == "ACTUAL"  # FOCUS-confirmed drift
+    assert rds[0] == "rds_eol"
+    assert rds[2] == "RDS PostgreSQL 11 is in Extended Support"
+    assert rds[5] == "584.00"
+    assert rds[6] == "ESTIMATED"  # catalog pricing, not yet FOCUS-confirmed
+
+
+def test_export_insights_csv_filters_by_rule(client: TestClient, session) -> None:
+    _seed_export_insights(session)
+
+    response = client.get("/insights/export.csv", params={"rule_name": "rds_eol"})
+    assert response.status_code == 200
+    rows = list(csv.reader(io.StringIO(response.text)))
+    assert len(rows) == 2
+    assert rows[1][0] == "rds_eol"

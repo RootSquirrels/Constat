@@ -23,11 +23,16 @@ Constat/
 │   │   └── focus/               # FOCUS CSV/Parquet → Postgres
 │   └── insights/
 │       ├── rds_eol/             # rule: PG major < LTS → Extended Support → €/month
+│       ├── mysql_eol/           # rule: MySQL 5.7/8.0 Extended Support → €/month
+│       ├── aurora_eol/          # rule: Aurora MySQL/PG Extended Support → €/month
 │       └── chargeback/          # rule: per account × service, amortized vs brut
 ├── apps/
 │   ├── api/                     # FastAPI — orchestrator + REST
-│   └── web/                     # Next.js — "Insights" + "Chargeback" views
+│   └── web/                     # Next.js — "Insights" + "Chargeback" + "Restitution" views
 ├── db/migrations/               # SQL migrations (Alembic later)
+├── infra/                       # Terraform pilote (ECS+RDS+secrets) — not yet applied
+├── deploy/prometheus/           # alerting rules
+├── scripts/                     # bench_runner.py etc.
 ├── tests/                       # cross-package integration tests
 └── .github/workflows/ci.yml
 ```
@@ -81,6 +86,10 @@ If you want to add a new namespace, open an issue first. We don't do EAV.
   `app.current_tenant_id` GUC, copy 0007/0011). The CI Postgres job fails otherwise.
 - Cross-account AssumeRole always requires an `ExternalId` (API returns 422,
   collector raises `ValueError` otherwise).
+- New resource-based insight = new package in `packages/insights/` (clone the
+  `rds_eol` shape) + one entry in `RESOURCE_RULES` in
+  `apps/api/src/constat_api/insights/runner.py`. Catalog pricing needs a source
+  URL + review date; estimates carry `value_basis=ESTIMATED` until FOCUS confirms.
 - Product position: V1 is sold **insights-first** (ADR-12 in `docs/adr/`). Do not
   promise a filterable inventory until it exists.
 

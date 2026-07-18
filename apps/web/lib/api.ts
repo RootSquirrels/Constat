@@ -161,4 +161,28 @@ export const api = {
     fetchJson<Account[]>(`/accounts${buildQuery(params)}`),
 };
 
+export type ValueBasis = "ESTIMATED" | "ACTUAL";
+
+// Monthly cost + value basis, read from the rule-specific payload keys
+// (the Insight contract has no cost field). Chargeback drift comes from
+// FOCUS billing rows → ACTUAL; catalog-priced rules → ESTIMATED until a
+// FOCUS line confirms them. Mirrors /insights/export.csv on the API.
+export function insightMonthlyCostUsd(insight: Insight): number | null {
+  const payload = insight.payload as Record<string, unknown>;
+  const raw =
+    insight.rule_name === "chargeback"
+      ? payload.drift_amortized_minus_billed_usd
+      : payload.extended_support_monthly_usd;
+  return typeof raw === "number" ? raw : null;
+}
+
+export function insightValueBasis(insight: Insight): ValueBasis {
+  return insight.rule_name === "chargeback" ? "ACTUAL" : "ESTIMATED";
+}
+
+// Direct browser URL for the CSV export (no fetch — the browser downloads it).
+export function insightsCsvUrl(params: ListInsightsParams = {}): string {
+  return `${API_URL}/insights/export.csv${buildQuery(params)}`;
+}
+
 export { ApiError, API_URL };
