@@ -33,6 +33,7 @@ from constat_api.repositories import accounts as accounts_repo
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import observations as observations_repo
 from constat_api.repositories import resources as resources_repo
+from constat_api.repositories import source_runs as source_runs_repo
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,22 @@ def collect_target(
     account = accounts_repo.get_or_create(session, target.aws_account_id, target.name)
 
     for region in regions:
+        run = source_runs_repo.start_run(
+            session,
+            account_id=account.id,
+            region=region,
+            resource_type="AWS::RDS::DBInstance",
+            source="aws_rds",
+        )
+        region_resources = 0
+        region_error: str | None = None
         try:
+            if run is None:
+                # Another scan is already active for this scope. Skip to avoid
+                # double-counting. We still log it as an error in the result.
+                errors.append(f"{region}: scan already in progress")
+                continue
+
             for db in scan_fn(aws_session, [region]):
                 resource = resources_repo.upsert_resource(
                     session,
@@ -151,15 +167,26 @@ def collect_target(
                     observations_written += 1
 
                 resources_written += 1
+                region_resources += 1
 
             if not dry_run:
                 session.flush()
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            errors.append(f"{region}: {error_code}: {e}")
+            region_error = f"{error_code}: {e}"
+            errors.append(f"{region}: {region_error}")
             logger.warning("Region %s failed: %s", region, e)
-            continue
+        finally:
+            if run is not None:
+                status = "success" if region_error is None else "failed"
+                source_runs_repo.finish_run(
+                    session,
+                    run,
+                    status=status,
+                    resources_found=region_resources,
+                    error=region_error,
+                )
 
     if not dry_run:
         session.commit()
