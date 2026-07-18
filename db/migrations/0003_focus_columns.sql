@@ -10,7 +10,7 @@
 
 ALTER TABLE focus_charges ADD COLUMN resource_id TEXT;
 ALTER TABLE focus_charges ADD COLUMN sub_account_id TEXT;
-ALTER TABLE focus_charges DROP COLUMN effective_cost;
+ALTER TABLE focus_charges DROP COLUMN IF EXISTS effective_cost;
 
 CREATE INDEX idx_focus_charges_resource ON focus_charges(resource_id)
     WHERE resource_id IS NOT NULL;
