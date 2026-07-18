@@ -16,12 +16,17 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.collectors.aws import TargetAccount, collect_targets
 from constat_api.db import get_db
 from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.settings import get_base_aws_session
 
-router = APIRouter(prefix="/collect/aws", tags=["aws"])
+router = APIRouter(
+    prefix="/collect/aws",
+    tags=["aws"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 class TargetIn(BaseModel):

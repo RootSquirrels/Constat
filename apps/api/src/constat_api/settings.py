@@ -25,6 +25,11 @@ class Settings:
     api_title: str = "Constat API"
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     default_tenant_id: UUID = DEFAULT_TENANT_ID
+    # V1 auth: optional API key. When set, every request must carry a
+    # matching X-API-Key header. When unset (dev), auth is open — a
+    # warning is logged at startup. NEVER deploy without setting this
+    # in any environment that an external caller can reach.
+    api_key: str | None = os.getenv("CONSTAT_API_KEY") or None
 
 
 settings = Settings()

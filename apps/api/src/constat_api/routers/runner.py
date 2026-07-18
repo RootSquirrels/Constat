@@ -12,10 +12,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.db import get_db
 from constat_api.insights.runner import RUNNERS, run_rule
 
-router = APIRouter(prefix="/insights", tags=["insights-runner"])
+router = APIRouter(
+    prefix="/insights",
+    tags=["insights-runner"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 class RunRequest(BaseModel):

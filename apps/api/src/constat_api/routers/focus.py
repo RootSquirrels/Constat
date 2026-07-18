@@ -13,10 +13,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.cli.focus import ingest_focus_file
 from constat_api.db import get_db
 
-router = APIRouter(prefix="/collect/focus", tags=["focus"])
+router = APIRouter(
+    prefix="/collect/focus",
+    tags=["focus"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 class IngestRequest(BaseModel):

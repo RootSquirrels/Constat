@@ -8,10 +8,15 @@ from constat_core.models import Insight, Severity
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import insights as repo
 
-router = APIRouter(prefix="/insights", tags=["insights"])
+router = APIRouter(
+    prefix="/insights",
+    tags=["insights"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 @router.get("", response_model=list[Insight])

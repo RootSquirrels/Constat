@@ -12,10 +12,15 @@ from constat_core.models import Inconclusive
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import inconclusive as repo
 
-router = APIRouter(prefix="/inconclusives", tags=["inconclusive"])
+router = APIRouter(
+    prefix="/inconclusives",
+    tags=["inconclusive"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 @router.get("", response_model=list[Inconclusive])

@@ -11,10 +11,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from constat_api.auth import verify_api_key
 from constat_api.db import get_db
 from constat_api.orm import InsightRunORM
 
-router = APIRouter(prefix="/insight-runs", tags=["insight-runs"])
+router = APIRouter(
+    prefix="/insight-runs",
+    tags=["insight-runs"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 class InsightRunOut(BaseModel):
