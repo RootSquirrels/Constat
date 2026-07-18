@@ -10,9 +10,14 @@ from fastapi.testclient import TestClient
 
 
 def test_health_pings_db(client: TestClient, session) -> None:
+    """The V1 /health now returns a structured body. The V1 test
+    asserted just the `status` key; we keep that minimal check here
+    (the full coverage lives in tests/test_health.py)."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "checks" in body
 
 
 def _make_account(session, external_id: str = "111111111111") -> AccountORM:
