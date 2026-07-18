@@ -25,6 +25,7 @@ Interactive docs: `/docs` (Swagger UI) and `/redoc`, served by FastAPI.
 | `status` | `/status` | One-glance fleet snapshot (counts, freshness, last runs) | `apps/api/src/constat_api/routers/status.py` |
 | `accounts` | `/accounts` | List observed accounts (AWS / FOCUS BillingAccountId) | `apps/api/src/constat_api/routers/accounts.py` |
 | `admin` | `/admin` | Scheduled cleanup of `inconclusive` (UX/ops P2 item 8) | `apps/api/src/constat_api/routers/admin.py` |
+| `metrics` | `/metrics` | Prometheus exposition (UX/ops P2 item 11) | `apps/api/src/constat_api/main.py` |
 
 The `insights` prefix is shared by the list endpoints and the run
 endpoint. The other 8 routers each own their prefix.
@@ -409,6 +410,29 @@ for the recommended cadence.
 Idempotent. Calling twice in the same hour is safe (the second call
 deletes 0 records, because the first call already cleared them).
 No body required.
+
+## `GET /metrics`
+
+UX/ops P2 item 11: the SLO counters and histograms. Prometheus
+exposition format (text). Excluded from `X-API-Key` auth on purpose:
+the scraper is on the trusted network. See
+[`../operations/metrics.md`](../operations/metrics.md) for the full
+metric catalog, the cardinality budget, the PromQL examples, and the
+OpenTelemetry migration path.
+
+**Response 200**:
+```
+# HELP constat_insights_emitted_total Insights emitted by rule execution, ...
+# TYPE constat_insights_emitted_total counter
+constat_insights_emitted_total{rule="rds_eol",severity="critical"} 3.0
+constat_insights_emitted_total{rule="rds_eol",severity="warning"} 1.0
+constat_insights_emitted_total{rule="chargeback",severity="info"} 12.0
+...
+```
+
+`/metrics` and `/health` are excluded from the `http_requests_total`
+counter to avoid feedback noise (the scraper would otherwise
+dominate the request count).
 
 ## Error semantics (all endpoints)
 

@@ -33,6 +33,9 @@ marked as such.
 - **Operations**
   - **[logging.md](./operations/logging.md)** — structlog + request_id
     middleware. JSON output in prod, colored in dev.
+  - **[metrics.md](./operations/metrics.md)** — Prometheus `/metrics`
+    endpoint, the SLO counters/histograms, PromQL examples, OTel
+    migration path.
   - **[inconclusive-cleanup.md](./operations/inconclusive-cleanup.md)** —
     scheduled cleanup of the `inconclusive` table. CLI + endpoint.
 - **Development**
