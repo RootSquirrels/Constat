@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from constat_focus.loader import FocusCharge
@@ -18,7 +18,13 @@ from constat_focus.loader import FocusCharge
 
 @dataclass(frozen=True)
 class AggregatedFocusCharge:
-    """One row ready to be written to focus_charges."""
+    """One row ready to be written to focus_charges.
+
+    V2 (migration 0009): the per-row tag data is preserved in
+    `per_row_tag_dicts` so the upsert can write one focus_charge_tags
+    row per (input row, key, value). This enables proportional cost
+    attribution in the chargeback runner instead of V1's even split.
+    """
 
     service: str
     period_start: object  # datetime.date — see import below
@@ -30,10 +36,17 @@ class AggregatedFocusCharge:
     pricing_category: str | None
     resource_id: str | None
     sub_account_id: str | None
-    # All unique tag dicts seen across the input rows for this (service, period).
-    # Empty list when no row carried tags. The list preserves per-row data
-    # even when the underlying tag values are heterogeneous.
+    # Denormalized cache for the focus_charges.tags JSONB column.
+    # Unique tag dicts seen across the input rows for this
+    # (service, period). Kept for backward compat with V1 readers.
     tags: list[dict[str, str]]
+    # V2: per-input-row tag dicts, in input order. Each element is
+    # one input row's tag dict (the loader wraps a single dict in a
+    # list per row). Length == number of input rows that contributed
+    # to this aggregate. Used by the upsert to write focus_charge_tags
+    # rows. Cross-row duplicates are preserved (the runner uses the
+    # count to attribute cost proportionally).
+    per_row_tag_dicts: list[dict[str, str]] = field(default_factory=list)
 
 
 def _mode(values: list[str]) -> str | None:
@@ -74,13 +87,28 @@ def _unique_dicts(
 
 
 def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocusCharge]:
-    """Group FocusCharge rows by (service, period_start, period_end) and sum costs."""
+    """Group FocusCharge rows by (service, period_start, period_end) and sum costs.
+
+    V2: also preserves per-input-row tag dicts (`per_row_tag_dicts`)
+    so the upsert can write one focus_charge_tags row per input row.
+    See migration 0009.
+    """
     buckets: dict[tuple[str, object, object], list[FocusCharge]] = defaultdict(list)
     for c in charges:
         buckets[(c.service, c.period_start, c.period_end)].append(c)
 
     results: list[AggregatedFocusCharge] = []
     for (service, ps, pe), rows in buckets.items():
+        # Flatten per-input-row tag dicts. The loader wraps each row's
+        # single tag dict in a list, so [r.tags for r in rows] gives
+        # list[list[dict]] — we flatten to list[dict]. Cross-row
+        # duplicates are preserved (intentional: the runner uses the
+        # count to attribute cost proportionally).
+        flat_tag_dicts: list[dict[str, str]] = []
+        for r in rows:
+            for t in r.tags:
+                flat_tag_dicts.append(t)
+
         results.append(
             AggregatedFocusCharge(
                 service=service,
@@ -94,6 +122,7 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 resource_id=_mode([r.resource_id for r in rows]),
                 sub_account_id=_mode([r.sub_account_id for r in rows]),
                 tags=_unique_dicts([r.tags for r in rows]),
+                per_row_tag_dicts=flat_tag_dicts,
             )
         )
     return results

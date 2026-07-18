@@ -213,14 +213,54 @@ class FocusChargeORM(Base):
     )
     resource_id: Mapped[str | None] = mapped_column(String)
     sub_account_id: Mapped[str | None] = mapped_column(String)
-    # FOCUS Tags: list of unique tag dicts seen for this (service, period)
-    # row. Used by the chargeback_by_tag runner to re-aggregate by any tag
-    # key (Application, CostCenter, ...). See migration 0008.
+    # FOCUS Tags: denormalized list of unique tag dicts seen for this
+    # (service, period) row. Kept for fast access; the source of truth
+    # for per-row tag attribution is `focus_charge_tags` (migration
+    # 0009). The chargeback_by_tag runner uses the per-row table to
+    # attribute cost proportionally (no more even-split approximation).
     tags: Mapped[list[dict[str, str]]] = mapped_column(JSONBType(), nullable=False, default=list)
     charge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class FocusChargeTagORM(Base):
+    """V2 per-row FOCUS Tags (P3 item 11 fix).
+
+    One row per (focus_charge, input FOCUS row, key, value) tuple. The
+    `focus_charges.tags` JSONB column is a denormalized cache of the
+    unique tag dicts; this table preserves per-row data so the
+    chargeback runner can attribute cost proportionally rather than
+    evenly across unique values.
+
+    Why per-row matters: a focus_charge representing 5 input FOCUS
+    rows might have 3 rows tagged Application=web and 2 tagged
+    Application=api. V1 even-split gave 50/50; V2 gives 60/40.
+    """
+
+    __tablename__ = "focus_charge_tags"
+    # NO UniqueConstraint: a focus_charge representing N input rows has
+    # N rows per (key, value) — the count IS the signal that drives
+    # proportional cost attribution in the runner. UNIQUE would silently
+    # break the V2 fix (see migration 0009 for the rationale).
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    focus_charge_id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("focus_charges.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class InsightORM(Base):

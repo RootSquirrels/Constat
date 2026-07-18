@@ -151,35 +151,34 @@ def test_run_endpoint_optional_today(client: TestClient, session) -> None:
 
 
 def test_run_endpoint_chargeback_with_tag_key(client: TestClient, session) -> None:
-    """V1: the chargeback rule accepts a `tag_key` body field. When set,
-    insights are split by the matching tag value."""
+    """The chargeback rule accepts a `tag_key` body field. When set,
+    insights are split by the matching tag value (V2: proportional
+    to per-row tag counts, see migration 0009)."""
     from datetime import date
     from decimal import Decimal
 
-    from constat_api.orm import FocusChargeORM
     from constat_api.repositories import accounts as accounts_repo
     from constat_api.repositories import focus_charges as focus_charges_repo
-    from constat_api.settings import DEFAULT_TENANT_ID
+    from constat_focus.aggregator import AggregatedFocusCharge
 
     acc = accounts_repo.get_or_create(session, "111111111111")
     focus_charges_repo.upsert_aggregated(
         session,
         acc.id,
         [
-            FocusChargeORM(  # type: ignore[call-arg]
-                tenant_id=DEFAULT_TENANT_ID,
-                account_id=acc.id,
+            AggregatedFocusCharge(
                 service="AmazonRDS",
                 period_start=date(2026, 7, 1),
                 period_end=date(2026, 7, 31),
-                region="eu-west-1",
-                pricing_category="On-Demand",
                 billed_cost=Decimal("200"),
                 amortized_cost=Decimal("200"),
+                charge_count=2,
+                region="eu-west-1",
+                pricing_category="On-Demand",
                 resource_id=None,
                 sub_account_id=None,
                 tags=[{"Application": "web"}, {"Application": "api"}],
-                charge_count=1,
+                per_row_tag_dicts=[{"Application": "web"}, {"Application": "api"}],
             )
         ],
     )

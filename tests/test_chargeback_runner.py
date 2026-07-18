@@ -6,10 +6,10 @@ from datetime import date
 from decimal import Decimal
 
 from constat_api.insights.runner import run_chargeback
-from constat_api.orm import AccountORM, FocusChargeORM, InsightORM
+from constat_api.orm import AccountORM, InsightORM
 from constat_api.repositories import accounts as accounts_repo
 from constat_api.repositories import focus_charges as focus_charges_repo
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_focus.aggregator import AggregatedFocusCharge
 from sqlalchemy.orm import Session
 
 
@@ -30,27 +30,29 @@ def _add_focus(
     period_end: date = date(2026, 7, 31),
     tags: list[dict[str, str]] | None = None,
 ) -> None:
-    focus_charges_repo.upsert_aggregated(
-        session,
-        account_id,
-        [
-            FocusChargeORM(  # type: ignore[call-arg]
-                tenant_id=DEFAULT_TENANT_ID,
-                account_id=account_id,
-                service=service,
-                period_start=period_start,
-                period_end=period_end,
-                region="eu-west-1",
-                pricing_category=pricing,
-                billed_cost=Decimal(billed),
-                amortized_cost=Decimal(amortized),
-                resource_id=None,
-                sub_account_id=None,
-                tags=list(tags) if tags else [],
-                charge_count=1,
-            )
-        ],
+    """Add one FOCUS charge row for an account.
+
+    The helper builds a real `AggregatedFocusCharge` (the canonical
+    type the upsert expects) and writes it via upsert_aggregated. Tags
+    are recorded both in the denormalized JSONB column AND as
+    per-row entries in focus_charge_tags (V2 behavior).
+    """
+    tag_list = list(tags) if tags else []
+    agg = AggregatedFocusCharge(
+        service=service,
+        period_start=period_start,
+        period_end=period_end,
+        billed_cost=Decimal(billed),
+        amortized_cost=Decimal(amortized),
+        charge_count=1,
+        region="eu-west-1",
+        pricing_category=pricing,
+        resource_id=None,
+        sub_account_id=None,
+        tags=tag_list,
+        per_row_tag_dicts=tag_list,  # one row per tag dict; preserves multiplicity
     )
+    focus_charges_repo.upsert_aggregated(session, account_id, [agg])
     session.commit()
 
 

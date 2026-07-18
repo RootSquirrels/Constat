@@ -146,12 +146,25 @@ def _evaluate_resource(
     return list(result.insights), inconclusive
 
 
-def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
-    # `tags` is stored as a list of unique tag dicts (one per FOCUS input
-    # row that contributed to this aggregated (service, period) bucket).
-    # Each input row's tag dict is a single element; the list preserves
-    # heterogeneity so aggregate_by_tag can split cost across values.
-    tags = list(orm.tags) if orm.tags else []
+def _focus_charge_to_pydantic(
+    orm: FocusChargeORM,
+    per_row_tag_dicts: list[dict[str, str]] | None = None,
+) -> FocusCharge:
+    """Build a FocusCharge dataclass from the ORM row + (optional) per-row tags.
+
+    V2 (P3 item 11 fix): `per_row_tag_dicts` is the flat list of
+    per-input-row tag dicts read from `focus_charge_tags`. Each element
+    is one input FOCUS row's tag dict. Duplicates are preserved
+    intentionally — the resolver uses the row count to attribute
+    cost proportionally.
+
+    If `per_row_tag_dicts` is None, fall back to the denormalized
+    `focus_charges.tags` JSONB column (one element per unique tag
+    dict, V1 semantics). This keeps the runner usable for callers
+    that haven't read focus_charge_tags yet.
+    """
+    if per_row_tag_dicts is None:
+        per_row_tag_dicts = list(orm.tags) if orm.tags else []
     return FocusCharge(
         account_id=str(orm.account_id) if orm.account_id else "",
         account_name="",  # not stored in focus_charges; account_id is the FOCUS BillingAccountId
@@ -164,8 +177,34 @@ def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
         amortized_cost=orm.amortized_cost,
         resource_id=orm.resource_id,
         sub_account_id=orm.sub_account_id,
-        tags=tags,
+        tags=per_row_tag_dicts,
     )
+
+
+def _load_per_row_tags_for(
+    session: Session, focus_charge_ids: list[int]
+) -> dict[int, list[dict[str, str]]]:
+    """Read per-row tags for a list of focus_charge ids.
+
+    Returns a dict {focus_charge_id: [tag_dict, ...]} where each
+    tag_dict is one input FOCUS row's tag dict. The list preserves
+    multiplicity (a focus_charge representing 5 input rows can have
+    the same (key, value) appear 5 times).
+
+    Used by the V2 chargeback runner to attribute cost proportionally
+    rather than evenly.
+    """
+    if not focus_charge_ids:
+        return {}
+    from sqlalchemy import select
+
+    from constat_api.orm import FocusChargeTagORM
+
+    stmt = select(FocusChargeTagORM).where(FocusChargeTagORM.focus_charge_id.in_(focus_charge_ids))
+    by_charge: dict[int, list[dict[str, str]]] = {cid: [] for cid in focus_charge_ids}
+    for tag_row in session.execute(stmt).scalars():
+        by_charge[tag_row.focus_charge_id].append({tag_row.key: tag_row.value})
+    return by_charge
 
 
 def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
@@ -253,7 +292,13 @@ def run_chargeback(
             if not orm_charges:
                 continue
 
-            charges = [_focus_charge_to_pydantic(c) for c in orm_charges]
+            # V2: read per-row tags for proportional cost attribution.
+            focus_charge_ids = [c.id for c in orm_charges]
+            per_row_tags_by_id = _load_per_row_tags_for(session, focus_charge_ids)
+
+            charges = [
+                _focus_charge_to_pydantic(c, per_row_tags_by_id.get(c.id)) for c in orm_charges
+            ]
             if tag_key:
                 aggregated = aggregate_by_tag(charges, tag_key=tag_key)
             else:
