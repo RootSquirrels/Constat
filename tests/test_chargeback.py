@@ -15,7 +15,6 @@ def _charge(
     service: str = "AmazonRDS",
     billed: str = "100.00",
     amortized: str = "100.00",
-    effective: str = "100.00",
     pricing: str = "On-Demand",
     region: str = "eu-west-1",
 ) -> FocusCharge:
@@ -29,7 +28,8 @@ def _charge(
         period_end=date(2026, 7, 31),
         billed_cost=Decimal(billed),
         amortized_cost=Decimal(amortized),
-        effective_cost=Decimal(effective),
+        resource_id=None,
+        sub_account_id=None,
     )
 
 
@@ -37,7 +37,7 @@ def test_aggregate_groups_by_account_and_service():
     charges = [
         _charge(service="AmazonRDS", billed="100", amortized="100"),
         _charge(service="AmazonRDS", billed="50", amortized="50"),
-        _charge(service="AmazonEC2", billed="200", amortized="200"),
+        _charge(service="AmazonEC2", billed="200", amortized="180"),
     ]
     agg = aggregate(charges)
 
@@ -50,7 +50,7 @@ def test_aggregate_groups_by_account_and_service():
 
 def test_build_insights_emits_warning_for_100_drift():
     # Drift of +120 USD amortized over billed -> WARNING (>= 100, < 1000)
-    charges = [_charge(billed="1000", amortized="1120", effective="1000")]
+    charges = [_charge(billed="1000", amortized="1120")]
     insights = build_insights(aggregate(charges))
 
     assert len(insights) == 1
@@ -59,7 +59,7 @@ def test_build_insights_emits_warning_for_100_drift():
 
 
 def test_build_insights_emits_critical_for_1000_drift():
-    charges = [_charge(billed="1000", amortized="2500", effective="1000")]
+    charges = [_charge(billed="1000", amortized="2500")]
     insights = build_insights(aggregate(charges))
 
     assert len(insights) == 1
@@ -67,7 +67,7 @@ def test_build_insights_emits_critical_for_1000_drift():
 
 
 def test_build_insights_emits_info_for_small_drift():
-    charges = [_charge(billed="100", amortized="110", effective="100")]
+    charges = [_charge(billed="100", amortized="110")]
     insights = build_insights(aggregate(charges))
 
     assert insights[0].severity == Severity.INFO

@@ -3,7 +3,7 @@
 We use stdlib only (csv + dataclasses). FOCUS exports are large but chunking is
 the caller's problem — this module just streams rows.
 
-Reference: https://focus.finops.org/focus-specification/
+Reference: https://focus.finops.org/focus-specification/v1-0/
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# FOCUS 1.0 columns we actually use in V1. The full spec has 60+; we only require
-# what the chargeback insight needs. If a column is missing, we raise — better to
-# fail loud than to silently drop cost data.
+# FOCUS 1.0 columns we actually require in V1. The full spec has 43+; we only
+# fail-loud on what the chargeback insight and cost-to-resource attribution need.
+# A column missing from the source file means the export is not FOCUS 1.0 conformant.
 FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {
         "BillingAccountId",
@@ -29,20 +29,22 @@ FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
         "ChargePeriodStart",
         "ChargePeriodEnd",
         "BilledCost",
-        "AmortizedCost",
-        "EffectiveCost",
+        "EffectiveCost",  # FOCUS 1.0: the amortized cost (AmortizedCost was renamed in 1.0)
         "PricingCategory",
         "Region",
+        "ResourceId",  # FOCUS 1.0: for cost-to-resource attribution
+        "SubAccountId",  # FOCUS 1.0: AWS Organizations account ID
     }
 )
 
 
 @dataclass(frozen=True)
 class FocusCharge:
-    """One FOCUS charge row, normalized for our schema.
+    """One FOCUS 1.0 charge row, normalized.
 
-    We keep the original column names where the meaning is unambiguous, and
-    document the mapping in the loader.
+    Field naming uses our mental model:
+    - billed_cost    ← FOCUS BilledCost (what you pay)
+    - amortized_cost ← FOCUS EffectiveCost (amortized over the period)
     """
 
     account_id: str
@@ -54,7 +56,8 @@ class FocusCharge:
     period_end: date
     billed_cost: Decimal
     amortized_cost: Decimal
-    effective_cost: Decimal
+    resource_id: str | None
+    sub_account_id: str | None
 
 
 def _parse_date(s: str) -> date:
@@ -75,23 +78,31 @@ def _parse_decimal(s: str | None) -> Decimal:
         return Decimal("0")
 
 
+def _opt_str(s: str | None) -> str | None:
+    if s is None:
+        return None
+    s = s.strip()
+    return s or None
+
+
 def _row_to_charge(row: dict[str, str]) -> FocusCharge:
     return FocusCharge(
         account_id=row["BillingAccountId"].strip(),
         account_name=row.get("BillingAccountName", "").strip(),
         service=row["ServiceName"].strip(),
-        region=(row.get("Region") or "").strip() or None,
-        pricing_category=(row.get("PricingCategory") or "").strip() or None,
+        region=_opt_str(row.get("Region")),
+        pricing_category=_opt_str(row.get("PricingCategory")),
         period_start=_parse_date(row["ChargePeriodStart"]),
         period_end=_parse_date(row["ChargePeriodEnd"]),
         billed_cost=_parse_decimal(row.get("BilledCost")),
-        amortized_cost=_parse_decimal(row.get("AmortizedCost")),
-        effective_cost=_parse_decimal(row.get("EffectiveCost")),
+        amortized_cost=_parse_decimal(row.get("EffectiveCost")),
+        resource_id=_opt_str(row.get("ResourceId")),
+        sub_account_id=_opt_str(row.get("SubAccountId")),
     )
 
 
 def load_focus_csv(path: str | Path) -> Iterator[FocusCharge]:
-    """Stream FOCUS charges from a CSV file.
+    """Stream FOCUS 1.0 charges from a CSV file.
 
     Validates required columns up front. Bad rows are logged and skipped, not
     fatal — FOCUS exports in the wild contain occasional garbage.
@@ -101,7 +112,7 @@ def load_focus_csv(path: str | Path) -> Iterator[FocusCharge]:
         reader = csv.DictReader(f)
         missing = FOCUS_REQUIRED_COLUMNS - set(reader.fieldnames or [])
         if missing:
-            raise ValueError(f"FOCUS file missing required columns: {sorted(missing)}")
+            raise ValueError(f"FOCUS 1.0 file missing required columns: {sorted(missing)}")
 
         for line_no, row in enumerate(reader, start=2):  # header is line 1
             try:

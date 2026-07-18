@@ -40,10 +40,11 @@ def upsert_aggregated(
         if existing is not None:
             existing.billed_cost = agg.billed_cost
             existing.amortized_cost = agg.amortized_cost
-            existing.effective_cost = agg.effective_cost
             existing.charge_count = agg.charge_count
             existing.region = agg.region
             existing.pricing_category = agg.pricing_category
+            existing.resource_id = agg.resource_id
+            existing.sub_account_id = agg.sub_account_id
             updated += 1
         else:
             session.add(
@@ -56,7 +57,8 @@ def upsert_aggregated(
                     pricing_category=agg.pricing_category,
                     billed_cost=agg.billed_cost,
                     amortized_cost=agg.amortized_cost,
-                    effective_cost=agg.effective_cost,
+                    resource_id=agg.resource_id,
+                    sub_account_id=agg.sub_account_id,
                     charge_count=agg.charge_count,
                 )
             )

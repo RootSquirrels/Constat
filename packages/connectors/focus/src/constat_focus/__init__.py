@@ -1,4 +1,4 @@
-"""FOCUS loader — CSV (V1). Parquet support in V2."""
+"""FOCUS 1.0 loader — CSV (V1). Parquet support in V2."""
 
 from constat_focus.aggregator import AggregatedFocusCharge, aggregate_for_storage
 from constat_focus.loader import FOCUS_REQUIRED_COLUMNS, FocusCharge, load_focus_csv

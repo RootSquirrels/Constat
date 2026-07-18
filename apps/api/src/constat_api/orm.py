@@ -175,9 +175,8 @@ class FocusChargeORM(Base):
     amortized_cost: Mapped[Decimal] = mapped_column(
         Numeric(18, 6), nullable=False, default=Decimal("0")
     )
-    effective_cost: Mapped[Decimal] = mapped_column(
-        Numeric(18, 6), nullable=False, default=Decimal("0")
-    )
+    resource_id: Mapped[str | None] = mapped_column(String)
+    sub_account_id: Mapped[str | None] = mapped_column(String)
     charge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -15,9 +15,10 @@ def _charge(
     pe: date = date(2026, 7, 31),
     billed: str = "100.00",
     amortized: str = "100.00",
-    effective: str = "100.00",
     region: str = "eu-west-1",
     pricing: str = "On-Demand",
+    resource_id: str = "arn:rds:1",
+    sub_account_id: str = "111",
 ) -> FocusCharge:
     return FocusCharge(
         account_id="111111111111",
@@ -29,7 +30,8 @@ def _charge(
         period_end=pe,
         billed_cost=Decimal(billed),
         amortized_cost=Decimal(amortized),
-        effective_cost=Decimal(effective),
+        resource_id=resource_id,
+        sub_account_id=sub_account_id,
     )
 
 
@@ -68,17 +70,27 @@ def test_aggregator_picks_mode_for_region():
     assert agg[0].region == "eu-west-1"
 
 
-def test_aggregator_picks_mode_for_pricing_category():
+def test_aggregator_picks_mode_for_resource_id():
+    """When multiple FOCUS rows aggregate to one bucket, the dominant
+    resource_id is kept. This enables cost-to-resource attribution in V2."""
     rows = [
-        _charge(pricing="On-Demand"),
-        _charge(pricing="Reservation"),
-        _charge(pricing="On-Demand"),
+        _charge(resource_id="arn:rds:1"),
+        _charge(resource_id="arn:rds:1"),
+        _charge(resource_id="arn:rds:2"),
     ]
     agg = aggregate_for_storage(rows)
-    assert agg[0].pricing_category == "On-Demand"
+    assert len(agg) == 1
+    assert agg[0].resource_id == "arn:rds:1"
 
 
-def test_aggregator_handles_all_null_region_and_pricing():
+def test_aggregator_keeps_sub_account_id():
+    rows = [_charge(sub_account_id="222222222222") for _ in range(3)]
+    agg = aggregate_for_storage(rows)
+    assert agg[0].sub_account_id == "222222222222"
+
+
+def test_aggregator_handles_null_resource_id():
+    """Some FOCUS exports may have null ResourceId (e.g., account-level fees)."""
     rows = [
         FocusCharge(
             account_id="x",
@@ -90,10 +102,11 @@ def test_aggregator_handles_all_null_region_and_pricing():
             period_end=date(2026, 7, 31),
             billed_cost=Decimal("10"),
             amortized_cost=Decimal("10"),
-            effective_cost=Decimal("10"),
+            resource_id=None,
+            sub_account_id=None,
         )
     ]
     agg = aggregate_for_storage(rows)
-    assert agg[0].region is None
-    assert agg[0].pricing_category is None
+    assert agg[0].resource_id is None
+    assert agg[0].sub_account_id is None
     assert agg[0].charge_count == 1

@@ -63,7 +63,9 @@ CREATE INDEX idx_facts_resource ON facts(resource_id, namespace, key) WHERE reso
 CREATE INDEX idx_facts_account ON facts(account_id, namespace, key) WHERE account_id IS NOT NULL;
 CREATE INDEX idx_facts_observed ON facts(observed_at DESC);
 
--- focus_charges: FOCUS billing data (one row per account × service × period bucket)
+-- focus_charges: FOCUS 1.0 billing data (one row per account × service × period bucket)
+-- Note: effective_cost is intentionally absent. FOCUS 1.0 has EffectiveCost
+-- (the amortized cost) only; we map it to our `amortized_cost` column.
 CREATE TABLE focus_charges (
     id BIGSERIAL PRIMARY KEY,
     account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -74,7 +76,6 @@ CREATE TABLE focus_charges (
     pricing_category TEXT,
     billed_cost NUMERIC(18, 6) NOT NULL DEFAULT 0,
     amortized_cost NUMERIC(18, 6) NOT NULL DEFAULT 0,
-    effective_cost NUMERIC(18, 6) NOT NULL DEFAULT 0,
     charge_count INT NOT NULL DEFAULT 1,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

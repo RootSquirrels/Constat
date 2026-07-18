@@ -23,10 +23,11 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
         "ChargePeriodStart",
         "ChargePeriodEnd",
         "BilledCost",
-        "AmortizedCost",
         "EffectiveCost",
         "PricingCategory",
         "Region",
+        "ResourceId",
+        "SubAccountId",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -44,10 +45,11 @@ def _rds_row(billed: str = "100") -> dict:
         "ChargePeriodStart": "2026-07-01T00:00:00Z",
         "ChargePeriodEnd": "2026-07-31T23:59:59Z",
         "BilledCost": billed,
-        "AmortizedCost": billed,
-        "EffectiveCost": billed,
+        "EffectiveCost": billed,  # FOCUS 1.0: amortized
         "PricingCategory": "On-Demand",
         "Region": "eu-west-1",
+        "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:myapp",
+        "SubAccountId": "222222222222",
     }
 
 

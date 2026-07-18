@@ -1,4 +1,4 @@
-"""Chargeback insight: aggregate FOCUS charges per (account, service).
+"""Chargeback insight: aggregate FOCUS 1.0 charges per (account, service).
 
 The FOCUS loader yields `FocusCharge` rows. This module groups them, computes
 the amortized-vs-billed drift, and emits one Insight per group with severity
@@ -29,7 +29,6 @@ class AggregatedCost:
     service: str
     billed_cost: Decimal
     amortized_cost: Decimal
-    effective_cost: Decimal
     charge_count: int
 
     @property
@@ -53,7 +52,6 @@ def aggregate(charges: Iterable[FocusCharge], *, period_label: str = "") -> list
                 service=service,
                 billed_cost=sum((c.billed_cost for c in rows), Decimal("0")),
                 amortized_cost=sum((c.amortized_cost for c in rows), Decimal("0")),
-                effective_cost=sum((c.effective_cost for c in rows), Decimal("0")),
                 charge_count=len(rows),
             )
         )
@@ -94,7 +92,6 @@ def build_insights(
                     "period_label": period_label,
                     "billed_cost_usd": float(agg.billed_cost),
                     "amortized_cost_usd": float(agg.amortized_cost),
-                    "effective_cost_usd": float(agg.effective_cost),
                     "drift_amortized_minus_billed_usd": float(drift),
                     "charge_count": agg.charge_count,
                 },
