@@ -21,7 +21,7 @@ export default async function Home() {
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr 1fr",
           gap: "1rem",
         }}
       >
@@ -75,6 +75,23 @@ export default async function Home() {
           <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>Chargeback</h2>
           <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
             Per-account × service cost, amortized vs brut, sourced from FOCUS.
+          </p>
+        </Link>
+        <Link
+          href="/status"
+          style={{
+            display: "block",
+            padding: "1.5rem",
+            border: "1px solid #e5e7eb",
+            borderRadius: 8,
+            backgroundColor: "#fff",
+            textDecoration: "none",
+            color: "inherit",
+          }}
+        >
+          <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>Status</h2>
+          <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
+            One-glance fleet view: counts, freshness, last runs.
           </p>
         </Link>
       </section>

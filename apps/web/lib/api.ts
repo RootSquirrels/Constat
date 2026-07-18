@@ -66,6 +66,37 @@ export interface InsightRun {
   error: string | null;
 }
 
+export interface Account {
+  id: string;
+  external_id: string;
+  name: string | null;
+  created_at: string;
+}
+
+export interface Status {
+  generated_at: string;
+  accounts: number;
+  resources_total: number;
+  resources_active: number;
+  insights_total: number;
+  insights_by_severity: {
+    critical: number;
+    warning: number;
+    info: number;
+  };
+  inconclusive_total: number;
+  last_insight_run: InsightRun | null;
+  last_source_run: {
+    account_external_id: string | null;
+    region: string;
+    resource_type: string;
+    finished_at: string | null;
+    status: string;
+    resources_found: number | null;
+  } | null;
+  source_run_freshness_seconds: number | null;
+}
+
 class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -123,6 +154,11 @@ export const api = {
 
   listInsightRuns: (params: { rule_name?: string; limit?: number } = {}) =>
     fetchJson<InsightRun[]>(`/insight-runs${buildQuery(params)}`),
+
+  getStatus: () => fetchJson<Status>("/status"),
+
+  listAccounts: (params: { limit?: number } = {}) =>
+    fetchJson<Account[]>(`/accounts${buildQuery(params)}`),
 };
 
 export { ApiError, API_URL };
