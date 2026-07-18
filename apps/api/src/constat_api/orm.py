@@ -154,7 +154,13 @@ class FactORM(Base):
 class FocusChargeORM(Base):
     __tablename__ = "focus_charges"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # BigSerial on postgres; Integer on sqlite (sqlite's ROWID alias only
+    # auto-increments INTEGER PRIMARY KEY, not BigInteger).
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     account_id: Mapped[UUID] = mapped_column(
         GUID(), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
     )
