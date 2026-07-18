@@ -67,6 +67,20 @@ def insert_insight(session: Session, insight: Insight) -> Insight:
     return _orm_to_pydantic(orm)
 
 
+def delete_insights_for_rule(session: Session, rule_name: str) -> int:
+    """Delete all insights for a rule. Returns the number of rows deleted.
+
+    Audit F-03: the runner uses delete-and-replace semantics — each run
+    starts by clearing the rule's previous insights so re-runs don't
+    accumulate duplicates. The caller owns the transaction.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    stmt = sa_delete(InsightORM).where(InsightORM.rule_name == rule_name)
+    result = session.execute(stmt)
+    return int(result.rowcount or 0)
+
+
 def count_insights(session: Session, *, rule_name: str | None = None) -> int:
     from sqlalchemy import func as sa_func
 

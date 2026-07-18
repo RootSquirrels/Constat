@@ -67,6 +67,20 @@ def count_inconclusive(session: Session, *, rule_name: str | None = None) -> int
     return int(session.execute(stmt).scalar_one())
 
 
+def delete_inconclusive_for_rule(session: Session, rule_name: str) -> int:
+    """Delete all inconclusive records for a rule. Returns rows deleted.
+
+    Audit F-03: the runner uses delete-and-replace semantics — each run
+    starts by clearing the rule's previous records so re-runs don't
+    accumulate duplicates. The caller owns the transaction.
+    """
+    from sqlalchemy import delete as sa_delete
+
+    stmt = sa_delete(InconclusiveORM).where(InconclusiveORM.rule_name == rule_name)
+    result = session.execute(stmt)
+    return int(result.rowcount or 0)
+
+
 def delete_older_than(session: Session, *, older_than_days: int) -> int:
     """Delete inconclusive records older than N days.
 

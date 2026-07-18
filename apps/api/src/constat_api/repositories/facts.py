@@ -47,6 +47,22 @@ def list_facts_for_resource(
     return [_orm_to_pydantic(row) for row in session.execute(stmt).scalars()]
 
 
+def list_facts_for_resources(session: Session, resource_ids: list[UUID]) -> list[Fact]:
+    """List current facts for many resources in one query (audit F-16).
+
+    Replaces the per-resource N+1 pattern in the runner: fetch once,
+    group by resource_id in memory at the call site.
+    """
+    if not resource_ids:
+        return []
+    stmt = (
+        select(FactORM)
+        .where(FactORM.resource_id.in_(resource_ids))
+        .order_by(FactORM.namespace, FactORM.key, FactORM.observed_at.desc())
+    )
+    return [_orm_to_pydantic(row) for row in session.execute(stmt).scalars()]
+
+
 def list_facts_for_account(session: Session, account_id: UUID) -> list[Fact]:
     """List current facts scoped to an account (no resource_id)."""
     stmt = (

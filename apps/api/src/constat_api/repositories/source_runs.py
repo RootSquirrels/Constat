@@ -141,6 +141,18 @@ def cleanup_stuck_runs(
     return len(stuck)
 
 
+def _age_since(ts: datetime) -> timedelta:
+    """Age of a timestamp relative to now, tolerant of naive datetimes.
+
+    sqlite drops tzinfo on DateTime(timezone=True) columns, so a timestamp
+    read back may be naive. Compare naive-with-naive in that case.
+    """
+    now = datetime.now(tz=UTC)
+    if ts.tzinfo is None:
+        return now.replace(tzinfo=None) - ts
+    return now - ts
+
+
 def latest_successful_run(
     session: Session,
     *,
@@ -148,10 +160,18 @@ def latest_successful_run(
     region: str,
     resource_type: str,
     source: str,
+    max_age: timedelta | None = None,
 ) -> SourceRunORM | None:
     """The most recent successful run for a (account, region, type, source).
 
     If None, no successful scan has proven this scope complete.
+
+    Args:
+        max_age: freshness window (audit F-02). When set, a successful run
+            older than max_age no longer proves the scope and None is
+            returned. The age check happens in Python (not SQL) so the
+            comparison is dialect-safe (sqlite returns naive datetimes).
+            Default None keeps the historical "any success proves" behavior.
     """
     stmt = (
         select(SourceRunORM)
@@ -165,7 +185,12 @@ def latest_successful_run(
         .order_by(SourceRunORM.finished_at.desc())
         .limit(1)
     )
-    return session.execute(stmt).scalar_one_or_none()
+    run = session.execute(stmt).scalar_one_or_none()
+    if run is None or max_age is None:
+        return run
+    if run.finished_at is None or _age_since(run.finished_at) > max_age:
+        return None
+    return run
 
 
 def list_runs(

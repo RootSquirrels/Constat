@@ -26,7 +26,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from constat_chargeback.resolver import (
     aggregate_by_period,
@@ -43,18 +43,23 @@ from constat_api.metrics import (
     record_insight_emitted,
     record_insight_run_duration,
 )
-from constat_api.orm import FocusChargeORM, InsightRunORM, ResourceORM
+from constat_api.orm import AccountORM, FocusChargeORM, InsightRunORM, ResourceORM
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import inconclusive as inconclusive_repo
 from constat_api.repositories import insights as insights_repo
 from constat_api.repositories import source_runs as source_runs_repo
-from constat_api.repositories.facts import _orm_to_pydantic
+from constat_api.repositories.source_runs import _age_since
 from constat_api.settings import DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
 # V1: hardcoded source name. V2 will have multiple sources per resource type.
 DEFAULT_SOURCE = "aws_rds"
+
+# Freshness window for scope proof (audit F-02). A successful source_run
+# older than this no longer proves the scope: the resource goes
+# INCONCLUSIVE with reason scope_stale instead of MATCH/NO_MATCH.
+DEFAULT_SCOPE_MAX_AGE = timedelta(hours=24)
 
 
 @dataclass(frozen=True)
@@ -67,12 +72,17 @@ class RunResult:
     period_label: str = ""  # for account-based rules: which period was aggregated
 
 
-def _is_scope_proven(session: Session, resource: ResourceORM) -> bool:
+def _is_scope_proven(
+    session: Session, resource: ResourceORM, *, max_age: timedelta | None = None
+) -> bool:
     """True if a successful source_run exists for this resource's scope.
 
     A 'successful' run is status='success' (not 'failed' or 'running').
     Without this proof, we cannot claim MATCH/NO_MATCH; we must emit
     INCONCLUSIVE (the GTM promise: never guess).
+
+    When max_age is set, the run must also be fresher than max_age
+    (audit F-02): an old scan no longer proves the scope.
     """
     run = source_runs_repo.latest_successful_run(
         session,
@@ -80,8 +90,54 @@ def _is_scope_proven(session: Session, resource: ResourceORM) -> bool:
         region=resource.region,
         resource_type=resource.resource_type,
         source=DEFAULT_SOURCE,
+        max_age=max_age,
     )
     return run is not None
+
+
+def _scope_inconclusive(
+    session: Session,
+    resource: ResourceORM,
+    *,
+    scope_max_age: timedelta | None,
+) -> Inconclusive | None:
+    """Return the scope-level Inconclusive for this resource, or None if proven.
+
+    Two distinct machine-readable reasons (audit F-02):
+    - scope_not_proven: no successful source_run exists at all.
+    - scope_stale: a successful run exists but is older than scope_max_age;
+      the human-readable reason carries the run age.
+    """
+    if _is_scope_proven(session, resource, max_age=scope_max_age):
+        return None
+    account_id = str(resource.account_id) if resource.account_id else None
+    latest = source_runs_repo.latest_successful_run(
+        session,
+        account_id=resource.account_id,
+        region=resource.region,
+        resource_type=resource.resource_type,
+        source=DEFAULT_SOURCE,
+    )
+    if latest is None:
+        return Inconclusive(
+            rule_name="rds_eol",
+            resource_id=resource.id,
+            account_id=account_id,
+            missing_facts=["scope_not_proven"],
+            reason=(f"no successful source_run for ({resource.region}, {resource.resource_type})"),
+        )
+    age = _age_since(latest.finished_at) if latest.finished_at else None
+    return Inconclusive(
+        rule_name="rds_eol",
+        resource_id=resource.id,
+        account_id=account_id,
+        missing_facts=["scope_stale"],
+        reason=(
+            f"scope_stale: latest successful source_run for "
+            f"({resource.region}, {resource.resource_type}) is {age} old, "
+            f"older than the freshness window {scope_max_age}"
+        ),
+    )
 
 
 def _emit_inconclusive(
@@ -109,28 +165,24 @@ def _evaluate_resource(
     session: Session,
     resource: ResourceORM,
     *,
+    pydantic_facts: list[Fact],
     today: date | None = None,
+    scope_max_age: timedelta | None = None,
 ) -> tuple[list, list[Inconclusive]]:
     """Evaluate a single resource. Returns (insights, inconclusive) for the caller to insert.
+
+    `pydantic_facts` is this resource's slice of the bulk fact fetch done
+    by the caller (audit F-16: one query for all resources, grouped in
+    memory — no per-resource N+1).
 
     Returns the objects (not the IDs) so the caller controls the transaction
     boundary and the run metadata.
     """
-    if not _is_scope_proven(session, resource):
-        return [], [
-            Inconclusive(
-                rule_name="rds_eol",
-                resource_id=resource.id,
-                account_id=str(resource.account_id) if resource.account_id else None,
-                missing_facts=["scope_not_proven"],
-                reason=(
-                    f"no successful source_run for ({resource.region}, {resource.resource_type})"
-                ),
-            )
-        ]
+    scope_inc = _scope_inconclusive(session, resource, scope_max_age=scope_max_age)
+    if scope_inc is not None:
+        return [], [scope_inc]
 
-    orm_facts = facts_repo.list_facts_for_resource(session, resource.id)
-    if not orm_facts:
+    if not pydantic_facts:
         return [], [
             Inconclusive(
                 rule_name="rds_eol",
@@ -141,7 +193,6 @@ def _evaluate_resource(
             )
         ]
 
-    pydantic_facts: list[Fact] = [_orm_to_pydantic(f) for f in orm_facts]
     result = rds_eol_evaluate(resource.id, pydantic_facts, today=today)
 
     inconclusive: list[Inconclusive] = []
@@ -162,6 +213,8 @@ def _evaluate_resource(
 def _focus_charge_to_pydantic(
     orm: FocusChargeORM,
     per_row_tag_dicts: list[dict[str, str]] | None = None,
+    *,
+    account_name: str = "",
 ) -> FocusCharge:
     """Build a FocusCharge dataclass from the ORM row + (optional) per-row tags.
 
@@ -175,12 +228,15 @@ def _focus_charge_to_pydantic(
     `focus_charges.tags` JSONB column (one element per unique tag
     dict, V1 semantics). This keeps the runner usable for callers
     that haven't read focus_charge_tags yet.
+
+    `account_name` is the display name from the accounts table (audit
+    F-13): focus_charges doesn't store it, so the caller resolves it.
     """
     if per_row_tag_dicts is None:
         per_row_tag_dicts = list(orm.tags) if orm.tags else []
     return FocusCharge(
         account_id=str(orm.account_id) if orm.account_id else "",
-        account_name="",  # not stored in focus_charges; account_id is the FOCUS BillingAccountId
+        account_name=account_name,
         service=orm.service,
         region=orm.region,
         pricing_category=orm.pricing_category,
@@ -220,10 +276,25 @@ def _load_per_row_tags_for(
     return by_charge
 
 
-def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
+def run_rds_eol(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
     """Run the rds_eol rule across all resources. Emits insights and inconclusive.
 
     Wraps everything in a single insight_run row for auditability.
+
+    Delete-and-replace (audit F-03): the rule's previous insights and
+    inconclusive rows are deleted at the start of the run, so re-runs
+    never accumulate duplicates.
+
+    Args:
+        today: injected "current date" for the EOL computation (tests).
+        scope_max_age: freshness window for the scope proof (audit F-02).
+            A successful source_run older than this sends the resource to
+            INCONCLUSIVE scope_stale. None disables the freshness check.
     """
     run = InsightRunORM(
         tenant_id=DEFAULT_TENANT_ID,
@@ -235,13 +306,29 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
 
     started = time.monotonic()
     resources = session.query(ResourceORM).all()
+
+    # F-03: clear the rule's previous output before writing fresh results.
+    insights_repo.delete_insights_for_rule(session, "rds_eol")
+    inconclusive_repo.delete_inconclusive_for_rule(session, "rds_eol")
+
+    # F-16: one bulk query for all resources' facts, grouped in memory.
+    facts_by_resource: dict = {}
+    for fact in facts_repo.list_facts_for_resources(session, [r.id for r in resources]):
+        facts_by_resource.setdefault(fact.resource_id, []).append(fact)
+
     insights_emitted = 0
     inconclusive_emitted = 0
     errors: list[str] = []
 
     for resource in resources:
         try:
-            insights, inconclusive = _evaluate_resource(session, resource, today=today)
+            insights, inconclusive = _evaluate_resource(
+                session,
+                resource,
+                pydantic_facts=facts_by_resource.get(resource.id, []),
+                today=today,
+                scope_max_age=scope_max_age,
+            )
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
@@ -283,6 +370,12 @@ def run_chargeback(
     insight with the amortized-vs-billed drift. No source_run check:
     FOCUS is "complete by ingestion" (the user is the source).
 
+    Delete-and-replace (audit F-03): all previous chargeback insights are
+    deleted at the start of the run. The tag_key variant shares the rule
+    name "chargeback", so a tagged run also clears untagged insights (and
+    vice versa) — the V1 semantic is "the insights table holds the output
+    of the latest chargeback run, whichever grouping was used".
+
     Args:
         period_label: human-readable label for the aggregation scope.
         tag_key: when set, re-aggregate by (account, service, period,
@@ -298,6 +391,16 @@ def run_chargeback(
     session.commit()
 
     started = time.monotonic()
+    # F-03: clear the rule's previous output before writing fresh results.
+    insights_repo.delete_insights_for_rule(session, "chargeback")
+
+    # F-13: resolve account display names once for readable insight titles.
+    account_names = {
+        str(acc_id): name
+        for acc_id, name in session.query(AccountORM.id, AccountORM.name).all()
+        if name
+    }
+
     # Distinct accounts that have FOCUS data
     account_ids = {row[0] for row in session.query(FocusChargeORM.account_id).distinct().all()}
     insights_emitted = 0
@@ -316,7 +419,12 @@ def run_chargeback(
             per_row_tags_by_id = _load_per_row_tags_for(session, focus_charge_ids)
 
             charges = [
-                _focus_charge_to_pydantic(c, per_row_tags_by_id.get(c.id)) for c in orm_charges
+                _focus_charge_to_pydantic(
+                    c,
+                    per_row_tags_by_id.get(c.id),
+                    account_name=account_names.get(str(c.account_id), ""),
+                )
+                for c in orm_charges
             ]
             if tag_key:
                 aggregated = aggregate_by_tag(charges, tag_key=tag_key)

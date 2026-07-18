@@ -34,11 +34,6 @@ RULE_NAME = "chargeback"
 # spend separately from tagged spend.
 UNTAGGED = "__untagged__"
 
-# Drift thresholds (USD/month per service) for severity escalation.
-# Tunable. Calibrate against real prospect data in the first G0 run.
-SEVERITY_WARNING_USD = Decimal("100")
-SEVERITY_CRITICAL_USD = Decimal("1000")
-
 
 @dataclass(frozen=True)
 class AggregatedCost:
@@ -60,6 +55,9 @@ class AggregatedCost:
     # value the cost was attributed to (or UNTAGGED).
     tag_key: str | None = None
     tag_value: str | None = None
+    # Human-readable account name (audit F-13). Empty when unknown;
+    # build_insights falls back to account_id in the title.
+    account_name: str = ""
 
     @property
     def drift_amortized_minus_billed(self) -> Decimal:
@@ -88,6 +86,7 @@ def aggregate(charges: Iterable[FocusCharge]) -> list[AggregatedCost]:
                 amortized_cost=sum((c.amortized_cost for c in rows), Decimal("0")),
                 charge_count=len(rows),
                 tags=_merge_tag_lists(rows),
+                account_name=_first_account_name(rows),
             )
         )
     return results
@@ -118,6 +117,7 @@ def aggregate_by_period(
                 period_start=ps,
                 period_end=pe,
                 tags=_merge_tag_lists(rows),
+                account_name=_first_account_name(rows),
             )
         )
     return results
@@ -160,8 +160,12 @@ def aggregate_by_tag(
     )
     # Track per-bucket tag dicts for the insight payload.
     bucket_tags: dict[tuple[str, str, date, date, str], list[dict[str, str]]] = defaultdict(list)
+    # First non-empty account name seen per account_id (audit F-13).
+    account_names: dict[str, str] = {}
 
     for c in charges:
+        if c.account_name and c.account_id not in account_names:
+            account_names[c.account_id] = c.account_name
         if c.period_start is None or c.period_end is None:
             # Should never happen for storage rows; defensive.
             continue
@@ -205,9 +209,18 @@ def aggregate_by_tag(
                 tags=_unique_dicts_flat(bucket_tags[(account_id, service, ps, pe, tag_value)]),
                 tag_key=tag_key,
                 tag_value=tag_value,
+                account_name=account_names.get(account_id, ""),
             )
         )
     return results
+
+
+def _first_account_name(rows: Iterable[FocusCharge]) -> str:
+    """First non-empty account_name among the contributing charges ('' if none)."""
+    for r in rows:
+        if r.account_name:
+            return r.account_name
+    return ""
 
 
 def _merge_tag_lists(rows: Iterable[FocusCharge]) -> list[dict[str, str]]:
@@ -235,15 +248,6 @@ def _unique_dicts_flat(values: Iterable[dict[str, str]]) -> list[dict[str, str]]
     return out
 
 
-def _severity_for_drift(drift: Decimal) -> Severity:
-    abs_drift = abs(drift)
-    if abs_drift >= SEVERITY_CRITICAL_USD:
-        return Severity.CRITICAL
-    if abs_drift >= SEVERITY_WARNING_USD:
-        return Severity.WARNING
-    return Severity.INFO
-
-
 def _period_label(agg: AggregatedCost) -> str:
     """Render the period as a human-readable label."""
     if agg.period_start and agg.period_end:
@@ -257,23 +261,28 @@ def build_insights(
     """Convert aggregated costs into Insights.
 
     When the AggregatedCost has period info, the title includes the period
-    (e.g. 'AmazonRDS on 111 (2026-07-01 → 2026-07-31)'). When the cost is
+    (e.g. 'AmazonRDS on Production (2026-07-01 → 2026-07-31)'). When the cost is
     the result of a tag-based re-aggregation, the title includes the
     tag_key/tag_value (e.g. '[Application=web]').
+
+    Severity is always INFO (audit F-13): amortized-vs-billed drift is
+    normal RI/Savings-Plans mechanics, not an anomaly — escalating to
+    WARNING/CRITICAL on drift magnitude was misleading. The drift insight
+    itself is the product; the magnitude is in the payload.
     """
     insights: list[Insight] = []
     for agg in aggregated:
         drift = agg.drift_amortized_minus_billed
-        severity = _severity_for_drift(drift)
         direction = "up" if drift > 0 else "down" if drift < 0 else "flat"
         label = _period_label(agg) if period_label == "" else period_label
+        display_account = agg.account_name or agg.account_id
 
         tag_suffix = ""
         if agg.tag_key is not None and agg.tag_value is not None:
             tag_suffix = f" [{agg.tag_key}={agg.tag_value}]"
 
         title = (
-            f"{agg.service} on {agg.account_id} ({label}){tag_suffix}: "
+            f"{agg.service} on {display_account} ({label}){tag_suffix}: "
             f"amortized {direction} by ${abs(drift):.2f}"
         )
 
@@ -282,7 +291,7 @@ def build_insights(
                 rule_name=RULE_NAME,
                 resource_id=None,
                 account_id=agg.account_id,
-                severity=severity,
+                severity=Severity.INFO,
                 title=title,
                 payload={
                     "service": agg.service,

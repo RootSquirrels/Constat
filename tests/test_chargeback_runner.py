@@ -118,13 +118,14 @@ def test_chargeback_runner_emits_one_insight_per_period(session: Session) -> Non
     assert amounts == {100.0, 150.0}
 
 
-def test_chargeback_runner_emits_drift_with_correct_severity(session: Session) -> None:
-    """Drift > 1000 USD -> CRITICAL severity."""
+def test_chargeback_runner_caps_drift_severity_at_info(session: Session) -> None:
+    """Audit F-13: drift > 1000 USD is still INFO — amortized-vs-billed
+    drift is normal RI mechanics, not an anomaly. Drift stays in payload."""
     acc = _account(session, "111111111111")
     _add_focus(session, acc.id, service="AmazonRDS", billed="1000", amortized="2500")
     run_chargeback(session)
     insight = session.query(InsightORM).one()
-    assert insight.severity == "critical"
+    assert insight.severity == "info"
     assert insight.payload["drift_amortized_minus_billed_usd"] == 1500.0
 
 

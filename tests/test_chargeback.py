@@ -50,22 +50,23 @@ def test_aggregate_groups_by_account_and_service():
     assert rds.charge_count == 2
 
 
-def test_build_insights_emits_warning_for_100_drift():
-    # Drift of +120 USD amortized over billed -> WARNING (>= 100, < 1000)
+def test_build_insights_caps_large_drift_at_info():
+    # Audit F-13: amortized-vs-billed drift is normal RI mechanics — no
+    # severity escalation, even for large drift. Magnitude stays in payload.
     charges = [_charge(billed="1000", amortized="1120")]
     insights = build_insights(aggregate(charges))
 
     assert len(insights) == 1
-    assert insights[0].severity == Severity.WARNING
+    assert insights[0].severity == Severity.INFO
     assert insights[0].payload["drift_amortized_minus_billed_usd"] == 120.0
 
 
-def test_build_insights_emits_critical_for_1000_drift():
+def test_build_insights_caps_critical_sized_drift_at_info():
     charges = [_charge(billed="1000", amortized="2500")]
     insights = build_insights(aggregate(charges))
 
     assert len(insights) == 1
-    assert insights[0].severity == Severity.CRITICAL
+    assert insights[0].severity == Severity.INFO
 
 
 def test_build_insights_emits_info_for_small_drift():
