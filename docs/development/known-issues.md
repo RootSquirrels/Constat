@@ -53,16 +53,17 @@ PR-description if you touch the API role.
 
 ## 3. `inconclusives/{id}` does a small-N scan
 
-**Where:** `apps/api/src/constat_api/routers/inconclusive.py::get_inconclusive_endpoint`
-fetches `limit=500` rows and filters in Python.
+**Status:** FIXED in commit `0f413a6`. The router now uses
+`repo.get_inconclusive(session, id)` which is O(1) via `session.get()`.
 
-**Why:** V1 doesn't have a `get_inconclusive_by_id` repository
-method. Fine for the pilot; not fine at scale.
+**Original report:** the endpoint fetched `limit=500` rows and
+filtered in Python — `O(limit)` per call, not `O(1)`. Fine for the
+pilot; not fine at scale.
 
-**Symptom:** the lookup is `O(limit)` per call, not `O(1)`.
-
-**Fix:** add `repositories/inconclusive.py::get_inconclusive(session,
-id)`. Trivial. Not a V1 ship blocker.
+**Fix applied:** added
+`apps/api/src/constat_api/repositories/inconclusive.py::get_inconclusive`
+and updated the router to use it. Lookup is now O(1) via the PK
+index.
 
 ## 4. FOCUS ingestion assumes a single CSV per account
 
@@ -90,20 +91,19 @@ the `focus_charges` table becomes a view or a rollup.
 
 ## 5. The web app's `chargeback` page is a stub
 
-**Where:** `apps/web/app/chargeback/page.tsx` shows a static page
-explaining how to populate data. It does **not** call the API
-yet.
+**Status:** FIXED in commit `af7e172`. The page now calls
+`api.listChargeback()` and renders a per-account table with
+billed / amortized / drift / severity.
 
-**Why:** the chargeback runner emits `insights` rows with
-`account_id` set and a structured payload; the page should list
-those. Wiring is a 30-line client-side fetch. Not done because
-the V1 demo focuses on `/insights` (which is wired).
+**Original report:** the page was static, showing only 'how to
+populate data' instructions. The chargeback runner emits insights
+with a structured payload, but the page didn't render them.
 
-**Fix:** add a `listChargebackByAccount` API client + a small
-table. Not a V1 ship blocker for the pilot (the customer can
-filter `/insights?rule_name=chargeback` in the meantime).
-
-**Who owns the fix:** the web workstream.
+**Fix applied:** `apps/web/app/chargeback/page.tsx` rewritten.
+Groups insights by account, shows totals per account, table per
+(account, period, service). Falls back to the static instructions
+when no data exists. Build clean (6 routes, /chargeback now
+dynamic).
 
 ## 6. CRLF / LF line endings
 
@@ -120,14 +120,14 @@ and doesn't care.
 
 ## 7. `tsbuildinfo` in `apps/web/tsconfig.json`
 
-**Where:** `apps/web/tsconfig.json::tsBuildInfoFile`. The committed
-`tsconfig.tsbuildinfo` is a Next.js cache artifact. Not in
-`.gitignore`.
+**Status:** FIXED in commit `0f413a6`. Added
+`apps/web/tsconfig.tsbuildinfo` to `.gitignore`.
 
-**Symptom:** occasional noisy diffs after `next build`.
+**Original report:** the committed `tsconfig.tsbuildinfo` is a
+Next.js cache artifact, not in `.gitignore`. Caused noisy diffs
+after `next build`.
 
-**Fix:** add `apps/web/tsconfig.tsbuildinfo` to `.gitignore`. Not
-blocking.
+**Fix applied:** added the file to the root `.gitignore`.
 
 ## Reporting new issues
 
