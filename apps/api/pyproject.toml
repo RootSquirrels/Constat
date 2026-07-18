@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
     "structlog>=24.1",
     "prometheus-client>=0.20",
 ]

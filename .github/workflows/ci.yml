@@ -9,6 +9,22 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    services:
+      # Mirrors docker-compose.yml. Needed by the Postgres-marked tests
+      # (tests/test_rls.py) which apply db/migrations and verify RLS.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: constat
+          POSTGRES_PASSWORD: constat
+          POSTGRES_DB: constat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U constat -d constat"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +36,12 @@ jobs:
         run: pip install uv
 
       - name: Sync dependencies
-        run: uv sync --all-extras
+        # --frozen: fail if uv.lock is missing or out of sync with
+        # pyproject.toml. Never re-resolve in CI (audit F-11).
+        # --all-packages: install the workspace members (constat-api and
+        # its deps: fastapi, sqlalchemy, ...) — plain `uv sync` only
+        # installs the root project, which has no dependencies.
+        run: uv sync --frozen --all-extras --all-packages
 
       - name: Lint (ruff)
         run: uv run ruff check .
@@ -31,8 +52,26 @@ jobs:
       - name: Type-check core
         run: uv run mypy packages/core/src
 
+      - name: Apply migrations
+        # Catches broken migration chains (e.g. a policy referencing a
+        # column no migration added) on a pristine database.
+        env:
+          PGPASSWORD: constat
+        run: |
+          for f in db/migrations/*.sql; do
+            echo "== $f"
+            psql -h localhost -U constat -d constat -v ON_ERROR_STOP=1 -f "$f"
+          done
+
       - name: Test
         run: uv run pytest -v
+
+      - name: Test (Postgres RLS)
+        # psycopg is injected here only: it is not a project dependency
+        # (the API is dialect-agnostic, tests run on sqlite by default).
+        env:
+          CONSTAT_TEST_DATABASE_URL: postgresql://constat:constat@localhost:5432/constat
+        run: uv run --frozen --with "psycopg[binary]>=3.1" pytest tests/test_rls.py -m postgres -v
 
   web:
     runs-on: ubuntu-latest

@@ -14,7 +14,7 @@ htmlcov/
 .coverage
 
 # uv
-uv.lock
+# uv.lock IS committed (F-11): reproducible builds, CI uses `uv sync --frozen`.
 
 # Node / Next.js
 node_modules/
