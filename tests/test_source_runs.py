@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -245,3 +245,89 @@ def test_collector_returns_none_run_when_scan_in_progress(session: Session) -> N
 
     assert result.resources_written == 0
     assert any("in progress" in e for e in result.errors)
+
+
+# ---------------------------------------------------------------------------
+# Stuck-run cleanup + force flag
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_stuck_runs_marks_old_running_as_failed(session: Session) -> None:
+    """A run that's been 'running' for > threshold gets marked 'failed'."""
+    acc = accounts_repo.get_or_create(session, "111111111111")
+    run = source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    # Backdate started_at to 3 hours ago.
+    run.started_at = datetime.now(tz=UTC) - timedelta(hours=3)
+    session.commit()
+
+    cleaned = source_runs_repo.cleanup_stuck_runs(session, threshold=timedelta(hours=1))
+    assert cleaned == 1
+    session.refresh(run)
+    assert run.status == "failed"
+    assert "stuck_run_cleanup" in (run.error or "")
+
+
+def test_cleanup_stuck_runs_leaves_recent_runs_alone(session: Session) -> None:
+    """A run that's been 'running' for < threshold is NOT touched."""
+    acc = accounts_repo.get_or_create(session, "111111111111")
+    run = source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    # started_at is "now" (default), well under 2h.
+    session.commit()
+
+    cleaned = source_runs_repo.cleanup_stuck_runs(session, threshold=timedelta(hours=2))
+    assert cleaned == 0
+    session.refresh(run)
+    assert run.status == "running"
+
+
+def test_start_run_with_force_aborts_active_run(session: Session) -> None:
+    """force=True marks the active run as 'failed' so a new one can start."""
+    acc = accounts_repo.get_or_create(session, "111111111111")
+    first = source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    session.commit()
+    assert first is not None
+
+    # Without force: blocked
+    blocked = source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    assert blocked is None
+
+    # With force: succeeds, and the first run is marked 'failed'.
+    second = source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+        force=True,
+    )
+    session.commit()
+    assert second is not None
+    assert second.id != first.id
+
+    session.refresh(first)
+    assert first.status == "failed"
+    assert "aborted" in (first.error or "")

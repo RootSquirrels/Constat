@@ -100,6 +100,7 @@ def collect_target(
     assume_role_fn: AssumeRoleFn | None = None,
     scan_fn: ScanFn | None = None,
     dry_run: bool = False,
+    force: bool = False,
 ) -> CollectionResult:
     """Scan one target: assume role, iterate regions, write resources/facts/observations.
 
@@ -109,6 +110,11 @@ def collect_target(
 
     `assume_role_fn` and `scan_fn` use late-bound defaults (None -> look up the
     module-level default) so tests can patch them via `unittest.mock.patch`.
+
+    `force=True` aborts any 'running' source_run in the same scope before
+    starting a new one. Use this to recover from stuck runs after
+    `cleanup_stuck_runs` failed to free the scope, or when you know the
+    previous worker is dead.
     """
     if assume_role_fn is None:
         # Late binding: allows `patch("constat_api.collectors.aws._assume_role")`.
@@ -134,6 +140,7 @@ def collect_target(
             region=region,
             resource_type="AWS::RDS::DBInstance",
             source="aws_rds",
+            force=force,
         )
         region_resources = 0
         region_error: str | None = None
@@ -189,6 +196,24 @@ def collect_target(
                     resources_found=region_resources,
                     error=region_error,
                 )
+                # On successful scans, retire resources in this scope that
+                # weren't seen in this run. This is the GTM promise:
+                # "we never claim a resource is alive without proof".
+                if status == "success" and not dry_run:
+                    try:
+                        retired = resources_repo.retire_stale_resources(
+                            session,
+                            account_id=account.id,
+                            region=region,
+                            resource_type="AWS::RDS::DBInstance",
+                            source="aws_rds",
+                        )
+                        if retired:
+                            logger.info("Region %s: retired %d stale resources", region, retired)
+                    except Exception:
+                        # Retirement is best-effort: a failure here must
+                        # not turn a successful scan into a failed one.
+                        logger.exception("Region %s: retirement sweep raised", region)
 
     if not dry_run:
         session.commit()
@@ -211,6 +236,7 @@ def collect_targets(
     assume_role_fn: AssumeRoleFn | None = None,
     scan_fn: ScanFn | None = None,
     dry_run: bool = False,
+    force: bool = False,
 ) -> list[CollectionResult]:
     """Collect across multiple targets. One target's failure does not stop the others."""
     if assume_role_fn is None:
@@ -227,6 +253,7 @@ def collect_targets(
                 assume_role_fn=assume_role_fn,
                 scan_fn=scan_fn,
                 dry_run=dry_run,
+                force=force,
             )
             results.append(result)
         except ClientError as e:

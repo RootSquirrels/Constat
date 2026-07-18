@@ -9,6 +9,7 @@ V2: queue + background worker.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from constat_api.collectors.aws import TargetAccount, collect_targets
 from constat_api.db import get_db
+from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.settings import get_base_aws_session
 
 router = APIRouter(prefix="/collect/aws", tags=["aws"])
@@ -33,6 +35,9 @@ class TargetIn(BaseModel):
 class CollectRequest(BaseModel):
     targets: list[TargetIn] = Field(min_length=1, description="At least one target required")
     dry_run: bool = False
+    # When True, force-start a new scan even if a previous one is stuck
+    # in 'running' for the same scope. Use after a worker crash to recover.
+    force: bool = False
 
 
 class CollectResultOut(BaseModel):
@@ -46,6 +51,11 @@ class CollectResultOut(BaseModel):
 
 class CollectResponse(BaseModel):
     results: list[CollectResultOut]
+
+
+class CleanupResponse(BaseModel):
+    cleaned: int
+    threshold_hours: float
 
 
 @router.post("", response_model=CollectResponse)
@@ -64,7 +74,11 @@ def trigger_aws_collect(
     ]
     base_session = get_base_aws_session()
     results: list[Any] = collect_targets(
-        session, targets, base_session=base_session, dry_run=body.dry_run
+        session,
+        targets,
+        base_session=base_session,
+        dry_run=body.dry_run,
+        force=body.force,
     )
     return CollectResponse(
         results=[
@@ -79,3 +93,20 @@ def trigger_aws_collect(
             for r in results
         ]
     )
+
+
+@router.post("/cleanup-stuck-runs", response_model=CleanupResponse)
+def trigger_cleanup_stuck_runs(
+    threshold_hours: float = 2.0,
+    session: Session = Depends(get_db),
+) -> CleanupResponse:
+    """Mark source_runs stuck in 'running' for longer than `threshold_hours`
+    as 'failed'. Returns the number cleaned up.
+
+    Wire this into a periodic scheduler (cron, Fargate task) to recover
+    from worker crashes. Idempotent: a no-op when nothing is stuck.
+    """
+    cleaned = source_runs_repo.cleanup_stuck_runs(
+        session, threshold=timedelta(hours=threshold_hours)
+    )
+    return CleanupResponse(cleaned=cleaned, threshold_hours=threshold_hours)

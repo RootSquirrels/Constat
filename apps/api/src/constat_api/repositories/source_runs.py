@@ -7,7 +7,7 @@ resource in that scope is PROVEN, not guessed.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -17,6 +17,11 @@ from sqlalchemy.orm import Session
 from constat_api.orm import SourceRunORM
 from constat_api.settings import DEFAULT_TENANT_ID
 
+# Default threshold for "stuck" run detection. A run is considered stuck
+# if it's been in status='running' for longer than this. Two hours is
+# generous: a healthy RDS scan across all default regions takes < 5 min.
+DEFAULT_STUCK_RUN_THRESHOLD = timedelta(hours=2)
+
 
 def start_run(
     session: Session,
@@ -25,12 +30,22 @@ def start_run(
     region: str,
     resource_type: str,
     source: str,
+    force: bool = False,
 ) -> SourceRunORM | None:
     """Start a new run. Returns None if one is already active for this scope.
+
+    Args:
+        force: when True and a run is already active, mark it as 'failed'
+            with an explanatory error and start a new one. Use this after
+            `cleanup_stuck_runs` has failed to free the scope, or when
+            you know the previous worker is dead (OOM, SIGKILL).
 
     The caller should handle None: either skip the scan (someone else is
     scanning) or treat it as a duplicate attempt.
     """
+    if force:
+        _abort_active_run(session, account_id, region, resource_type, source)
+
     run = SourceRunORM(
         id=uuid4(),
         tenant_id=DEFAULT_TENANT_ID,
@@ -49,6 +64,34 @@ def start_run(
     return run
 
 
+def _abort_active_run(
+    session: Session,
+    account_id: UUID,
+    region: str,
+    resource_type: str,
+    source: str,
+) -> None:
+    """Mark any active run in this scope as 'failed' so a new one can start.
+
+    Idempotent: no-op if no active run.
+    """
+    stmt = select(SourceRunORM).where(
+        SourceRunORM.account_id == account_id,
+        SourceRunORM.region == region,
+        SourceRunORM.resource_type == resource_type,
+        SourceRunORM.source == source,
+        SourceRunORM.status == "running",
+    )
+    active = session.execute(stmt).scalars().all()
+    now = datetime.now(tz=UTC)
+    for run in active:
+        run.finished_at = now
+        run.status = "failed"
+        run.error = "aborted: superseded by force-start"
+    if active:
+        session.flush()
+
+
 def finish_run(
     session: Session,
     run: SourceRunORM,
@@ -65,6 +108,37 @@ def finish_run(
     if error is not None:
         run.error = error
     session.flush()
+
+
+def cleanup_stuck_runs(
+    session: Session,
+    *,
+    threshold: timedelta = DEFAULT_STUCK_RUN_THRESHOLD,
+) -> int:
+    """Mark runs in status='running' for longer than `threshold` as 'failed'.
+
+    Returns the number of stuck runs cleaned up. Run this from a periodic
+    job (cron / Fargate task / startup hook) to recover from worker crashes.
+
+    Why: a worker that dies (OOM, SIGKILL, network partition mid-page) leaves
+    its source_runs row stuck in status='running'. The partial unique index
+    in migration 0005 then blocks all subsequent scans for that scope until
+    manual intervention. This function is the safety net.
+    """
+    cutoff = datetime.now(tz=UTC) - threshold
+    stmt = select(SourceRunORM).where(
+        SourceRunORM.status == "running",
+        SourceRunORM.started_at < cutoff,
+    )
+    stuck = session.execute(stmt).scalars().all()
+    now = datetime.now(tz=UTC)
+    for run in stuck:
+        run.finished_at = now
+        run.status = "failed"
+        run.error = f"stuck_run_cleanup: started_at={run.started_at.isoformat()}"
+    if stuck:
+        session.commit()
+    return len(stuck)
 
 
 def latest_successful_run(

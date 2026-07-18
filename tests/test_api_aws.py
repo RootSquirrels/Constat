@@ -102,3 +102,37 @@ def test_aws_collect_endpoint_dry_run(client: TestClient) -> None:
 def test_aws_collect_endpoint_validates_input(client: TestClient) -> None:
     response = client.post("/collect/aws", json={"targets": []})
     assert response.status_code == 422
+
+
+def test_aws_collect_endpoint_with_force(client: TestClient) -> None:
+    """force=True is accepted and propagated to the collector."""
+    body = {
+        "targets": [
+            {"aws_account_id": "111111111111", "regions": ["eu-west-1"]},
+        ],
+        "force": True,
+    }
+    with (
+        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
+        patch(
+            "constat_api.collectors.aws._assume_role",
+            side_effect=lambda base, target: base,
+        ),
+        patch("constat_api.collectors.aws.collect_db_instances", side_effect=_scan),
+    ):
+        mock_session.return_value = MagicMock()
+        response = client.post("/collect/aws", json=body)
+    assert response.status_code == 200
+    assert response.json()["results"][0]["resources_written"] == 1
+
+
+def test_aws_cleanup_stuck_runs_endpoint(client: TestClient) -> None:
+    """The cleanup endpoint returns the number of runs freed."""
+    response = client.post(
+        "/collect/aws/cleanup-stuck-runs",
+        params={"threshold_hours": 2.0},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cleaned"] == 0
+    assert body["threshold_hours"] == 2.0

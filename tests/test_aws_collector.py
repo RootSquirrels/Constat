@@ -6,7 +6,7 @@ real boto3 calls happen. moto would also work but DI is simpler and faster.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -209,3 +209,137 @@ def test_collect_targets_continues_on_assume_role_failure(session: Session) -> N
     assert "assume_role" in results[0].errors[0]
     assert results[0].resources_written == 0
     assert results[1].resources_written == 1  # no role_arn, uses base session
+
+
+# ---------------------------------------------------------------------------
+# Retirement: a successful scan retires resources not seen in the latest run.
+# ---------------------------------------------------------------------------
+
+
+def _scan_factory_with(arns: list[str]):
+    """Build a scan_fn that yields one DB instance per (region, arn) pair."""
+
+    def _scan(s, regions):
+        for region in regions:
+            for arn in arns:
+                yield {"_region": region, **_make_db(arn=arn)}
+
+    return _scan
+
+
+def test_collect_retires_resources_not_seen_in_latest_scan(session: Session) -> None:
+    """After a successful scan, the resources not present in the scan
+    are retired (this is the GTM promise: 'we never claim a resource is
+    alive without proof')."""
+    # Scan #1: see arn:1 and arn:2 in eu-west-1
+    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory_with(["arn:1", "arn:2"]),
+    )
+    r1 = session.query(ResourceORM).filter_by(native_id="arn:1").one()
+    r2 = session.query(ResourceORM).filter_by(native_id="arn:2").one()
+    assert r1.retired_at is None
+    assert r2.retired_at is None
+
+    # Backdate r1's last_seen_at to "long ago" so a fresh scan will see it as stale.
+    r1.last_seen_at = datetime.now(tz=UTC) - timedelta(days=7)
+    session.commit()
+
+    # Scan #2: only arn:2 is found (arn:1 was deleted in AWS).
+    collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory_with(["arn:2"]),
+    )
+
+    session.refresh(r1)
+    session.refresh(r2)
+    assert r1.retired_at is not None, "arn:1 was not in the latest scan, should be retired"
+    assert r2.retired_at is None, "arn:2 was just seen, should still be active"
+
+
+def test_collect_resurrects_resource_that_comes_back(session: Session) -> None:
+    """A resource that was retired but reappears in a later scan is
+    resurrected (retired_at cleared, last_seen_at bumped)."""
+    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+
+    # Scan #1: arn:1
+    collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory_with(["arn:1"]),
+    )
+    r1 = session.query(ResourceORM).filter_by(native_id="arn:1").one()
+    first_seen = r1.first_seen_at
+
+    # Manually retire it
+    r1.retired_at = datetime.now(tz=UTC)
+    session.commit()
+    r1_id = r1.id
+
+    # Scan #2: arn:1 reappears
+    collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory_with(["arn:1"]),
+    )
+
+    # The row should still be unique (no duplicate), retired_at cleared.
+    all_resources = session.query(ResourceORM).filter_by(native_id="arn:1").all()
+    assert len(all_resources) == 1
+    resurrected = all_resources[0]
+    assert resurrected.id == r1_id
+    assert resurrected.retired_at is None
+    assert resurrected.first_seen_at == first_seen
+
+
+def test_collect_uses_force_to_override_stuck_run(session: Session) -> None:
+    """force=True lets a new scan start even when the previous one is stuck."""
+    from constat_api.repositories import accounts as accounts_repo
+    from constat_api.repositories import source_runs as source_runs_repo
+
+    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+
+    # Pre-existing stuck run
+    acc = accounts_repo.get_or_create(session, "111111111111")
+    source_runs_repo.start_run(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    session.commit()
+
+    # Without force: scan is skipped
+    result = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory([_make_db()]),
+    )
+    assert result.resources_written == 0
+    assert any("in progress" in e for e in result.errors)
+
+    # With force: stuck run is aborted, scan runs.
+    result2 = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan_factory([_make_db()]),
+        force=True,
+    )
+    assert result2.resources_written == 1
+    assert result2.errors == []
