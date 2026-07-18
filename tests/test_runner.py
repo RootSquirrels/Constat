@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
 
 from constat_api.insights.runner import (
     DEFAULT_SOURCE,
@@ -22,23 +21,6 @@ from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.settings import DEFAULT_TENANT_ID
 from constat_core.models import Fact, ValueState
 from sqlalchemy.orm import Session
-
-
-def _make_db(arn: str = "arn:aws:rds:eu-west-1:111111111111:db:pg14") -> dict[str, Any]:
-    return {
-        "DBInstanceArn": arn,
-        "DBInstanceIdentifier": "pg14",
-        "Engine": "postgres",
-        "EngineVersion": "14.7",
-        "DBInstanceClass": "db.m5.xlarge",
-        "DBInstanceStatus": "available",
-        "AllocatedStorage": 100,
-        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-        "MultiAZ": True,
-        "StorageEncrypted": True,
-        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-        "Endpoint": {"Address": "pg14.xxxx.eu-west-1.rds.amazonaws.com"},
-    }
 
 
 def _bootstrap_pg14(session: Session) -> ResourceORM:

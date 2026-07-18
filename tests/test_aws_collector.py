@@ -15,22 +15,7 @@ from constat_api.collectors.aws import TargetAccount, collect_target, collect_ta
 from constat_api.orm import FactORM, ObservationORM, ResourceORM
 from sqlalchemy.orm import Session
 
-
-def _make_db(arn: str = "arn:aws:rds:eu-west-1:111111111111:db:test") -> dict[str, Any]:
-    return {
-        "DBInstanceArn": arn,
-        "DBInstanceIdentifier": "test",
-        "Engine": "postgres",
-        "EngineVersion": "14.7",
-        "DBInstanceClass": "db.m5.xlarge",
-        "DBInstanceStatus": "available",
-        "AllocatedStorage": 100,
-        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-        "MultiAZ": True,
-        "StorageEncrypted": True,
-        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-        "Endpoint": {"Address": "test.xxxx.eu-west-1.rds.amazonaws.com"},
-    }
+from tests.conftest import make_rds_db_dict
 
 
 def _no_assume_role(base_session, target):
@@ -60,7 +45,7 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
         target,
         base_session=base,
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
     )
 
     assert result.resources_written == 1
@@ -71,7 +56,7 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
     # DB-level asserts
     resources = session.query(ResourceORM).all()
     assert len(resources) == 1
-    assert resources[0].native_id == _make_db()["DBInstanceArn"]
+    assert resources[0].native_id == make_rds_db_dict()["DBInstanceArn"]
 
     facts = session.query(FactORM).all()
     keys = {f.key for f in facts}
@@ -92,7 +77,7 @@ def test_collect_updates_last_seen_at_on_existing_resource(session: Session) -> 
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
     )
     assert result1.resources_written == 1
 
@@ -106,7 +91,7 @@ def test_collect_updates_last_seen_at_on_existing_resource(session: Session) -> 
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
     )
     assert result2.resources_written == 1
     assert session.query(ResourceORM).count() == 1
@@ -123,7 +108,7 @@ def test_collect_dry_run_does_not_write_facts(session: Session) -> None:
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
         dry_run=True,
     )
 
@@ -143,7 +128,7 @@ def test_collect_handles_multiple_regions(session: Session) -> None:
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
     )
 
     assert result.resources_written == 2
@@ -162,7 +147,7 @@ def test_collect_continues_on_region_error(session: Session) -> None:
                     {"Error": {"Code": "AccessDenied", "Message": "nope"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1", "us-east-1"))
     result = collect_target(
@@ -195,7 +180,7 @@ def test_collect_targets_continues_on_assume_role_failure(session: Session) -> N
 
     def _scan(session, regions):
         for r in regions:
-            yield {"_region": r, **_make_db()}
+            yield {"_region": r, **make_rds_db_dict()}
 
     results = collect_targets(
         session,
@@ -222,7 +207,7 @@ def _scan_factory_with(arns: list[str]):
     def _scan(s, regions):
         for region in regions:
             for arn in arns:
-                yield {"_region": region, **_make_db(arn=arn)}
+                yield {"_region": region, **make_rds_db_dict(arn=arn)}
 
     return _scan
 
@@ -327,7 +312,7 @@ def test_collect_uses_force_to_override_stuck_run(session: Session) -> None:
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
     )
     assert result.resources_written == 0
     assert any("in progress" in e for e in result.errors)
@@ -338,7 +323,7 @@ def test_collect_uses_force_to_override_stuck_run(session: Session) -> None:
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=_scan_factory([_make_db()]),
+        scan_fn=_scan_factory([make_rds_db_dict()]),
         force=True,
     )
     assert result2.resources_written == 1
@@ -368,7 +353,7 @@ def test_collect_circuit_breaker_skips_after_consecutive_failures(
                     {"Error": {"Code": "AccessDenied", "Message": "nope"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     result = collect_target(
         session,
@@ -422,7 +407,7 @@ def test_collect_circuit_breaker_resets_on_success(session: Session) -> None:
                     {"Error": {"Code": "Throttling", "Message": "slow down"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     result = collect_target(
         session,
@@ -458,7 +443,7 @@ def test_collect_circuit_breaker_disabled_when_max_is_high(session: Session) -> 
                     {"Error": {"Code": "AccessDenied"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     result = collect_target(
         session,
@@ -487,7 +472,7 @@ def test_collect_circuit_breaker_trips_at_threshold_one(session: Session) -> Non
                     {"Error": {"Code": "AccessDenied"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     result = collect_target(
         session,

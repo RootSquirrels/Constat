@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import MagicMock
 
 from botocore.exceptions import ClientError
@@ -14,22 +13,7 @@ from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.settings import DEFAULT_TENANT_ID
 from sqlalchemy.orm import Session
 
-
-def _make_db(arn: str = "arn:aws:rds:eu-west-1:111111111111:db:test") -> dict[str, Any]:
-    return {
-        "DBInstanceArn": arn,
-        "DBInstanceIdentifier": "test",
-        "Engine": "postgres",
-        "EngineVersion": "14.7",
-        "DBInstanceClass": "db.m5.xlarge",
-        "DBInstanceStatus": "available",
-        "AllocatedStorage": 100,
-        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-        "MultiAZ": True,
-        "StorageEncrypted": True,
-        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-        "Endpoint": {"Address": "test.xxxx.eu-west-1.rds.amazonaws.com"},
-    }
+from tests.conftest import make_rds_db_dict
 
 
 def _no_assume_role(base_session, target):
@@ -167,7 +151,7 @@ def test_collector_creates_source_runs(session: Session) -> None:
 
     def _scan(session, regions):
         for r in regions:
-            yield {"_region": r, **_make_db()}
+            yield {"_region": r, **make_rds_db_dict()}
 
     result = collect_target(
         session,
@@ -200,7 +184,7 @@ def test_collector_marks_failed_run_on_region_error(session: Session) -> None:
                     {"Error": {"Code": "AccessDenied", "Message": "nope"}},
                     "DescribeDBInstances",
                 )
-            yield {"_region": region, **_make_db()}
+            yield {"_region": region, **make_rds_db_dict()}
 
     collect_target(
         session,
@@ -240,7 +224,7 @@ def test_collector_returns_none_run_when_scan_in_progress(session: Session) -> N
         target,
         base_session=MagicMock(),
         assume_role_fn=_no_assume_role,
-        scan_fn=lambda s, r: iter([{"_region": "eu-west-1", **_make_db()}]),
+        scan_fn=lambda s, r: iter([{"_region": "eu-west-1", **make_rds_db_dict()}]),
     )
 
     assert result.resources_written == 0

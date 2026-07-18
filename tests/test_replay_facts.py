@@ -7,8 +7,6 @@ table matches what would have been written originally.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import MagicMock
 
 from constat_api.cli.replay_facts import _payload_to_db, replay_observations
@@ -16,22 +14,7 @@ from constat_api.collectors.aws import TargetAccount, collect_target
 from constat_api.orm import FactORM, ObservationORM, ResourceORM
 from sqlalchemy.orm import Session
 
-
-def _make_db(arn: str = "arn:aws:rds:eu-west-1:111111111111:db:test") -> dict[str, Any]:
-    return {
-        "DBInstanceArn": arn,
-        "DBInstanceIdentifier": "test",
-        "Engine": "postgres",
-        "EngineVersion": "14.7",
-        "DBInstanceClass": "db.m5.xlarge",
-        "DBInstanceStatus": "available",
-        "AllocatedStorage": 100,
-        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-        "MultiAZ": True,
-        "StorageEncrypted": True,
-        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-        "Endpoint": {"Address": "test.xxxx.eu-west-1.rds.amazonaws.com"},
-    }
+from tests.conftest import make_rds_db_dict
 
 
 def _no_assume_role(base_session, target):
@@ -40,13 +23,13 @@ def _no_assume_role(base_session, target):
 
 def _scan(s, regions):
     for r in regions:
-        yield {"_region": r, **_make_db()}
+        yield {"_region": r, **make_rds_db_dict()}
 
 
 def test_payload_to_db_round_trips_fields() -> None:
     """The reverse function reconstructs a boto3-style dict that
     db_to_facts can consume."""
-    db = _make_db()
+    db = make_rds_db_dict()
     # Simulate what db_to_observation stored:
     create_time_iso = db["InstanceCreateTime"].isoformat()
     payload = {
