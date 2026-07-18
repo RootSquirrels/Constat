@@ -250,11 +250,15 @@ class InsightRunORM(Base):
     __tablename__ = "insight_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('running', 'success', 'failed')", name="insight_runs_status_check"
+            "status IN ('running', 'success', 'failed', 'partial')",
+            name="insight_runs_status_check",
         ),
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
     rule_name: Mapped[str] = mapped_column(String, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
