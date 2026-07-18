@@ -14,6 +14,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from constat_api.logging import configure_logging
+from constat_api.middleware import RequestIDMiddleware
 from constat_api.routers import (
     accounts,
     admin,
@@ -28,6 +30,11 @@ from constat_api.routers import (
 )
 from constat_api.settings import settings
 
+# Configure structured logging BEFORE anything else logs anything.
+# JSON output is enabled via CONSTAT_LOG_JSON=1 in prod; local dev gets
+# a colored console renderer.
+configure_logging()
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -36,6 +43,10 @@ app = FastAPI(
     version="0.5.0",
 )
 
+# RequestIDMiddleware is the OUTERMOST middleware so it sees every
+# request before auth / business logic, and the request_id is bound
+# to structlog's contextvars for the entire request lifecycle.
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
