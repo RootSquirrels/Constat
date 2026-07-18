@@ -13,6 +13,9 @@ marked as such.
   sources, ingestion, core, product. One read.
 - **[concepts.md](./concepts.md)** — the 9 core concepts (Resource, Fact,
   SourceRun, Insight, …) with code references.
+- **[concept-registry.md](./concepts/fact-registry.md)** — the V1
+  fact registry (YAML + CI guard). The data contract: every fact
+  is declared before it ships.
 - **[data-model.md](./data-model.md)** — the 7 tables, FK chains, and the
   invariants you must respect when touching the schema.
 

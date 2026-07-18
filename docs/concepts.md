@@ -70,6 +70,14 @@ It is the only thing the insights see. A fact can be scoped to a
 resource (most cases) or to an account (cost aggregates, account-level
 catalog entries).
 
+**The data contract:** every fact published to the `facts` table
+must be declared in [`fact-registry.md`](./concepts/fact-registry.md)
+— a YAML + CI guard that catches typos, missing entries, and
+producer/consumer drift. Adding a fact means adding it to the YAML
+**and** to the test's `EXPECTED_PRODUCED`/`EXPECTED_CONSUMED`
+constant. V2's runtime `FactDefinitionRegistry` table will be
+migrated from this YAML; the contract is the same.
+
 Key invariants:
 
 - A fact's value is **not authoritative** by itself. It is authoritative
