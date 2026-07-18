@@ -38,12 +38,25 @@ variable "image_tag" {
 
 variable "allowed_cidr" {
   description = <<-EOT
-    CIDR allowed to reach the API on port 8000 (operator/prospect network,
-    e.g. an office egress IP as x.x.x.x/32). V1 has no ALB: the Fargate
-    service gets a public IP and the security group is the only network
-    control, so keep this tight.
+    CIDR allowed to reach the ALB on 80/443 (operator/prospect network,
+    e.g. an office egress IP as x.x.x.x/32). The ALB is the only
+    public-facing surface; ECS tasks live in a private subnet reachable
+    only from the ALB. Keep this tight.
   EOT
   type        = string
+}
+
+variable "public_domain" {
+  description = <<-EOT
+    Prospect-facing DNS name for the TLS endpoint. The ACM certificate
+    is created for this name; DNS validation records must be added to
+    the corresponding Route 53 zone (or external DNS) before the ALB
+    listener will accept traffic. Set to a placeholder for the first
+    apply (e.g. "pilot.constat.example.com") and update with the real
+    prospect domain before go-live.
+  EOT
+  type        = string
+  default     = "pilot.constat.example.com"
 }
 
 variable "scan_targets_json" {

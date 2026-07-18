@@ -3,9 +3,10 @@
 # real values, and add the ignore entries (see infra/README.md) before
 # the first apply. Prefer TF_VAR_* env vars for the sensitive ones.
 
-aws_region   = "eu-west-3"
-allowed_cidr = "203.0.113.10/32" # operator/prospect egress IP — keep tight
-image_tag    = "latest"
+aws_region     = "eu-west-3"
+allowed_cidr   = "203.0.113.10/32" # operator/prospect egress IP — keep tight
+image_tag      = "latest"
+public_domain  = "pilot.constat.example.com" # update before go-live
 
 # Sensitive — prefer `export TF_VAR_db_password=...` over writing here.
 db_password     = "CHANGE-ME-long-random"

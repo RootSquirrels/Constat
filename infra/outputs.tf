@@ -28,15 +28,26 @@ output "scan_task_definition_arn" {
 
 output "api_endpoint" {
   description = <<-EOT
-    The API listens on port 8000 but Fargate public IPs are ephemeral, so
-    there is no static endpoint to output. Resolve the current IP with:
-      aws ecs list-tasks --cluster ${local.name} --service-name ${local.name}-api \
-        --query 'taskArns[0]' --output text | xargs -I{} \
-      aws ecs describe-tasks --cluster ${local.name} --tasks {} \
-        --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' --output text | xargs -I{} \
-      aws ec2 describe-network-interfaces --network-interface-ids {} \
-        --query 'NetworkInterfaces[0].Association.PublicIp' --output text
-    Then: http://<ip>:8000 (plain HTTP — see EXPOSURE DECISION in ecs.tf).
+    HTTPS endpoint for the operator dashboard. The ALB DNS name is
+    stable across deploys (only the underlying tasks rotate). Point
+    a Route 53 alias (or external DNS CNAME) at this name and the
+    ACM certificate (var.public_domain) lights up.
+
+    Until DNS is configured, this resolves to an AWS-owned
+    *.elb.amazonaws.com hostname that won't accept traffic for your
+    domain. Apply Terraform, then add the DNS record.
   EOT
-  value       = "http://<ephemeral-public-ip>:8000 — resolve via the commands in this output's description"
+  value       = "https://${aws_lb.main.dns_name}"
+}
+
+output "api_certificate_status" {
+  description = <<-EOT
+    The ACM certificate must be ISSUED before the ALB listener will
+    accept traffic. Status goes PENDING_VALIDATION → ISSUED once the
+    DNS validation records are in place. Watch with:
+      aws acm describe-certificate \
+        --certificate-arn ${aws_acm_certificate.main.arn} \
+        --query 'Certificate.Status' --output text
+  EOT
+  value       = aws_acm_certificate.main.status
 }

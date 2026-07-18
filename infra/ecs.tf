@@ -1,17 +1,14 @@
 # ECS Fargate: one cluster, two task definitions from the same image.
 #
-# EXPOSURE DECISION (no ALB for V1): the API service runs with
-# assign_public_ip = true and a security group that only allows port 8000
-# from var.allowed_cidr.
-#   Why not an ALB: ~$16/month fixed + LCU charges, and it only pays off
-#     with TLS termination (ACM) — a whole certificate/DNS ceremony the
-#     pilot does not need for a handful of operator callers on a known
-#     network.
-#   The honest trade-off: traffic is plain HTTP, so the X-API-Key header
-#     crosses the internet unencrypted, and the service's public IP is
-#     ephemeral (changes on redeploy — see outputs.tf for how to look it
-#     up). The CIDR restriction + API key are the compensating controls.
-#     ALB + ACM + TLS is the first item on the post-pilot hardening list.
+# EXPOSURE DECISION (P0-3 hardening): the API service runs without
+# a public IP and is reachable only through the ALB (see alb.tf).
+#   Why an ALB: the X-API-Key cannot cross the internet in plaintext.
+#     TLS termination at the ALB keeps the API key encrypted on the
+#     browser ↔ ALB leg; the ALB ↔ ECS leg is HTTP inside the VPC
+#     (private subnets, no internet egress). Without an ALB the
+#     "API key in HTTPS" pitch to a SOC2 questionnaire falls apart.
+#   The honest trade-off: ~$16/month fixed + LCU charges. We pay it
+#     because TLS is non-negotiable for the operator dashboard.
 
 resource "aws_ecs_cluster" "main" {
   name = local.name
@@ -24,11 +21,11 @@ resource "aws_security_group" "app" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description = "API from the allowed operator/prospect CIDR only"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_cidr]
+    description     = "API from the ALB only (no public internet ingress)"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
   }
 
   egress {
@@ -111,7 +108,23 @@ resource "aws_ecs_service" "api" {
   network_configuration {
     subnets          = data.aws_subnets.default.ids
     security_groups  = [aws_security_group.app.id]
-    assign_public_ip = true # see EXPOSURE DECISION above
+    assign_public_ip = false # private; reachable only via the ALB SG
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.api.arn
+    container_name   = "api"
+    container_port   = 8000
+  }
+
+  # Rolling deploys: ECS will register the new task, wait for the
+  # health check to pass, then drain the old one. Combined with the
+  # health_check on the target group, this gives a zero-downtime
+  # deploy for free (the target group's health_check on /health
+  # is the gate).
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 }
 
