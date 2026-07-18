@@ -8,9 +8,10 @@ from constat_core.models import Insight, Severity
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import _get_settings, verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import insights as repo
+from constat_api.settings import Settings
 
 router = APIRouter(
     prefix="/insights",
@@ -47,6 +48,24 @@ def get_insight_endpoint(insight_id: UUID, session: Session = Depends(get_db)) -
 
 
 @router.post("", response_model=Insight, status_code=status.HTTP_201_CREATED)
-def create_insight_endpoint(insight: Insight, session: Session = Depends(get_db)) -> Insight:
-    """Insert one insight. Used by tests + ingestion workers; not for public UI yet."""
+def create_insight_endpoint(
+    insight: Insight,
+    session: Session = Depends(get_db),
+    cfg: Settings = Depends(_get_settings),
+) -> Insight:
+    """Manual insight insertion — tests and local demos only (F-10).
+
+    Any API-key holder could otherwise forge an insight without
+    provenance, so this is gated behind CONSTAT_ENABLE_MANUAL_INSIGHTS
+    (default off). Real insights are written by the rule runner. When
+    enabled, the payload is stamped source="manual" so these rows stay
+    distinguishable from rule-produced ones.
+    """
+    if not cfg.enable_manual_insights:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="manual insight creation is disabled "
+            "(set CONSTAT_ENABLE_MANUAL_INSIGHTS=1 to enable)",
+        )
+    insight.payload = {**insight.payload, "source": "manual"}
     return repo.insert_insight(session, insight)

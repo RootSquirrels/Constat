@@ -72,3 +72,25 @@ def verify_api_key(
             detail="invalid API key",
             headers={"WWW-Authenticate": "ApiKey"},
         )
+
+
+def verify_metrics_key(
+    x_metrics_key: str | None = Header(default=None, alias="X-Metrics-Key"),
+    cfg: Settings = Depends(_get_settings),
+) -> None:
+    """Gate /metrics behind CONSTAT_METRICS_KEY (F-15).
+
+    No-op when `cfg.metrics_key` is None: /metrics then shares the
+    /health trust model (scraper on the trusted network) and a warning
+    is logged at startup. When set, the scraper must send the key via
+    the X-Metrics-Key header; the comparison is constant-time, same as
+    the API key. Missing and wrong keys get the same 401 body.
+    """
+    if cfg.metrics_key is None:
+        return
+    if x_metrics_key is None or not hmac.compare_digest(x_metrics_key, cfg.metrics_key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid metrics key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )

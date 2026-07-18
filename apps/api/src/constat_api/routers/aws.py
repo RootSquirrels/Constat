@@ -13,7 +13,7 @@ from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from constat_api.auth import verify_api_key
@@ -36,6 +36,15 @@ class TargetIn(BaseModel):
     external_id: str | None = None
     name: str | None = None
     regions: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _role_arn_requires_external_id(self) -> TargetIn:
+        """Confused-deputy guard (F-06): AssumeRole without an ExternalId
+        lets anyone who learns the role ARN ride our trust policy, so a
+        role_arn without external_id is rejected (HTTP 422)."""
+        if self.role_arn and not self.external_id:
+            raise ValueError("external_id is required when role_arn is set")
+        return self
 
 
 class CollectRequest(BaseModel):

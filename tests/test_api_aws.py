@@ -87,6 +87,22 @@ def test_aws_collect_endpoint_validates_input(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_aws_collect_role_arn_without_external_id_rejected(client: TestClient) -> None:
+    """F-06: role_arn without external_id is a confused-deputy risk -> 422."""
+    body = {
+        "targets": [
+            {
+                "aws_account_id": "111111111111",
+                "role_arn": "arn:aws:iam::111111111111:role/ConstatReadOnly",
+                # no external_id
+            }
+        ],
+    }
+    response = client.post("/collect/aws", json=body)
+    assert response.status_code == 422
+    assert "external_id" in response.text
+
+
 def test_aws_collect_endpoint_with_force(client: TestClient) -> None:
     """force=True is accepted and propagated to the collector."""
     body = {

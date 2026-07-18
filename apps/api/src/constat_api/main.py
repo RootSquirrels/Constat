@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Response
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from constat_api.auth import verify_metrics_key
 from constat_api.logging import configure_logging
 from constat_api.metrics import render_metrics
 from constat_api.middleware import HTTPMetricsMiddleware, RequestIDMiddleware
@@ -74,11 +75,19 @@ app.include_router(admin.router)
 app.include_router(compliance.router)
 
 
-# Open (no X-API-Key) Prometheus scrape endpoint. Same trust model as
-# /health: the scraper is on the trusted network (k8s sidecar, a
-# dedicated VPC, an internal LB). V2: gate behind a separate
-# `CONSTAT_METRICS_KEY` when exposing beyond the trusted boundary.
-@app.get("/metrics", include_in_schema=False)
+# Prometheus scrape endpoint (F-15). Gated by CONSTAT_METRICS_KEY when
+# set (X-Metrics-Key header). When unset it stays open — same trust
+# model as /health: the scraper is on the trusted network (k8s sidecar,
+# a dedicated VPC, an internal LB) — and we warn at startup so an
+# accidental public exposure doesn't go unnoticed.
+if not settings.metrics_key:
+    logger.warning(
+        "/metrics is OPEN (CONSTAT_METRICS_KEY unset). "
+        "Set it before exposing the API beyond the trusted network."
+    )
+
+
+@app.get("/metrics", include_in_schema=False, dependencies=[Depends(verify_metrics_key)])
 def metrics_endpoint() -> Response:
     body, content_type = render_metrics()
     return Response(content=body, media_type=content_type)
