@@ -263,6 +263,57 @@ def collect_target(
                         logger.exception("Region %s: retirement sweep raised", region)
 
     if not dry_run:
+        # PII classification: label the customer identifiers we just
+        # ingested. The hash, not the value, is stored. The classifier
+        # is defensive — it returns None for empty values and raises
+        # on disallowed sensitivities.
+        from constat_api.pii import PIIClassifier
+
+        pii = PIIClassifier(session)
+        pii.record(
+            resource_type="account",
+            resource_id=target.aws_account_id,
+            field_name="aws_account_id",
+            value=target.aws_account_id,
+        )
+        if target.role_arn:
+            pii.record(
+                resource_type="account",
+                resource_id=target.aws_account_id,
+                field_name="arn",
+                value=target.role_arn,
+            )
+        # Classify the resource native_ids (ARN for RDS).
+        for region in regions:
+            pii.record(
+                resource_type="resource",
+                resource_id=f"{target.aws_account_id}:{region}",
+                field_name="region",
+                value=region,
+            )
+        # Audit: log the scan. Actor defaults to "system" (the
+        # collector runs in the API process; the API key actor is
+        # set by the router, not by the collector). Metadata is
+        # strictly non-PII: counts, region names, error counts.
+        from constat_api.audit import record_event
+
+        record_event(
+            session,
+            action="aws_scan_completed",
+            actor="system:aws_collector",
+            target_type="account",
+            target_id=target.aws_account_id,
+            metadata={
+                "regions_scanned": len(regions),
+                "regions_skipped_by_breaker": len(regions_skipped),
+                "resources_written": resources_written,
+                "observations_written": observations_written,
+                "facts_written": facts_written,
+                "errors_count": len(errors),
+                "force": force,
+                "dry_run": dry_run,
+            },
+        )
         session.commit()
 
     return CollectionResult(

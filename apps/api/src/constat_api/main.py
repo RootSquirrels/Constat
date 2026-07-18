@@ -21,6 +21,7 @@ from constat_api.routers import (
     accounts,
     admin,
     aws,
+    compliance,
     focus,
     health,
     inconclusive,
@@ -70,6 +71,7 @@ app.include_router(runner.router)
 app.include_router(status.router)
 app.include_router(accounts.router)
 app.include_router(admin.router)
+app.include_router(compliance.router)
 
 
 # Open (no X-API-Key) Prometheus scrape endpoint. Same trust model as

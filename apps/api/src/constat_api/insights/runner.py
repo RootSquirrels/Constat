@@ -245,15 +245,11 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
-                record_insight_emitted(
-                    rule="rds_eol", severity=insight.severity.value
-                )
+                record_insight_emitted(rule="rds_eol", severity=insight.severity.value)
             for inc in inconclusive:
                 inconclusive_repo.insert_inconclusive(session, inc)
                 inconclusive_emitted += 1
-                record_inconclusive(
-                    rule="rds_eol", reason=inc.reason or "unspecified"
-                )
+                record_inconclusive(rule="rds_eol", reason=inc.reason or "unspecified")
         except Exception as exc:
             errors.append(f"{resource.id}: {exc}")
             logger.exception("Resource %s failed", resource.id)
@@ -264,9 +260,7 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
     run.insights_emitted = insights_emitted
     session.commit()
 
-    record_insight_run_duration(
-        rule="rds_eol", duration_seconds=time.monotonic() - started
-    )
+    record_insight_run_duration(rule="rds_eol", duration_seconds=time.monotonic() - started)
 
     return RunResult(
         rule_name="rds_eol",
@@ -332,9 +326,7 @@ def run_chargeback(
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
-                record_insight_emitted(
-                    rule="chargeback", severity=insight.severity.value
-                )
+                record_insight_emitted(rule="chargeback", severity=insight.severity.value)
         except Exception as exc:
             errors.append(f"account {account_id}: {exc}")
             logger.exception("Account %s chargeback failed", account_id)
@@ -343,11 +335,31 @@ def run_chargeback(
     run.status = "success" if not errors else "partial"
     run.resources_scanned = len(account_ids)
     run.insights_emitted = insights_emitted
+
+    # Audit: log the insight run. The metadata is the rule name +
+    # the counts. The rule name is the action, the counts are the
+    # scope. We don't log the period_label or tag_key in metadata
+    # because they could be PII ("my-tenant-2024-internal") — the
+    # caller can correlate via the insight_run row.
+    from constat_api.audit import record_event
+
+    record_event(
+        session,
+        action="chargeback_run",
+        actor="system:insights_runner",
+        target_type="rule",
+        target_id="chargeback",
+        metadata={
+            "accounts_scanned": len(account_ids),
+            "insights_emitted": insights_emitted,
+            "errors_count": len(errors),
+            "has_tag_key": tag_key is not None,
+        },
+    )
+
     session.commit()
 
-    record_insight_run_duration(
-        rule="chargeback", duration_seconds=time.monotonic() - started
-    )
+    record_insight_run_duration(rule="chargeback", duration_seconds=time.monotonic() - started)
 
     effective_label = f"{period_label} tag_key={tag_key}" if tag_key else period_label
 

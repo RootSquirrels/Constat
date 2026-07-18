@@ -370,3 +370,91 @@ class SourceRunORM(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     resources_found: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class AuditEventORM(Base):
+    """Append-only audit log (V1 security feature, migration 0010).
+
+    Records "who did what when" for the privileged operations. The
+    metadata field is a strict JSONB dict: counts, durations, rule
+    names, region names. NEVER raw account_id, ARN, tag values, or
+    any other customer-identifying field — the AuditLogger enforces
+    this on the Python side, the database trusts us.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    target_type: Mapped[str | None] = mapped_column(String)
+    target_id: Mapped[str | None] = mapped_column(String)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONBType(), nullable=False, default=dict
+    )
+
+
+class RetentionPolicyORM(Base):
+    """Per-tenant retention policy (V1 security feature, migration 0010).
+
+    One row per (tenant_id, table_name). Operators can override the
+    retention_days per tenant in V2. The RetentionRunner picks
+    enabled rows and deletes data older than retention_days.
+
+    table_name is a free string validated by the RetentionRunner
+    against an allow-list (we don't want an operator typo to wipe
+    the wrong table).
+    """
+
+    __tablename__ = "retention_policies"
+
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    table_name: Mapped[str] = mapped_column(String, nullable=False)
+    retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
+    last_applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_deleted_count: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PIIClassificationORM(Base):
+    """Per-field PII classification (V1 security feature, migration 0010).
+
+    One row per (resource_type, resource_id, field_name). Records
+    the field's sensitivity level + SHA-256 of the value. We store
+    only the hash, never the value itself — the value lives in
+    the source row (focus_charges.account_id, etc.) where the
+    business logic needs it; here we just need to know
+    "what's the sensitivity of this field on this resource?" for
+    the privacy questionnaire.
+    """
+
+    __tablename__ = "pii_classifications"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    resource_type: Mapped[str] = mapped_column(String, nullable=False)
+    resource_id: Mapped[str] = mapped_column(String, nullable=False)
+    field_name: Mapped[str] = mapped_column(String, nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String, nullable=False)
+    value_hash: Mapped[str] = mapped_column(String, nullable=False)
+    classified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
