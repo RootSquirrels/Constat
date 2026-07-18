@@ -107,16 +107,20 @@ dynamic).
 
 ## 6. CRLF / LF line endings
 
-**Symptom:** every `git add` in this Windows dev environment
-prints a warning about CRLF.
+**Status:** FIXED. The repo root now has a `.gitattributes` that
+sets `* text=auto eol=lf`. Git normalizes line endings to LF on
+commit; Windows checkouts no longer see "LF will be replaced by
+CRLF" warnings on every `git add`.
 
-**Why:** `core.autocrlf` defaults to `true` on this checkout. Git
-rewrites LF to CRLF on checkout, then back to LF on commit. The
-warnings are cosmetic; the files on disk match what was committed.
+**Original report:** every `git add` in this Windows dev environment
+printed a warning about CRLF because `core.autocrlf` defaulted to
+`true`. The warnings were cosmetic; the files on disk matched what
+was committed.
 
-**Fix:** none required. If the warnings are annoying, set
-`git config core.autocrlf false` for this repo. CI runs on Linux
-and doesn't care.
+**Fix applied:** added `.gitattributes` at the repo root with
+`* text=auto eol=lf` and per-extension overrides for the file
+types the project actually uses (Python, TypeScript, SQL, Markdown,
+shell, TOML, YAML, etc.). No more per-file autocrlf config needed.
 
 ## 7. `tsbuildinfo` in `apps/web/tsconfig.json`
 

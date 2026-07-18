@@ -1,0 +1,35 @@
+# Normalize line endings to LF on commit, regardless of platform.
+# This is the standard cross-platform setup: text files get LF in the
+# index and on disk (where possible); binary files are passed through
+# unchanged. Windows dev environments no longer see "LF will be replaced
+# by CRLF" warnings on every `git add`.
+
+* text=auto eol=lf
+
+# Shell scripts: must be LF for the interpreter to accept them.
+*.sh text eol=lf
+
+# Python source: keep LF (the project standard; CI runs on Linux).
+*.py text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Web / TypeScript
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+
+# SQL migrations and config
+*.sql text eol=lf
+
+# .env files (we track only the .example, but if anyone commits a real
+# .env it should be LF too, not CRLF with secrets inside)
+.env* text eol=lf
