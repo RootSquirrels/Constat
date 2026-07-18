@@ -35,7 +35,11 @@ state, no multi-env ceremony — deliberately. V1 deployment philosophy
 - Terraform >= 1.7 (or OpenTofu), AWS credentials with admin-ish rights
   in the pilot account, Docker (to build/push the image).
 - The prospect-side role (`constat-collector` in their account, trusting
-  our account + ExternalId) is created out of band — not by this stack.
+  our account + ExternalId) is created by the prospect from
+  [`customer-iam-role.yaml`](./customer-iam-role.yaml) (P1 item 2) —
+  the deploy instructions are in
+  [`customer-iam-role.md`](./customer-iam-role.md). We do not deploy
+  it; the prospect does.
 
 ## First apply — before you start
 
