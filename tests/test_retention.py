@@ -169,6 +169,9 @@ def test_seed_default_policies_is_idempotent(session: Session) -> None:
     duplicate policies."""
     n1 = seed_default_policies(session)
     n2 = seed_default_policies(session)
+    # audit_events is deliberately excluded: migration 0014 makes it
+    # immutable (UPDATE/DELETE/TRUNCATE triggers) — its retention is
+    # archival, never deletion.
     assert n1 == len(
         {
             "observations",
@@ -176,10 +179,9 @@ def test_seed_default_policies_is_idempotent(session: Session) -> None:
             "insights",
             "inconclusive",
             "source_runs",
-            "audit_events",
         }
     )
     assert n2 == 0
-    # Total policy count: 6 (one per table).
+    # Total policy count: 5 (one per table).
     n_policies = session.query(RetentionPolicyORM).count()
-    assert n_policies == 6
+    assert n_policies == 5

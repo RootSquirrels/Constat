@@ -44,9 +44,13 @@ logger = logging.getLogger(__name__)
 #   a customer see "what was the state 2 years ago" for audit.
 # - source_runs: 180 days. The metadata is low-value; the
 #   resources_found count is the only long-tail useful field.
-# - audit_events: 1825 days (5y). Compliance: ISO 27001 / SOC2
-#   typically require 1-3 years; we go to 5y for headroom and
-#   to satisfy longer contractual SLAs.
+#
+# audit_events is deliberately ABSENT: migration 0014 makes the table
+# immutable (triggers deny UPDATE/DELETE/TRUNCATE). Retention of the
+# audit log is archival/export, never deletion; a future purge is a
+# privileged migration that drops the triggers first. A legacy seeded
+# audit_events policy row fails the ALLOWED_TABLES check and is
+# auto-disabled with a warning on the next run — graceful, visible.
 
 DEFAULT_RETENTION_DAYS: dict[str, int] = {
     "observations": 90,
@@ -54,7 +58,6 @@ DEFAULT_RETENTION_DAYS: dict[str, int] = {
     "insights": 730,
     "inconclusive": 730,
     "source_runs": 180,
-    "audit_events": 1825,
 }
 
 
@@ -74,7 +77,6 @@ _TABLE_MODELS: dict[str, Any] = {
     "insights": InsightORM,
     "inconclusive": InconclusiveORM,
     "source_runs": SourceRunORM,
-    "audit_events": None,  # handled specially (uses occurred_at)
 }
 
 # Which column on each model holds the creation timestamp. Used
@@ -151,13 +153,6 @@ def apply_retention(
         stmt = delete(FocusChargeORM).where(
             FocusChargeORM.tenant_id == tenant_id,
             FocusChargeORM.ingested_at < cutoff,
-        )
-    elif table_name == "audit_events":
-        from constat_api.orm import AuditEventORM
-
-        stmt = delete(AuditEventORM).where(
-            AuditEventORM.tenant_id == tenant_id,
-            AuditEventORM.occurred_at < cutoff,
         )
     else:
         model = _TABLE_MODELS[table_name]
