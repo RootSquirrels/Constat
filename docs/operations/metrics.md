@@ -183,6 +183,8 @@ the library. That's the whole point of the V1 choice.
 
 - [`../architecture.md`](../architecture.md) — the SLO targets
   this module measures
+- [`./alerting.md`](./alerting.md) — the 3 Prometheus alerts built on
+  these metrics (`deploy/prometheus/alerts.yml`) and their runbooks
 - [`../api/endpoints.md`](../api/endpoints.md) — the `/metrics`
   endpoint contract
 - [`./logging.md`](./logging.md) — the request_id that
