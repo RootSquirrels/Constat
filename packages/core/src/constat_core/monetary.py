@@ -84,6 +84,16 @@ MONETARY: dict[str, MonetaryExtraction] = {
         value_basis=ValueBasis.ESTIMATED,
         kind=MonetaryKind.AVOIDABLE_SAVING,
     ),
+    "snapshot_orphan": MonetaryExtraction(
+        payload_key="orphan_snapshot_monthly_usd",
+        value_basis=ValueBasis.ESTIMATED,
+        kind=MonetaryKind.AVOIDABLE_SAVING,
+    ),
+    "ec2_stopped_with_storage": MonetaryExtraction(
+        payload_key="stopped_storage_monthly_usd",
+        value_basis=ValueBasis.ESTIMATED,
+        kind=MonetaryKind.AVOIDABLE_SAVING,
+    ),
     "chargeback": MonetaryExtraction(
         payload_key="drift_amortized_minus_billed_usd",
         value_basis=ValueBasis.ACTUAL,

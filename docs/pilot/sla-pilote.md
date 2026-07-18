@@ -14,7 +14,7 @@
 | Comptes AWS connectés | **5 maximum** (limite technique documentée du chemin de collecte V1 ; l'extension au-delà fait l'objet d'un avenant après mise en production du traitement asynchrone) |
 | Régions par compte | 7 maximum (jeu par défaut, ajustable à l'onboarding) |
 | Types de ressources | RDS/Aurora (PostgreSQL, MySQL), volumes EBS |
-| Règles actives | `rds_eol`, `mysql_eol`, `aurora_eol`, `ebs_gp2_to_gp3`, `ebs_unattached`, vue chargeback FOCUS |
+| Règles actives | `rds_eol`, `mysql_eol`, `aurora_eol`, `ebs_gp2_to_gp3`, `ebs_unattached`, `snapshot_orphan`, `ec2_stopped_with_storage`, vue chargeback FOCUS |
 | Accès | Rôle IAM **lecture seule** fourni par template versionné, avec External ID unique par connexion ; aucune access key, aucun agent |
 | Durée | 90 jours à compter de la connexion du premier compte |
 | Environnement | Instance dédiée au client, région **eu-west-3 (Paris)**, HTTPS obligatoire (le pilote ne démarre pas sans TLS actif — prérequis interne, pas une option) |

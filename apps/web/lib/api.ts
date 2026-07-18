@@ -232,6 +232,16 @@ const RULE_MONETARY: Record<
     valueBasis: "ESTIMATED",
     kind: "AVOIDABLE_SAVING",
   },
+  snapshot_orphan: {
+    payloadKey: "orphan_snapshot_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  ec2_stopped_with_storage: {
+    payloadKey: "stopped_storage_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
   chargeback: {
     payloadKey: "drift_amortized_minus_billed_usd",
     valueBasis: "ACTUAL",

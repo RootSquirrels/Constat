@@ -11,6 +11,8 @@ dependencies = [
     "constat-mysql-eol",
     "constat-aurora-eol",
     "constat-chargeback",
+    "constat-snapshot-orphan",
+    "constat-ec2-stopped-with-storage",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",

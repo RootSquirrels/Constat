@@ -41,9 +41,13 @@ from constat_chargeback.resolver import (
 from constat_core.models import Fact, Inconclusive, Insight
 from constat_ebs_gp2_to_gp3.resolver import evaluate as ebs_gp2_to_gp3_evaluate
 from constat_ebs_unattached.resolver import evaluate as ebs_unattached_evaluate
+from constat_ec2_stopped_with_storage.resolver import (
+    evaluate as ec2_stopped_with_storage_evaluate,
+)
 from constat_focus.loader import FocusCharge
 from constat_mysql_eol.resolver import evaluate as mysql_eol_evaluate
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
+from constat_snapshot_orphan.resolver import evaluate as snapshot_orphan_evaluate
 from sqlalchemy.orm import Session
 
 from constat_api.metrics import (
@@ -97,6 +101,8 @@ RESOURCE_RULES: dict[str, ResourceEvaluateFn] = {
     "aurora_eol": aurora_eol_evaluate,
     "ebs_gp2_to_gp3": ebs_gp2_to_gp3_evaluate,
     "ebs_unattached": ebs_unattached_evaluate,
+    "snapshot_orphan": snapshot_orphan_evaluate,
+    "ec2_stopped_with_storage": ec2_stopped_with_storage_evaluate,
 }
 
 
@@ -114,6 +120,8 @@ RULE_SOURCES: dict[str, str] = {
     "aurora_eol": "aws_rds",
     "ebs_gp2_to_gp3": "aws_ec2",
     "ebs_unattached": "aws_ec2",
+    "snapshot_orphan": "aws_ec2",
+    "ec2_stopped_with_storage": "aws_ec2",
 }
 
 
@@ -492,6 +500,28 @@ def run_ebs_unattached(
     return run_resource_rule(session, "ebs_unattached", today=today, scope_max_age=scope_max_age)
 
 
+def run_snapshot_orphan(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the snapshot_orphan rule via the generic runner."""
+    return run_resource_rule(session, "snapshot_orphan", today=today, scope_max_age=scope_max_age)
+
+
+def run_ec2_stopped_with_storage(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the ec2_stopped_with_storage rule via the generic runner."""
+    return run_resource_rule(
+        session, "ec2_stopped_with_storage", today=today, scope_max_age=scope_max_age
+    )
+
+
 def run_chargeback(
     session: Session,
     *,
@@ -624,6 +654,8 @@ RUNNERS: dict[str, RunnerFn] = {
     "aurora_eol": run_aurora_eol,
     "ebs_gp2_to_gp3": run_ebs_gp2_to_gp3,
     "ebs_unattached": run_ebs_unattached,
+    "snapshot_orphan": run_snapshot_orphan,
+    "ec2_stopped_with_storage": run_ec2_stopped_with_storage,
     "chargeback": run_chargeback,
 }
 

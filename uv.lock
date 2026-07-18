@@ -17,9 +17,11 @@ members = [
     "constat-core",
     "constat-ebs-gp2-to-gp3",
     "constat-ebs-unattached",
+    "constat-ec2-stopped-with-storage",
     "constat-focus",
     "constat-mysql-eol",
     "constat-rds-eol",
+    "constat-snapshot-orphan",
 ]
 
 [[package]]
@@ -210,9 +212,11 @@ dependencies = [
     { name = "constat-aws-rds" },
     { name = "constat-chargeback" },
     { name = "constat-core" },
+    { name = "constat-ec2-stopped-with-storage" },
     { name = "constat-focus" },
     { name = "constat-mysql-eol" },
     { name = "constat-rds-eol" },
+    { name = "constat-snapshot-orphan" },
     { name = "fastapi" },
     { name = "prometheus-client" },
     { name = "psycopg2-binary" },
@@ -228,9 +232,11 @@ requires-dist = [
     { name = "constat-aws-rds", editable = "packages/connectors/aws_rds" },
     { name = "constat-chargeback", editable = "packages/insights/chargeback" },
     { name = "constat-core", editable = "packages/core" },
+    { name = "constat-ec2-stopped-with-storage", editable = "packages/insights/ec2_stopped_with_storage" },
     { name = "constat-focus", editable = "packages/connectors/focus" },
     { name = "constat-mysql-eol", editable = "packages/insights/mysql_eol" },
     { name = "constat-rds-eol", editable = "packages/insights/rds_eol" },
+    { name = "constat-snapshot-orphan", editable = "packages/insights/snapshot_orphan" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
@@ -334,6 +340,17 @@ dependencies = [
 requires-dist = [{ name = "constat-core", editable = "packages/core" }]
 
 [[package]]
+name = "constat-ec2-stopped-with-storage"
+version = "0.0.0"
+source = { editable = "packages/insights/ec2_stopped_with_storage" }
+dependencies = [
+    { name = "constat-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "constat-core", editable = "packages/core" }]
+
+[[package]]
 name = "constat-focus"
 version = "0.0.0"
 source = { editable = "packages/connectors/focus" }
@@ -363,6 +380,17 @@ requires-dist = [{ name = "constat-core", editable = "packages/core" }]
 name = "constat-rds-eol"
 version = "0.0.0"
 source = { editable = "packages/insights/rds_eol" }
+dependencies = [
+    { name = "constat-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "constat-core", editable = "packages/core" }]
+
+[[package]]
+name = "constat-snapshot-orphan"
+version = "0.0.0"
+source = { editable = "packages/insights/snapshot_orphan" }
 dependencies = [
     { name = "constat-core" },
 ]

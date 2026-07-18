@@ -262,6 +262,58 @@ def snapshot_to_resource(snap: dict[str, Any], account_id: str) -> Resource:
     )
 
 
+def snapshot_to_facts(
+    resource_id: UUID, account_id: str, snap: dict[str, Any], observed_at: datetime
+) -> list[Fact]:
+    """Convert an EBS snapshot to canonical Facts (aws.ec2.snapshot.*).
+
+    Keys: state, size_gb, storage_tier, volume_id, start_time, description.
+    Cross-resource facts (volume_exists) are NOT produced here — they
+    need the region's volume scan, so they are written by the
+    correlation post-pass (`correlation_facts`). Same split as volumes:
+    state-derived booleans (is_orphan) are derived in the rule.
+    """
+    state = snap.get("State")
+    size_gb = snap.get("VolumeSize")
+    storage_tier = snap.get("StorageTier")
+    volume_id = snap.get("VolumeId")
+    start_time = snap.get("StartTime")
+    description = snap.get("Description")
+
+    def _fact(key: str, value: Any, state: ValueState) -> Fact:
+        return Fact(
+            resource_id=resource_id,
+            account_id=account_id,
+            namespace="aws.ec2.snapshot",
+            key=key,
+            value=value,
+            value_state=state,
+            source=SOURCE_NAME,
+            observed_at=observed_at,
+        )
+
+    return [
+        _fact("state", state, ValueState.KNOWN if state else ValueState.UNKNOWN),
+        _fact("size_gb", size_gb, ValueState.KNOWN if size_gb is not None else ValueState.UNKNOWN),
+        _fact(
+            "storage_tier",
+            storage_tier,
+            ValueState.KNOWN if storage_tier else ValueState.UNKNOWN,
+        ),
+        _fact("volume_id", volume_id, ValueState.KNOWN if volume_id else ValueState.UNKNOWN),
+        _fact(
+            "start_time",
+            start_time.isoformat() if start_time else None,
+            ValueState.KNOWN if start_time else ValueState.UNKNOWN,
+        ),
+        _fact(
+            "description",
+            description,
+            ValueState.KNOWN if description is not None else ValueState.UNKNOWN,
+        ),
+    ]
+
+
 def snapshot_to_observation(
     resource_id: UUID, snap: dict[str, Any], observed_at: datetime
 ) -> Observation:
@@ -316,6 +368,154 @@ def instance_to_observation(
             "LaunchTime": launch_time.isoformat() if launch_time else None,
             "PrivateIpAddress": inst.get("PrivateIpAddress"),
             "PublicIpAddress": inst.get("PublicIpAddress"),
+            "BlockDeviceMappings": [
+                {
+                    "DeviceName": m.get("DeviceName"),
+                    "VolumeId": (m.get("Ebs") or {}).get("VolumeId"),
+                }
+                for m in (inst.get("BlockDeviceMappings") or [])
+            ],
             "Tags": {t.get("Key"): t.get("Value") for t in (inst.get("Tags") or [])},
         },
     )
+
+
+def instance_to_facts(
+    resource_id: UUID, account_id: str, inst: dict[str, Any], observed_at: datetime
+) -> list[Fact]:
+    """Convert an EC2 instance to canonical Facts (aws.ec2.instance.*).
+
+    Keys: state, instance_type, launch_time, block_device_volume_ids.
+    The cross-resource `attached_volumes` fact (volume ids resolved to
+    sizes/types against the region's volume scan) is written by the
+    correlation post-pass (`correlation_facts`), not here — a single
+    instance's raw payload doesn't carry volume sizes.
+    """
+    state = (inst.get("State") or {}).get("Name")
+    instance_type = inst.get("InstanceType")
+    launch_time = inst.get("LaunchTime")
+    volume_ids = [
+        ebs.get("VolumeId")
+        for m in (inst.get("BlockDeviceMappings") or [])
+        if (ebs := m.get("Ebs") or {}).get("VolumeId")
+    ]
+
+    def _fact(key: str, value: Any, state: ValueState) -> Fact:
+        return Fact(
+            resource_id=resource_id,
+            account_id=account_id,
+            namespace="aws.ec2.instance",
+            key=key,
+            value=value,
+            value_state=state,
+            source=SOURCE_NAME,
+            observed_at=observed_at,
+        )
+
+    return [
+        _fact("state", state, ValueState.KNOWN if state else ValueState.UNKNOWN),
+        _fact(
+            "instance_type",
+            instance_type,
+            ValueState.KNOWN if instance_type else ValueState.UNKNOWN,
+        ),
+        _fact(
+            "launch_time",
+            launch_time.isoformat() if launch_time else None,
+            ValueState.KNOWN if launch_time else ValueState.UNKNOWN,
+        ),
+        # Always KNOWN: an empty list is a real observation ("no EBS
+        # block devices"), not a gap. Instance-store-only instances
+        # legitimately have zero entries.
+        _fact("block_device_volume_ids", volume_ids, ValueState.KNOWN),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Cross-resource correlation (post-pass)
+# ---------------------------------------------------------------------------
+
+
+def correlation_facts(
+    *,
+    volumes: list[tuple[UUID, dict[str, Any]]] | None,
+    snapshots: list[tuple[UUID, dict[str, Any]]],
+    instances: list[tuple[UUID, dict[str, Any]]],
+    account_id: str,
+    observed_at: datetime,
+) -> list[Fact]:
+    """Build the cross-resource facts one item's raw payload cannot carry.
+
+    Pure function over the (resource_id, raw) pairs collected in ONE
+    region — no DB access. The caller (apps/api collector) runs it after
+    all jobs of a region and persists the result.
+
+    - `aws.ec2.snapshot.volume_exists` (bool): the snapshot's VolumeId
+      was seen by THIS region's volume scan. Written for every snapshot
+      when the volume job ran — True and False are both proven facts.
+    - `aws.ec2.instance.attached_volumes` (list of
+      {volume_id, size_gb, volume_type}): for stopped instances only,
+      the BlockDeviceMappings volume ids resolved to sizes/types from
+      the volume scan. A volume id the scan didn't see (deleted since,
+      or in another account) is skipped — the list is what we can prove.
+
+    `volumes=None` means the volume job did NOT run (or failed) in this
+    region: no correlation fact is written at all. Absence of the fact
+    is what makes the rules INCONCLUSIVE — we never write a guessed
+    "volume does not exist" (absence of proof is not proof of absence).
+    """
+    if volumes is None:
+        return []
+
+    volume_index: dict[str, dict[str, Any]] = {
+        raw["VolumeId"]: raw for _, raw in volumes if raw.get("VolumeId")
+    }
+    facts: list[Fact] = []
+
+    for resource_id, snap in snapshots:
+        volume_id = snap.get("VolumeId")
+        facts.append(
+            Fact(
+                resource_id=resource_id,
+                account_id=account_id,
+                namespace="aws.ec2.snapshot",
+                key="volume_exists",
+                value=bool(volume_id) and volume_id in volume_index,
+                value_state=ValueState.KNOWN,
+                source=SOURCE_NAME,
+                observed_at=observed_at,
+            )
+        )
+
+    for resource_id, inst in instances:
+        if (inst.get("State") or {}).get("Name") != "stopped":
+            continue
+        attached: list[dict[str, Any]] = []
+        for mapping in inst.get("BlockDeviceMappings") or []:
+            volume_id = (mapping.get("Ebs") or {}).get("VolumeId")
+            if not volume_id:
+                continue
+            vol_raw = volume_index.get(volume_id)
+            if vol_raw is None:
+                continue
+            attached.append(
+                {
+                    "volume_id": volume_id,
+                    "size_gb": vol_raw.get("Size"),
+                    "volume_type": vol_raw.get("VolumeType"),
+                }
+            )
+        facts.append(
+            Fact(
+                resource_id=resource_id,
+                account_id=account_id,
+                namespace="aws.ec2.instance",
+                key="attached_volumes",
+                value=attached,
+                value_state=ValueState.KNOWN,
+                source=SOURCE_NAME,
+                observed_at=observed_at,
+            )
+        )
+
+    return facts

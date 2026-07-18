@@ -44,8 +44,11 @@ from constat_aws_ec2.collector import (
     collect_instances,
     collect_snapshots,
     collect_volumes,
+    correlation_facts,
+    instance_to_facts,
     instance_to_observation,
     instance_to_resource,
+    snapshot_to_facts,
     snapshot_to_observation,
     snapshot_to_resource,
     volume_to_facts,
@@ -184,7 +187,7 @@ JOB_REGISTRY: dict[str, ScanJob] = {
         scan_fn=collect_snapshots,
         resource_factory=snapshot_to_resource,
         observation_factory=snapshot_to_observation,
-        facts_factory=None,  # no facts yet for snapshots
+        facts_factory=snapshot_to_facts,
     ),
     "ec2_instance": ScanJob(
         key="ec2_instance",
@@ -193,7 +196,7 @@ JOB_REGISTRY: dict[str, ScanJob] = {
         scan_fn=collect_instances,
         resource_factory=instance_to_resource,
         observation_factory=instance_to_observation,
-        facts_factory=None,  # no facts yet for instances
+        facts_factory=instance_to_facts,
     ),
 }
 
@@ -319,8 +322,13 @@ def _run_region_job(
     aws_session: boto3.Session,
     dry_run: bool,
     force: bool,
-) -> tuple[int, int, int, str | None]:
-    """Run one (region, job) pair. Returns (resources, observations, facts, error).
+) -> tuple[int, int, int, str | None, list[tuple[UUID, dict[str, Any]]]]:
+    """Run one (region, job) pair.
+
+    Returns (resources, observations, facts, error, items) where `items`
+    is the list of (resource_id, raw_dict) pairs seen in this region —
+    the caller's cross-resource correlation post-pass needs the raws
+    after all jobs of the region have run.
 
     Per-region failures are recorded in the returned error; the caller
     (collect_target) decides whether to skip the rest of the regions
@@ -338,6 +346,7 @@ def _run_region_job(
     region_observations = 0
     region_facts = 0
     region_error: str | None = None
+    region_items: list[tuple[UUID, dict[str, Any]]] = []
     region_started = time.monotonic()
     # F-01: a run is 'success' ONLY if the scan loop ran to completion.
     # region_error alone is not enough: an exception type we don't catch
@@ -351,7 +360,7 @@ def _run_region_job(
             # Another scan is already active for this scope. Skip to avoid
             # double-counting. The caller records this as an error.
             region_error = "scan already in progress"
-            return region_resources, region_observations, region_facts, region_error
+            return region_resources, region_observations, region_facts, region_error, region_items
 
         for raw in job.scan_fn(aws_session, [region]):
             native_id = _native_id_for_job(job, raw)
@@ -362,6 +371,7 @@ def _run_region_job(
                 resource_type=job.resource_type,
                 native_id=native_id,
             )
+            region_items.append((resource.id, raw))
             observed_at = datetime.now(tz=UTC)
 
             if not dry_run:
@@ -454,7 +464,7 @@ def _run_region_job(
                         job.key,
                     )
 
-    return region_resources, region_observations, region_facts, region_error
+    return region_resources, region_observations, region_facts, region_error, region_items
 
 
 def collect_target(
@@ -529,8 +539,13 @@ def collect_target(
         # failing (e.g. EC2 snapshot API throttled) shouldn't block RDS.
         # We track per-job outcomes separately and report them all.
         region_had_error = False
+        # Items collected per job in THIS region, for the cross-resource
+        # correlation post-pass below. A job is only present when it ran
+        # without error — a failed ec2_volume job must not look like
+        # "scanned, zero volumes found".
+        region_items_by_job: dict[str, list[tuple[UUID, dict[str, Any]]]] = {}
         for job in jobs:
-            n_res, n_obs, n_facts, err = _run_region_job(
+            n_res, n_obs, n_facts, err, items = _run_region_job(
                 session,
                 job=job,
                 region=region,
@@ -545,6 +560,27 @@ def collect_target(
             if err is not None:
                 errors.append(f"{region} ({job.key}): {err}")
                 region_had_error = True
+            else:
+                region_items_by_job[job.key] = items
+
+        # Cross-resource correlation post-pass (snapshot_orphan,
+        # ec2_stopped_with_storage): writes facts one resource's raw
+        # payload cannot carry (snapshot x volume, instance x volume).
+        # Runs on whatever jobs actually succeeded in this region;
+        # correlation_facts returns [] when the volume job is missing,
+        # so a failed volume scan degrades the rules to INCONCLUSIVE
+        # instead of emitting a guessed "volume does not exist".
+        if not dry_run and region_items_by_job:
+            corr = correlation_facts(
+                volumes=region_items_by_job.get("ec2_volume"),
+                snapshots=region_items_by_job.get("ec2_snapshot", []),
+                instances=region_items_by_job.get("ec2_instance", []),
+                account_id=str(account.id),
+                observed_at=datetime.now(tz=UTC),
+            )
+            if corr:
+                inserted, updated = facts_repo.upsert_facts(session, corr)
+                facts_written += inserted + updated
 
         # Circuit-breaker bookkeeping: any error in the region (from any
         # job) increments; a clean run on ALL jobs resets.
