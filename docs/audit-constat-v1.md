@@ -295,3 +295,43 @@ lecture directe. `uv.lock` : lecture directe → fichier inexistant (confirmé).
 
 **État final du dépôt** : aucune modification — l'audit n'a utilisé que des opérations de
 lecture (Read/Grep/Glob) ; le présent rapport est écrit hors du dépôt.
+
+---
+
+## 11. STATUT DE REMÉDIATION (2026-07-18, post-audit)
+
+Tous les findings ont été traités. Vérification locale : **296 tests passés, 19 skippés**
+(les 19 sont les tests Postgres RLS, exécutés en CI — pas de Docker sur la machine de
+développement), `ruff check` + `ruff format --check` propres, `mypy` sur `packages/core`
+propre. Les corrections ont d'abord été **vérifiées contre le code** : les 17 findings
+étaient exacts.
+
+| ID | Statut | Correction appliquée |
+|---|---|---|
+| F-01 | **CORRIGÉ** | Flag `scan_completed` (succès prouvé, plus par défaut) + `except BotoCoreError` distinct avec classification AccessDenied/Throttling/Timeout/Unknown + retirement conditionné à `success && scan_completed`. Test de preuve : `ReadTimeoutError` mid-scan → run `failed`, 0 retirement (`tests/test_collector_aws_audit_fixes.py`). |
+| F-02 | **CORRIGÉ** | `latest_successful_run(max_age=...)` ; fenêtre par défaut 24 h (`DEFAULT_SCOPE_MAX_AGE`) ; run trop vieux → INCONCLUSIVE raison `scope_stale` (distincte de `scope_not_proven`). Test : run de 25 h → `scope_stale`. |
+| F-03 | **CORRIGÉ** | Delete-and-replace par règle dans la transaction du run (`delete_insights_for_rule` / `delete_inconclusive_for_rule`). Test : 3 runs consécutifs → count constant. |
+| F-04 | **CORRIGÉ** | Migration `0011_rls_remaining_tables.sql` : ENABLE+FORCE+policy GUC sur `focus_charge_tags`, `audit_events`, `retention_policies`, `pii_classifications`. Le test CI couvre les 13 tables. |
+| F-05 | **CORRIGÉ** | CI : service `postgres:16-alpine`, application des migrations 0001→0011, scénario pytest 2-tenants réel (`@pytest.mark.postgres`, skip local sans `CONSTAT_TEST_DATABASE_URL`). Le placeholder `assert True` est supprimé. **Non vérifiable localement** (pas de Docker) — la CI fait foi. |
+| F-06 | **CORRIGÉ** | `role_arn` ⇒ `external_id` obligatoire : 422 côté API (validateur Pydantic), `ValueError` côté collecteur avant tout appel STS. |
+| F-07 | **TRANCHÉ** | ADR-12 (`docs/adr/ADR-12-insights-first-pivot.md`) : pivot insights-first confirmé ; l'inventaire filtrable n'est pas vendu avant d'exister. |
+| F-08 | **CORRIGÉ** | Retirement après **2 scans success consécutifs** sans la ressource (`CONSECUTIVE_SCANS_FOR_RETIREMENT = 2`) ; un seul scan ne retire rien. |
+| F-09 | **DOCUMENTÉ** | Contrainte V1 acceptée (known-issues §9) ; seuil de bascule queue+worker : >5 comptes. |
+| F-10 | **CORRIGÉ** | `POST /insights` gated par `CONSTAT_ENABLE_MANUAL_INSIGHTS` (défaut OFF → 403) ; quand activé, `source="manual"` est estampillé dans le payload. |
+| F-11 | **CORRIGÉ** | `uv.lock` généré et commité (retiré de `.gitignore`), `[tool.uv.sources]` ajouté, CI en `uv sync --frozen --all-packages`. Dépendances manquantes ajoutées au passage : `psycopg2-binary` (import de `db.py`), `httpx2` (TestClient), `types-PyYAML` (mypy CI). |
+| F-12 | **CORRIGÉ** | `UNIQUE(tenant_id, external_id)` sur `accounts` (migration 0011 + ORM) ; `get_by_external_id` scopé par tenant. |
+| F-13 | **CORRIGÉ** | Titres chargeback avec le nom du compte (jointure `accounts`, fallback UUID) ; escalade de sévérité sur drift supprimée (tout à `INFO`, magnitude conservée dans le payload). Doc `docs/insights/chargeback.md` alignée. |
+| F-14 | **CORRIGÉ** | `.env.example` réécrit sur les variables réellement lues (`CONSTAT_*`), `CONSTAT_API_KEY` ajouté avec avertissement auth ouverte. |
+| F-15 | **CORRIGÉ** | `CONSTAT_METRICS_KEY` (header `X-Metrics-Key`, comparaison constant-time ; ouvert + warning si non défini) ; CORS via `CONSTAT_CORS_ORIGINS`. |
+| F-16 | **CORRIGÉ** | N+1 supprimé : requête bulk `list_facts_for_resources`. `query.all()` conservé (échelle pilote ≤10k, seuil documenté). |
+| F-17 | **CORRIGÉ** | `0009` renommé (`0009_focus_charge_tags_table.sql`) ; `known-issues.md` mis à jour (MinIO §8, région-PII §10, F-12 §11). |
+
+**Corrections annexes découvertes pendant la remédiation** :
+- La chaîne de migrations était **cassée sur base vierge** : 0007 référençait
+  `insight_runs.tenant_id`, colonne jamais ajoutée (0004 l'avait oubliée). Corrigé dans
+  0004 — aucun environnement n'avait pu appliquer l'ancienne chaîne au-delà de 0007.
+- `tests/__init__.py` ajouté : la suite était inutilisable via `uv run pytest`
+  (imports `tests.conftest` cassés hors `python -m pytest`).
+
+**Reste à faire (reporté, non bloquant pilote)** : rôle PG runtime non-owner (doc §11.2),
+golden dataset FOCUS réel, runbook opérateur, queue+worker au-delà de 5 comptes — voir §8.

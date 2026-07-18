@@ -165,34 +165,19 @@ opposite — refunds, credits, one-time fee amortized to zero).
 Neither direction is "good" or "bad" on its own. It's a signal to
 interpret in context.
 
-## Severity thresholds
+## Severity
 
-The resolver classifies drift into severity:
+**No severity escalation on drift.** The resolver used to classify
+drift into `WARNING`/`CRITICAL` by dollar magnitude
+(`SEVERITY_WARNING_USD` / `SEVERITY_CRITICAL_USD`). Audit F-13 removed
+this: a large amortized-vs-billed drift is normal RI/Savings Plans
+mechanics, not an anomaly, so escalating severity on it was
+misleading. All drift insights are now emitted at `INFO`; the
+magnitude stays in the payload for the reader to judge.
 
-| Absolute drift | Severity |
-|---:|---|
-| ≥ $1,000 | `CRITICAL` |
-| ≥ $100 | `WARNING` |
-| < $100 | `INFO` |
-
-Defined as constants in
-`packages/insights/chargeback/src/constat_chargeback/resolver.py`:
-
-```python
-SEVERITY_WARNING_USD = Decimal("100")
-SEVERITY_CRITICAL_USD = Decimal("1000")
-```
-
-These are **tunable** and will be calibrated against the first G0
-pilot data. If the customer has 10 services × 5 accounts × 12
-months of FOCUS data and most rows are below $100, the
-thresholds are too noisy. If everything trips CRITICAL, they're
-too lax. The first pilot run calibrates them.
-
-The thresholds are in code, not config. We don't have a config
-file in V1. When the calibration stabilizes, we move them to a
-`settings.py::CHARGEBACK_THRESHOLDS` (still no config file, still
-in repo).
+The drift insight itself stays — it is the product ("here is the gap
+between what you paid and what you consumed"). What changed is only
+that the platform no longer cries wolf about it.
 
 ## What the resolver emits
 

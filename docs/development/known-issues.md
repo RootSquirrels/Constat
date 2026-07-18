@@ -28,16 +28,19 @@ current-state contract is fully covered in `test_facts_upsert.py`.
 ## 2. RLS policies (now in place, single-tenant still)
 
 **Status:** scaffolding landed in commit `dc1bb7e feat(api+db):
-multi-tenant RLS scaffolding`. The `tenant_id` column was already on
-all 9 tables (migration 0004); commit `dc1bb7e` adds the policies
-plus the per-session GUC binding in
-`apps/api/src/constat_api/tenant.py`.
+multi-tenant RLS scaffolding`; audit F-04 closed by migration 0011.
+Every tenant-scoped table now has a policy.
 
 **What works today:**
 - `tenant.py::bind_tenant(session, tenant_id)` registers an
-  `after_begin` event that runs `SELECT set_config('app.tenant',
+  `after_begin` event that runs `SELECT set_config('app.current_tenant_id',
   '<uuid>', true)` on every new transaction.
-- The 7 RLS policies are in migration 0007.
+- 13 RLS policies: migration 0007 covers the 9 original tables,
+  migration 0011 covers the 4 tables added later without policies
+  (`focus_charge_tags`, `audit_events`, `retention_policies`,
+  `pii_classifications` — audit F-04). `tests/test_rls.py`
+  (Postgres-marked) fails in CI if a new tenant-scoped table ever
+  ships without a policy.
 
 **What doesn't yet (V1):**
 - The default tenant is hard-coded in
@@ -47,6 +50,9 @@ plus the per-session GUC binding in
   for now. The doc's §11.2 promise — "rôle runtime non-owner, non-
   superuser, sans BYPASSRLS" — is **not yet enforced**. Don't
   promote to multi-tenant until this is fixed.
+- RLS is verified **only** via the CI Postgres job (Postgres
+  service container + `CONSTAT_TEST_DATABASE_URL`). Local runs skip
+  those tests unless you set the env var yourself.
 
 **Who owns the follow-up:** the V1 ship owner. Flag in the
 PR-description if you touch the API role.
@@ -135,6 +141,57 @@ Next.js cache artifact, not in `.gitignore`. Caused noisy diffs
 after `next build`.
 
 **Fix applied:** added the file to the root `.gitignore`.
+
+## 8. MinIO in docker-compose is unused
+
+**Where:** `docker-compose.yml` (`minio` service).
+
+**Symptom:** the compose stack starts a MinIO container, but nothing
+connects to it. Observation payloads live in JSONB columns
+(`observations.payload`), not in object storage.
+
+**Status:** accepted V1 debt. The S3/Parquet replay path in the
+architecture doc ("observations replayable from S3/Parquet") is not
+wired. Keep the service for the demo topology, or drop it when the
+V2 object-storage decision lands.
+
+## 9. Sync HTTP collection (fine ≤5 accounts)
+
+**Where:** the AWS collector runs synchronously inside the API
+process/request.
+
+**Symptom:** a scan blocks the request for the duration of the boto3
+calls. At ≤5 monitored accounts this is acceptable; beyond that the
+request latency becomes a timeout risk.
+
+**Status:** accepted V1 constraint. V2 moves collection to a
+background task queue.
+
+## 10. PII classifier records the region as PII
+
+**Where:** `apps/api/src/constat_api/collectors/aws.py` (the
+`pii.record(field_name="region", ...)` loop after each scan).
+
+**Symptom:** AWS region names (e.g. `eu-west-1`) are classified and
+hashed as if they were customer PII. Harmless but noisy — it inflates
+`pii_classifications` with rows that answer a question nobody asked.
+
+**Status:** cosmetic, not fixed. Revisit when the privacy
+questionnaire defines what actually counts as PII.
+
+## 11. `accounts.external_id` was globally unique
+
+**Status:** FIXED by migration 0011 (audit F-12).
+
+**Original report:** 0001 declared `external_id TEXT UNIQUE` with no
+`tenant_id` in the key, so two tenants could never reference the same
+AWS account id — breaking the MSP case (one AWS account, several
+customers).
+
+**Fix applied:** dropped the global unique, added
+`UNIQUE(tenant_id, external_id)` (constraint
+`uq_accounts_tenant_external`). `repositories/accounts.py` now scopes
+`get_by_external_id` to the session's tenant.
 
 ## Reporting new issues
 

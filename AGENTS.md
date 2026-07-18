@@ -69,6 +69,21 @@ Scopes mirror the package names. No emoji. No "WIP" commits on main; branch if y
 
 If you want to add a new namespace, open an issue first. We don't do EAV.
 
+## Invariants you must not regress (audit-hardened)
+
+- A source_run is `success` only when the scan loop **completed** without error —
+  never by default. Retirement of resources requires **two consecutive** successful
+  scans that both missed the resource (`CONSECUTIVE_SCANS_FOR_RETIREMENT`).
+- Insight runs are delete-and-replace per rule: re-running a rule must not
+  duplicate insights. Scope freshness: a successful run older than 24 h makes the
+  scope `scope_stale` (INCONCLUSIVE), not "proven".
+- **New tenant-scoped table ⇒ RLS policy in the same migration** (ENABLE + FORCE +
+  `app.current_tenant_id` GUC, copy 0007/0011). The CI Postgres job fails otherwise.
+- Cross-account AssumeRole always requires an `ExternalId` (API returns 422,
+  collector raises `ValueError` otherwise).
+- Product position: V1 is sold **insights-first** (ADR-12 in `docs/adr/`). Do not
+  promise a filterable inventory until it exists.
+
 ## Value states
 
 Every fact carries a `value_state`: `KNOWN` / `UNKNOWN` / `STALE` / `ERROR`.
@@ -100,13 +115,21 @@ pip install uv
 uv sync
 docker compose up -d
 
-# 4. Apply migrations
-psql -h localhost -U constat -d constat -f db/migrations/0001_init.sql
+# 4. Apply migrations (all of them, in order)
+for f in db/migrations/*.sql; do
+  psql -h localhost -U constat -d constat -v ON_ERROR_STOP=1 -f "$f"
+done
 # (password: constat — see docker-compose.yml)
 
 # 5. Run tests
 uv run pytest -v
 ```
+
+Notes:
+- `uv.lock` is committed; use `uv sync --frozen` in automation (CI does).
+- The RLS tests (Postgres-marked) skip locally unless
+  `CONSTAT_TEST_DATABASE_URL` points at a live Postgres; CI runs them
+  against a service container.
 
 ## Useful day-to-day
 
