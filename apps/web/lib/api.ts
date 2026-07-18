@@ -55,6 +55,17 @@ export interface RunInsightsResult {
   errors: string[];
 }
 
+export interface InsightRun {
+  id: string;
+  rule_name: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  resources_scanned: number | null;
+  insights_emitted: number | null;
+  error: string | null;
+}
+
 class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -99,11 +110,19 @@ export const api = {
   listInconclusive: (params: ListInconclusiveParams = {}) =>
     fetchJson<Inconclusive[]>(`/inconclusives${buildQuery(params)}`),
 
-  runInsights: (rule = "rds_eol") =>
+  runInsights: (rule = "rds_eol", periodLabel = "all-time") =>
     fetchJson<RunInsightsResult>(`/insights/run`, {
       method: "POST",
-      body: JSON.stringify({ rule }),
+      body: JSON.stringify({ rule, period_label: periodLabel }),
     }),
+
+  // Chargeback: listInsights filtered to rule_name=chargeback is the
+  // current pattern. The dedicated /chargeback endpoint is V2.
+  listChargeback: (limit = 100) =>
+    fetchJson<Insight[]>(`/insights?rule_name=chargeback&limit=${limit}`),
+
+  listInsightRuns: (params: { rule_name?: string; limit?: number } = {}) =>
+    fetchJson<InsightRun[]>(`/insight-runs${buildQuery(params)}`),
 };
 
 export { ApiError, API_URL };
