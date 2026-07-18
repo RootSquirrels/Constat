@@ -343,3 +343,160 @@ def test_collect_uses_force_to_override_stuck_run(session: Session) -> None:
     )
     assert result2.resources_written == 1
     assert result2.errors == []
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+
+def test_collect_circuit_breaker_skips_after_consecutive_failures(
+    session: Session,
+) -> None:
+    """After max_consecutive_region_errors consecutive failures, the rest
+    of the regions are skipped. A single success in between resets the
+    counter."""
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("r1", "r2", "r3", "r4", "r5"),
+    )
+
+    def _scan(s, regions):
+        for region in regions:
+            if region in ("r1", "r2"):
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": "nope"}},
+                    "DescribeDBInstances",
+                )
+            yield {"_region": region, **_make_db()}
+
+    result = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan,
+        max_consecutive_region_errors=2,
+    )
+
+    # r1 and r2 fail (2 errors -> trip the breaker).
+    # r3, r4, r5 are skipped.
+    assert result.resources_written == 0
+    assert result.regions_skipped_by_breaker == ["r3", "r4", "r5"]
+    # 2 real errors + 3 skipped-by-breaker notes
+    real_errors = [e for e in result.errors if "circuit breaker" not in e]
+    breaker_notes = [e for e in result.errors if "circuit breaker" in e]
+    assert len(real_errors) == 2
+    assert len(breaker_notes) == 3
+
+
+def test_collect_circuit_breaker_resets_on_success(session: Session) -> None:
+    """A success between two failures resets the counter. Pattern:
+    r1 fail, r2 success, r3 fail, r4 fail, r5 success.
+
+    r1 fail (consec=1)
+    r2 success (consec=0) <- reset
+    r3 fail (consec=1)
+    r4 fail (consec=2) <- trip
+    r5 skipped by breaker
+
+    So we should see 2 successes (r2, r5 NOT seen — actually r5 is skipped
+    because we tripped at r4, so only r2 succeeds). Let me re-think.
+
+    Actually: the breaker checks at the top of the loop. After r4 fail
+    (consec=2), the next iteration (r5) sees consec >= 2 and skips.
+
+    So successes: r2 only. resources_written == 1. Regions skipped:
+    r5. r3 and r4 did not get skipped because the counter was reset
+    by r2. Without the reset, r3 would have been skipped too.
+    """
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("r1", "r2", "r3", "r4", "r5"),
+    )
+
+    def _scan(s, regions):
+        for region in regions:
+            if region in ("r1", "r3", "r4"):
+                raise ClientError(
+                    {"Error": {"Code": "Throttling", "Message": "slow down"}},
+                    "DescribeDBInstances",
+                )
+            yield {"_region": region, **_make_db()}
+
+    result = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan,
+        max_consecutive_region_errors=2,
+    )
+
+    # r1 fail (consec=1), r2 success (reset), r3 fail (consec=1),
+    # r4 fail (consec=2, trip), r5 skipped.
+    assert result.resources_written == 1  # only r2 succeeded
+    assert result.regions_skipped_by_breaker == ["r5"]
+    # Sanity: r3 and r4 were NOT skipped (the counter was reset by r2).
+    skipped = result.regions_skipped_by_breaker
+    assert "r3" not in skipped
+    assert "r4" not in skipped
+
+
+def test_collect_circuit_breaker_disabled_when_max_is_high(session: Session) -> None:
+    """max_consecutive_region_errors=0 means: never trip (per-region errors
+    don't accumulate toward a breaker threshold)."""
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("r1", "r2", "r3"),
+    )
+
+    def _scan(s, regions):
+        for region in regions:
+            if region in ("r1", "r2"):
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied"}},
+                    "DescribeDBInstances",
+                )
+            yield {"_region": region, **_make_db()}
+
+    result = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan,
+        max_consecutive_region_errors=100,  # high enough to never trip
+    )
+
+    assert result.resources_written == 1  # r3 succeeded
+    assert result.regions_skipped_by_breaker == []
+
+
+def test_collect_circuit_breaker_trips_at_threshold_one(session: Session) -> None:
+    """With threshold=1, the very first error trips the breaker."""
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("r1", "r2", "r3"),
+    )
+
+    def _scan(s, regions):
+        for region in regions:
+            if region == "r1":
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied"}},
+                    "DescribeDBInstances",
+                )
+            yield {"_region": region, **_make_db()}
+
+    result = collect_target(
+        session,
+        target,
+        base_session=MagicMock(),
+        assume_role_fn=_no_assume_role,
+        scan_fn=_scan,
+        max_consecutive_region_errors=1,
+    )
+
+    assert result.resources_written == 0
+    assert result.regions_skipped_by_breaker == ["r2", "r3"]

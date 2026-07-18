@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 import boto3
+from botocore.config import Config as BotoConfig
 from constat_core.catalog.aws import vcpu_for_instance_class
 from constat_core.models import Fact, Observation, Resource, ValueState
 
@@ -29,6 +30,15 @@ DEFAULT_REGIONS: list[str] = [
     "us-west-2",
 ]
 
+# Adaptive retry config: 5 attempts, exponential backoff, client-side
+# rate limiting via the Adaptive mode. Better than the default 'standard'
+# mode for throttling-heavy workloads. V1: applied per client.
+ADAPTIVE_RETRY_CONFIG = BotoConfig(
+    retries={"mode": "adaptive", "max_attempts": 5},
+    connect_timeout=10,
+    read_timeout=30,
+)
+
 
 def _now_utc() -> datetime:
     return datetime.now(tz=UTC)
@@ -40,10 +50,13 @@ def collect_db_instances(
     """Yield raw DB instance dicts from AWS RDS API across given regions.
 
     Each yielded dict has an extra `_region` key (string).
+
+    Uses adaptive retry mode (5 attempts, client-side rate limiting) so a
+    transient throttling blip doesn't immediately fail the region.
     """
     regions = regions or DEFAULT_REGIONS
     for region in regions:
-        client = session.client("rds", region_name=region)
+        client = session.client("rds", region_name=region, config=ADAPTIVE_RETRY_CONFIG)
         paginator = client.get_paginator("describe_db_instances")
         for page in paginator.paginate():
             for db in page["DBInstances"]:

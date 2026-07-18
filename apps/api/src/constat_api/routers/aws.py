@@ -38,6 +38,9 @@ class CollectRequest(BaseModel):
     # When True, force-start a new scan even if a previous one is stuck
     # in 'running' for the same scope. Use after a worker crash to recover.
     force: bool = False
+    # Circuit breaker threshold: after this many consecutive region
+    # failures, the rest of the regions are skipped. Default 2.
+    max_consecutive_region_errors: int = 2
 
 
 class CollectResultOut(BaseModel):
@@ -47,6 +50,7 @@ class CollectResultOut(BaseModel):
     observations_written: int
     facts_written: int
     errors: list[str]
+    regions_skipped_by_breaker: list[str] = []
 
 
 class CollectResponse(BaseModel):
@@ -79,6 +83,7 @@ def trigger_aws_collect(
         base_session=base_session,
         dry_run=body.dry_run,
         force=body.force,
+        max_consecutive_region_errors=body.max_consecutive_region_errors,
     )
     return CollectResponse(
         results=[
@@ -89,6 +94,7 @@ def trigger_aws_collect(
                 observations_written=r.observations_written,
                 facts_written=r.facts_written,
                 errors=r.errors,
+                regions_skipped_by_breaker=r.regions_skipped_by_breaker,
             )
             for r in results
         ]

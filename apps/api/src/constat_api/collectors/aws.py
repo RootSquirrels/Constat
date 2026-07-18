@@ -8,6 +8,10 @@ Design:
 - Dependency injection for testability: assume_role_fn and scan_fn are
   injectable. Production uses defaults that hit real boto3.
 - Dry-run: skip writes, still call AWS (validate IAM + region coverage).
+- Circuit breaker: after N consecutive region errors, skip the rest
+  of the regions. The intuition: if 2 regions in a row hit AccessDenied
+  (or worse, network errors), the rest of the regions are likely
+  degraded too — don't burn minutes hammering them.
 """
 
 from __future__ import annotations
@@ -37,6 +41,11 @@ from constat_api.repositories import source_runs as source_runs_repo
 
 logger = logging.getLogger(__name__)
 
+# V1 default: after 2 consecutive region errors, the rest of the regions
+# are likely degraded too. Skip them and let the operator decide whether
+# to re-run. Tunable per call.
+DEFAULT_MAX_CONSECUTIVE_REGION_ERRORS = 2
+
 
 @dataclass(frozen=True)
 class TargetAccount:
@@ -62,6 +71,9 @@ class CollectionResult:
     observations_written: int
     facts_written: int
     errors: list[str] = field(default_factory=list)
+    # Regions skipped because the circuit breaker tripped. They were
+    # never scanned, so no source_run was created for them.
+    regions_skipped_by_breaker: list[str] = field(default_factory=list)
 
 
 # Type aliases for injected callables.
@@ -101,12 +113,14 @@ def collect_target(
     scan_fn: ScanFn | None = None,
     dry_run: bool = False,
     force: bool = False,
+    max_consecutive_region_errors: int = DEFAULT_MAX_CONSECUTIVE_REGION_ERRORS,
 ) -> CollectionResult:
     """Scan one target: assume role, iterate regions, write resources/facts/observations.
 
-    Per-region failures are recorded in result.errors; the scan continues.
-    The caller owns the session transaction; this function flushes per region
-    so partial progress survives.
+    Per-region failures are recorded in result.errors; the scan continues
+    until the circuit breaker trips. The caller owns the session
+    transaction; this function flushes per region so partial progress
+    survives.
 
     `assume_role_fn` and `scan_fn` use late-bound defaults (None -> look up the
     module-level default) so tests can patch them via `unittest.mock.patch`.
@@ -115,6 +129,11 @@ def collect_target(
     starting a new one. Use this to recover from stuck runs after
     `cleanup_stuck_runs` failed to free the scope, or when you know the
     previous worker is dead.
+
+    Circuit breaker: after `max_consecutive_region_errors` consecutive
+    region failures, the rest of the regions are skipped (recorded in
+    result.regions_skipped_by_breaker). A single successful region
+    resets the counter. Default: 2.
     """
     if assume_role_fn is None:
         # Late binding: allows `patch("constat_api.collectors.aws._assume_role")`.
@@ -130,10 +149,25 @@ def collect_target(
     observations_written = 0
     facts_written = 0
     errors: list[str] = []
+    regions_skipped: list[str] = []
+    consecutive_errors = 0
 
     account = accounts_repo.get_or_create(session, target.aws_account_id, target.name)
 
     for region in regions:
+        # Circuit breaker check (before start_run: a skipped region has
+        # no source_run, no flush, no retirement — it's a no-op).
+        if consecutive_errors >= max_consecutive_region_errors:
+            skip_msg = (
+                f"skipped by circuit breaker "
+                f"({consecutive_errors} consecutive errors >= "
+                f"{max_consecutive_region_errors})"
+            )
+            errors.append(f"{region}: {skip_msg}")
+            regions_skipped.append(region)
+            logger.warning("Region %s %s", region, skip_msg)
+            continue
+
         run = source_runs_repo.start_run(
             session,
             account_id=account.id,
@@ -149,6 +183,7 @@ def collect_target(
                 # Another scan is already active for this scope. Skip to avoid
                 # double-counting. We still log it as an error in the result.
                 errors.append(f"{region}: scan already in progress")
+                consecutive_errors += 1
                 continue
 
             for db in scan_fn(aws_session, [region]):
@@ -181,10 +216,14 @@ def collect_target(
             if not dry_run:
                 session.flush()
 
+            # Scan completed without exception -> reset the breaker.
+            consecutive_errors = 0
+
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             region_error = f"{error_code}: {e}"
             errors.append(f"{region}: {region_error}")
+            consecutive_errors += 1
             logger.warning("Region %s failed: %s", region, e)
         finally:
             if run is not None:
@@ -225,6 +264,7 @@ def collect_target(
         observations_written=observations_written,
         facts_written=facts_written,
         errors=errors,
+        regions_skipped_by_breaker=regions_skipped,
     )
 
 
@@ -237,6 +277,7 @@ def collect_targets(
     scan_fn: ScanFn | None = None,
     dry_run: bool = False,
     force: bool = False,
+    max_consecutive_region_errors: int = DEFAULT_MAX_CONSECUTIVE_REGION_ERRORS,
 ) -> list[CollectionResult]:
     """Collect across multiple targets. One target's failure does not stop the others."""
     if assume_role_fn is None:
@@ -254,6 +295,7 @@ def collect_targets(
                 scan_fn=scan_fn,
                 dry_run=dry_run,
                 force=force,
+                max_consecutive_region_errors=max_consecutive_region_errors,
             )
             results.append(result)
         except ClientError as e:
