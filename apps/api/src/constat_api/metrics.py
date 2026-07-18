@@ -156,12 +156,8 @@ def record_insight_run_duration(*, rule: str, duration_seconds: float) -> None:
     INSIGHTS_RUN_DURATION.labels(rule=rule).observe(duration_seconds)
 
 
-def record_source_run(
-    *, region: str, status: str, duration_seconds: float
-) -> None:
-    SOURCE_RUN_DURATION.labels(region=region, status=status).observe(
-        duration_seconds
-    )
+def record_source_run(*, region: str, status: str, duration_seconds: float) -> None:
+    SOURCE_RUN_DURATION.labels(region=region, status=status).observe(duration_seconds)
     SOURCE_RUN_TOTAL.labels(region=region, status=status).inc()
 
 
@@ -175,12 +171,8 @@ def record_focus_rows(*, ingested: int, skipped: int) -> None:
 def record_http_request(
     *, method: str, path: str, status_code: int, duration_seconds: float
 ) -> None:
-    HTTP_REQUESTS_TOTAL.labels(
-        method=method, path=path, status=str(status_code)
-    ).inc()
-    HTTP_REQUEST_DURATION.labels(method=method, path=path).observe(
-        duration_seconds
-    )
+    HTTP_REQUESTS_TOTAL.labels(method=method, path=path, status=str(status_code)).inc()
+    HTTP_REQUEST_DURATION.labels(method=method, path=path).observe(duration_seconds)
 
 
 # ----------------------------------------------------------------------------

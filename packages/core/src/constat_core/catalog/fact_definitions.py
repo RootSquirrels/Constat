@@ -65,9 +65,7 @@ class FactRegistry:
     schema_version: int
     last_reviewed: str
     facts: tuple[FactDefinition, ...] = field(default_factory=tuple)
-    _by_key: dict[tuple[str, str], FactDefinition] = field(
-        default_factory=dict, repr=False
-    )
+    _by_key: dict[tuple[str, str], FactDefinition] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         # Build the index after the dataclass is frozen.
@@ -111,15 +109,11 @@ def _parse_entry(raw: dict[str, Any]) -> FactDefinition:
 
     description = raw.get("description", "").strip()
     if not description:
-        raise ValueError(
-            f"Fact {raw['namespace']}.{raw['key']} has no description"
-        )
+        raise ValueError(f"Fact {raw['namespace']}.{raw['key']} has no description")
 
     consumers = raw.get("consumers") or []
     if not isinstance(consumers, list):
-        raise ValueError(
-            f"Fact {raw['namespace']}.{raw['key']} consumers must be a list"
-        )
+        raise ValueError(f"Fact {raw['namespace']}.{raw['key']} consumers must be a list")
 
     allowed_values = tuple(raw.get("allowed_values") or ())
 
@@ -171,8 +165,7 @@ def load_registry(force_reload: bool = False) -> FactRegistry:
     schema_version = int(raw.get("schema_version", 0))
     if schema_version != 1:
         raise ValueError(
-            f"Unsupported fact_definitions.yaml schema_version: {schema_version} "
-            f"(expected 1)"
+            f"Unsupported fact_definitions.yaml schema_version: {schema_version} (expected 1)"
         )
 
     facts_raw = raw.get("facts")
@@ -185,10 +178,7 @@ def load_registry(force_reload: bool = False) -> FactRegistry:
     seen: set[tuple[str, str]] = set()
     for f in facts:
         if (f.namespace, f.key) in seen:
-            raise ValueError(
-                f"Duplicate entry in fact_definitions.yaml: "
-                f"{f.namespace}.{f.key}"
-            )
+            raise ValueError(f"Duplicate entry in fact_definitions.yaml: {f.namespace}.{f.key}")
         seen.add((f.namespace, f.key))
 
     return FactRegistry(

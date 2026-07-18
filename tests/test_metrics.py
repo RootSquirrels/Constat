@@ -59,20 +59,18 @@ def test_record_insight_emitted_increments_counter() -> None:
     # alphabetical (prometheus_client convention) — we don't pin it.
     body, _ = render_metrics()
     text = _parse_exposition(body)
-    assert 'constat_insights_emitted_total' in text
+    assert "constat_insights_emitted_total" in text
     assert 'rule="test_rule_ins"' in text
     assert 'severity="warning"' in text
 
 
 def test_record_inconclusive_increments_counter() -> None:
     record_inconclusive(rule="test_rule_inc", reason="scope_not_proven")
-    value = INCONCLUSIVE_TOTAL.labels(
-        rule="test_rule_inc", reason="scope_not_proven"
-    )._value.get()
+    value = INCONCLUSIVE_TOTAL.labels(rule="test_rule_inc", reason="scope_not_proven")._value.get()
     assert value == 1
     body, _ = render_metrics()
     text = _parse_exposition(body)
-    assert 'constat_inconclusive_total' in text
+    assert "constat_inconclusive_total" in text
     assert 'rule="test_rule_inc"' in text
     assert 'reason="scope_not_proven"' in text
 
@@ -83,20 +81,18 @@ def test_record_insight_run_duration_observes_histogram() -> None:
 
     body, _ = render_metrics()
     text = _parse_exposition(body)
-    assert 'constat_insights_run_duration_seconds_bucket' in text
+    assert "constat_insights_run_duration_seconds_bucket" in text
     assert 'rule="test_rule_dur"' in text
-    assert 'constat_insights_run_duration_seconds_count' in text
+    assert "constat_insights_run_duration_seconds_count" in text
 
 
 def test_record_source_run_observes_histogram_and_counter() -> None:
-    record_source_run(
-        region="eu-metric-test", status="success", duration_seconds=2.5
-    )
+    record_source_run(region="eu-metric-test", status="success", duration_seconds=2.5)
     text = _parse_exposition(render_metrics()[0])
-    assert 'constat_source_run_duration_seconds_bucket' in text
+    assert "constat_source_run_duration_seconds_bucket" in text
     assert 'region="eu-metric-test"' in text
     assert 'status="success"' in text
-    assert 'constat_source_run_total' in text
+    assert "constat_source_run_total" in text
     assert 'region="eu-metric-test"' in text
     assert 'status="success"' in text
 
@@ -106,7 +102,7 @@ def test_record_focus_rows_increments_ingested_and_skipped() -> None:
     record_focus_rows(ingested=10, skipped=2)
 
     text = _parse_exposition(render_metrics()[0])
-    assert 'constat_focus_rows_total' in text
+    assert "constat_focus_rows_total" in text
     assert 'outcome="ingested"' in text
     assert 'outcome="skipped"' in text
 
@@ -116,11 +112,11 @@ def test_record_http_request_increments_counter_and_observes() -> None:
         method="GET", path="/metric-test/path", status_code=200, duration_seconds=0.05
     )
     text = _parse_exposition(render_metrics()[0])
-    assert 'constat_http_requests_total' in text
+    assert "constat_http_requests_total" in text
     assert 'method="GET"' in text
     assert 'path="/metric-test/path"' in text
     assert 'status="200"' in text
-    assert 'constat_http_request_duration_seconds_bucket' in text
+    assert "constat_http_request_duration_seconds_bucket" in text
 
 
 def test_excluded_paths_are_not_recorded() -> None:
