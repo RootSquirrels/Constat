@@ -17,6 +17,7 @@ Design:
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from constat_aws_rds.collector import (
 )
 from sqlalchemy.orm import Session
 
+from constat_api.metrics import record_source_run
 from constat_api.repositories import accounts as accounts_repo
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import observations as observations_repo
@@ -178,6 +180,7 @@ def collect_target(
         )
         region_resources = 0
         region_error: str | None = None
+        region_started = time.monotonic()
         try:
             if run is None:
                 # Another scan is already active for this scope. Skip to avoid
@@ -234,6 +237,11 @@ def collect_target(
                     status=status,
                     resources_found=region_resources,
                     error=region_error,
+                )
+                record_source_run(
+                    region=region,
+                    status=status,
+                    duration_seconds=time.monotonic() - region_started,
                 )
                 # On successful scans, retire resources in this scope that
                 # weren't seen in this run. This is the GTM promise:

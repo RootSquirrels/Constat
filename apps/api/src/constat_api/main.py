@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from constat_api.logging import configure_logging
-from constat_api.middleware import RequestIDMiddleware
+from constat_api.metrics import render_metrics
+from constat_api.middleware import HTTPMetricsMiddleware, RequestIDMiddleware
 from constat_api.routers import (
     accounts,
     admin,
@@ -47,6 +48,10 @@ app = FastAPI(
 # request before auth / business logic, and the request_id is bound
 # to structlog's contextvars for the entire request lifecycle.
 app.add_middleware(RequestIDMiddleware)
+# HTTPMetricsMiddleware records the SLO counters/histograms. Inside
+# RequestIDMiddleware so the access log and the metric both fire on
+# the same path.
+app.add_middleware(HTTPMetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
@@ -65,3 +70,13 @@ app.include_router(runner.router)
 app.include_router(status.router)
 app.include_router(accounts.router)
 app.include_router(admin.router)
+
+
+# Open (no X-API-Key) Prometheus scrape endpoint. Same trust model as
+# /health: the scraper is on the trusted network (k8s sidecar, a
+# dedicated VPC, an internal LB). V2: gate behind a separate
+# `CONSTAT_METRICS_KEY` when exposing beyond the trusted boundary.
+@app.get("/metrics", include_in_schema=False)
+def metrics_endpoint() -> Response:
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)

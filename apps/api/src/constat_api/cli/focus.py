@@ -35,6 +35,7 @@ from constat_focus.loader import load_focus
 from sqlalchemy.orm import Session
 
 from constat_api.db import SessionLocal
+from constat_api.metrics import record_focus_rows
 from constat_api.repositories import accounts as accounts_repo
 from constat_api.repositories import focus_charges as focus_charges_repo
 
@@ -128,6 +129,10 @@ def ingest_focus_file(
     account = accounts_repo.get_or_create(session, account_external_id, account_name)
     inserted, updated = focus_charges_repo.upsert_aggregated(session, account.id, aggregated)
     session.commit()
+
+    # P2 item 11: feed the SLO counters. The ingestion observability
+    # is a V1 SLO target (rows_skipped > 5% triggers an alert).
+    record_focus_rows(ingested=rows_read, skipped=rows_skipped)
 
     duration = time.monotonic() - start
     return IngestResult(

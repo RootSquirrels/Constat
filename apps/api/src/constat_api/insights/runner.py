@@ -11,11 +11,19 @@ The runner is the integration point for the inventory-first promise:
 we never claim MATCH/NO_MATCH for a resource unless the scope was
 provably scanned. For account-based rules, the assumption is that
 FOCUS data IS complete (we can't prove otherwise; the user is the source).
+
+UX/ops P2 item 11 (metrics): the runner records
+`constat_insights_emitted_total{rule, severity}`,
+`constat_inconclusive_total{rule, reason}`, and
+`constat_insights_run_duration_seconds{rule}` for every execution.
+The SLO dashboard reads these counters; the alerting rules fire on
+the histograms.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -30,6 +38,11 @@ from constat_focus.loader import FocusCharge
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
 from sqlalchemy.orm import Session
 
+from constat_api.metrics import (
+    record_inconclusive,
+    record_insight_emitted,
+    record_insight_run_duration,
+)
 from constat_api.orm import FocusChargeORM, InsightRunORM, ResourceORM
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import inconclusive as inconclusive_repo
@@ -220,6 +233,7 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
     session.add(run)
     session.commit()
 
+    started = time.monotonic()
     resources = session.query(ResourceORM).all()
     insights_emitted = 0
     inconclusive_emitted = 0
@@ -231,9 +245,15 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
+                record_insight_emitted(
+                    rule="rds_eol", severity=insight.severity.value
+                )
             for inc in inconclusive:
                 inconclusive_repo.insert_inconclusive(session, inc)
                 inconclusive_emitted += 1
+                record_inconclusive(
+                    rule="rds_eol", reason=inc.reason or "unspecified"
+                )
         except Exception as exc:
             errors.append(f"{resource.id}: {exc}")
             logger.exception("Resource %s failed", resource.id)
@@ -243,6 +263,10 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
     run.resources_scanned = len(resources)
     run.insights_emitted = insights_emitted
     session.commit()
+
+    record_insight_run_duration(
+        rule="rds_eol", duration_seconds=time.monotonic() - started
+    )
 
     return RunResult(
         rule_name="rds_eol",
@@ -279,6 +303,7 @@ def run_chargeback(
     session.add(run)
     session.commit()
 
+    started = time.monotonic()
     # Distinct accounts that have FOCUS data
     account_ids = {row[0] for row in session.query(FocusChargeORM.account_id).distinct().all()}
     insights_emitted = 0
@@ -307,6 +332,9 @@ def run_chargeback(
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
                 insights_emitted += 1
+                record_insight_emitted(
+                    rule="chargeback", severity=insight.severity.value
+                )
         except Exception as exc:
             errors.append(f"account {account_id}: {exc}")
             logger.exception("Account %s chargeback failed", account_id)
@@ -316,6 +344,10 @@ def run_chargeback(
     run.resources_scanned = len(account_ids)
     run.insights_emitted = insights_emitted
     session.commit()
+
+    record_insight_run_duration(
+        rule="chargeback", duration_seconds=time.monotonic() - started
+    )
 
     effective_label = f"{period_label} tag_key={tag_key}" if tag_key else period_label
 

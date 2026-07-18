@@ -1,15 +1,16 @@
-"""FastAPI middleware: request_id + structlog context propagation.
+"""FastAPI middleware: request_id + structlog context propagation
++ HTTP metrics recording.
 
-UX/ops P2 item 9: structured logging with a correlation ID. Every
-HTTP request gets a `request_id` (from `X-Request-ID` if the caller
-provides one, otherwise a fresh UUID4). The id is:
+UX/ops P2 item 9 (request_id, JSON logs) and item 11 (OpenTelemetry
+metrics) both live here:
 
-1. Bound to a `structlog.contextvars` contextvar, so every log line
-   emitted during the request — including from stdlib `logger.info(...)`
-   — gets `request_id=<id>` in its JSON output.
-2. Echoed back to the caller in the `X-Request-ID` response header,
-   so the client can correlate with their own logs / error reports.
-3. Logged at request start and end (path, method, status, duration).
+- `RequestIDMiddleware`: every request gets a `request_id`, bound
+  to a structlog contextvar, echoed in the response header.
+- `HTTPMetricsMiddleware`: records `constat_http_requests_total`
+  and `constat_http_request_duration_seconds` per request. The
+  `path` label is the FastAPI route template (e.g.
+  `/insights/{insight_id}`), not the resolved URL, to keep
+  cardinality bounded.
 """
 
 from __future__ import annotations
@@ -22,9 +23,16 @@ import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from constat_api.metrics import record_http_request
+
 logger = structlog.get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
+
+# Paths we don't track in HTTP metrics (avoid self-referential noise
+# and unbounded-cardinality risk from path-templated URLs that aren't
+# yet a registered route).
+_EXCLUDED_PATHS: frozenset[str] = frozenset({"/metrics", "/health"})
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
@@ -83,3 +91,49 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         # Echo the request_id back so the caller can correlate.
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
+
+
+class HTTPMetricsMiddleware(BaseHTTPMiddleware):
+    """Record HTTP request count and latency in Prometheus metrics.
+
+    The `path` label uses the FastAPI route template
+    (`/insights/{insight_id}`) so unbounded-path URLs don't blow up
+    cardinality. The resolved URL `/insights/abc-123` collapses to
+    the template. For 404s (no matched route), the path label is
+    `"unmatched"` — also bounded.
+
+    `/metrics` and `/health` are excluded: they are scraped by
+    infrastructure, not driven by users, and would dominate the
+    `http_requests_total` count without telling us anything about
+    the product.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        path = request.url.path
+        if path in _EXCLUDED_PATHS:
+            return await call_next(request)
+
+        # FastAPI populates `request.scope["route"]` after routing.
+        # For 404s (no match), it's absent. We collapse those to
+        # "unmatched" to keep cardinality bounded.
+        route = request.scope.get("route")
+        path_label = getattr(route, "path", "unmatched") if route is not None else "unmatched"
+
+        start = time.monotonic()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            duration = time.monotonic() - start
+            record_http_request(
+                method=request.method,
+                path=path_label,
+                status_code=status_code,
+                duration_seconds=duration,
+            )
