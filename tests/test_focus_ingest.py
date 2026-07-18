@@ -185,3 +185,43 @@ def test_ingest_supports_parquet(session: Session, tmp_path: Path) -> None:
     assert len(charges) == 1
     assert charges[0].service == "AmazonRDS"
     assert charges[0].billed_cost == 250.0
+
+
+def test_ingest_reports_rows_total_and_rows_skipped(
+    session: Session, tmp_path: Path
+) -> None:
+    """UX/ops P2 item 7: the DAF wants to know how many rows we ingested
+    and how many were dropped, without grepping logs.
+
+    Here: 3 valid rows, 1 with an unparseable ChargePeriodStart. The
+    loader's _row_to_charge raises; the CLI's on_skip callback records
+    the line, the loader continues. The IngestResult reports
+    rows_total=4, rows_read=3, rows_skipped=1.
+
+    (Note: a bad BilledCost doesn't trigger this path — _parse_decimal
+    warns and defaults to 0, the row is still considered valid.)
+    """
+    file_path = tmp_path / "focus.csv"
+    valid = _rds_row(billed="100.00")
+    bad = _rds_row(billed="100.00")
+    bad["ChargePeriodStart"] = "not-a-date"  # forces _parse_date to raise
+
+    fields = _csv_fieldnames()
+    with file_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in [valid, valid, bad, valid]:  # 3 good, 1 bad
+            w.writerow({k: r.get(k, "") for k in fields})
+
+    result = ingest_focus_file(
+        session=session,
+        path=file_path,
+        account_external_id="111111111111",
+    )
+
+    assert result.rows_total == 4
+    assert result.rows_read == 3
+    assert result.rows_skipped == 1
+    # 3 good rows aggregate to 1 unique (account, service, period) bucket.
+    assert result.inserted == 1
+    assert result.rows_written == 1
