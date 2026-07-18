@@ -1,8 +1,8 @@
 """FOCUS ingestion HTTP endpoint.
 
-Triggers the same path as the CLI but in-process. CSV path comes from the
-request body — for V1 the server must have access to the file. File upload
-(via multipart) is V2.
+Triggers the same path as the CLI but in-process. The file_path can be
+a CSV or Parquet file — format is detected by extension. For V1 the
+server must have access to the file. File upload (via multipart) is V2.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.cli.focus import ingest_focus_csv
+from constat_api.cli.focus import ingest_focus_file
 from constat_api.db import get_db
 
 router = APIRouter(prefix="/collect/focus", tags=["focus"])
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/collect/focus", tags=["focus"])
 
 class IngestRequest(BaseModel):
     account_external_id: str
-    csv_path: str
+    file_path: str  # Path to FOCUS file (CSV or Parquet)
     account_name: str | None = None
 
 
@@ -37,9 +37,9 @@ class IngestResponse(BaseModel):
 @router.post("", response_model=IngestResponse)
 def trigger_focus_ingest(body: IngestRequest, session: Session = Depends(get_db)) -> IngestResponse:
     try:
-        result = ingest_focus_csv(
+        result = ingest_focus_file(
             session=session,
-            csv_path=Path(body.csv_path),
+            path=Path(body.file_path),
             account_external_id=body.account_external_id,
             account_name=body.account_name,
         )

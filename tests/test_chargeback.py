@@ -17,6 +17,7 @@ def _charge(
     amortized: str = "100.00",
     pricing: str = "On-Demand",
     region: str = "eu-west-1",
+    tags: dict[str, str] | None = None,
 ) -> FocusCharge:
     return FocusCharge(
         account_id=account,
@@ -30,6 +31,7 @@ def _charge(
         amortized_cost=Decimal(amortized),
         resource_id=None,
         sub_account_id=None,
+        tags=tags if tags is not None else {},
     )
 
 

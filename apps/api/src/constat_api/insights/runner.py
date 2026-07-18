@@ -155,6 +155,7 @@ def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
         amortized_cost=orm.amortized_cost,
         resource_id=orm.resource_id,
         sub_account_id=orm.sub_account_id,
+        tags={},  # tags persisted in V2 (per-row); V1 ORM has no tags column yet
     )
 
 

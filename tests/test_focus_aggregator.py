@@ -19,6 +19,7 @@ def _charge(
     pricing: str = "On-Demand",
     resource_id: str = "arn:rds:1",
     sub_account_id: str = "111",
+    tags: dict[str, str] | None = None,
 ) -> FocusCharge:
     return FocusCharge(
         account_id="111111111111",
@@ -32,6 +33,7 @@ def _charge(
         amortized_cost=Decimal(amortized),
         resource_id=resource_id,
         sub_account_id=sub_account_id,
+        tags=tags if tags is not None else {},
     )
 
 
@@ -104,9 +106,23 @@ def test_aggregator_handles_null_resource_id():
             amortized_cost=Decimal("10"),
             resource_id=None,
             sub_account_id=None,
+            tags={},
         )
     ]
     agg = aggregate_for_storage(rows)
     assert agg[0].resource_id is None
     assert agg[0].sub_account_id is None
     assert agg[0].charge_count == 1
+
+
+def test_aggregator_picks_mode_for_tags():
+    """When multiple FOCUS rows have tags, the dominant (most common) tag
+    dict wins. Tags are stored at the (service, period) granularity."""
+    rows = [
+        _charge(tags={"Application": "web"}),
+        _charge(tags={"Application": "web"}),
+        _charge(tags={"Application": "api"}),
+    ]
+    agg = aggregate_for_storage(rows)
+    assert len(agg) == 1
+    assert agg[0].tags == {"Application": "web"}

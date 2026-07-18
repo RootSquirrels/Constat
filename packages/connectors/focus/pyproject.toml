@@ -5,6 +5,7 @@ description = "FOCUS (FinOps Open Cost and Usage Specification) loader"
 requires-python = ">=3.13"
 dependencies = [
     "constat-core",
+    "pyarrow>=23.0",
 ]
 
 [build-system]

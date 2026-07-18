@@ -8,15 +8,17 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
-from constat_api.cli.focus import ingest_focus_csv
+from constat_api.cli.focus import ingest_focus_file
 from constat_api.orm import FocusChargeORM
 from constat_api.repositories import accounts as accounts_repo
 from sqlalchemy.orm import Session
 
 
-def _write_csv(path: Path, rows: list[dict]) -> Path:
-    fields = [
+def _csv_fieldnames() -> list[str]:
+    return [
         "BillingAccountId",
         "BillingAccountName",
         "ServiceName",
@@ -29,11 +31,22 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
         "ResourceId",
         "SubAccountId",
     ]
+
+
+def _write_csv(path: Path, rows: list[dict]) -> Path:
+    fields = _csv_fieldnames()
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, "") for k in fields})
+    return path
+
+
+def _write_parquet(path: Path, rows: list[dict]) -> Path:
+    fields = _csv_fieldnames()
+    table = pa.table({k: [r.get(k, "") for r in rows] for k in fields})
+    pq.write_table(table, path)
     return path
 
 
@@ -54,11 +67,11 @@ def _rds_row(billed: str = "100") -> dict:
 
 
 def test_ingest_creates_account_and_charges(session: Session, tmp_path: Path) -> None:
-    csv_path = _write_csv(tmp_path / "focus.csv", [_rds_row(billed="100.00")])
+    file_path = _write_csv(tmp_path / "focus.csv", [_rds_row(billed="100.00")])
 
-    result = ingest_focus_csv(
+    result = ingest_focus_file(
         session=session,
-        csv_path=csv_path,
+        path=file_path,
         account_external_id="111111111111",
     )
 
@@ -78,14 +91,14 @@ def test_ingest_creates_account_and_charges(session: Session, tmp_path: Path) ->
 
 
 def test_ingest_aggregates_multiple_rows_for_same_key(session: Session, tmp_path: Path) -> None:
-    csv_path = _write_csv(
+    file_path = _write_csv(
         tmp_path / "focus.csv",
         [_rds_row(billed="100"), _rds_row(billed="50")],
     )
 
-    result = ingest_focus_csv(
+    result = ingest_focus_file(
         session=session,
-        csv_path=csv_path,
+        path=file_path,
         account_external_id="111111111111",
     )
 
@@ -100,19 +113,15 @@ def test_ingest_aggregates_multiple_rows_for_same_key(session: Session, tmp_path
 
 
 def test_ingest_dedupes_on_rerun(session: Session, tmp_path: Path) -> None:
-    csv_path = _write_csv(tmp_path / "focus.csv", [_rds_row(billed="100")])
+    file_path = _write_csv(tmp_path / "focus.csv", [_rds_row(billed="100")])
 
     # First run: insert
-    result1 = ingest_focus_csv(
-        session=session, csv_path=csv_path, account_external_id="111111111111"
-    )
+    result1 = ingest_focus_file(session=session, path=file_path, account_external_id="111111111111")
     assert result1.inserted == 1
     assert result1.updated == 0
 
     # Second run: update (same natural key)
-    result2 = ingest_focus_csv(
-        session=session, csv_path=csv_path, account_external_id="111111111111"
-    )
+    result2 = ingest_focus_file(session=session, path=file_path, account_external_id="111111111111")
     assert result2.inserted == 0
     assert result2.updated == 1
 
@@ -127,21 +136,19 @@ def test_ingest_separates_periods(session: Session, tmp_path: Path) -> None:
         _rds_row(billed="200")
         | {"ChargePeriodStart": "2026-07-01T00:00:00Z", "ChargePeriodEnd": "2026-07-31T23:59:59Z"},
     ]
-    csv_path = _write_csv(tmp_path / "focus.csv", rows)
+    file_path = _write_csv(tmp_path / "focus.csv", rows)
 
-    result = ingest_focus_csv(
-        session=session, csv_path=csv_path, account_external_id="111111111111"
-    )
+    result = ingest_focus_file(session=session, path=file_path, account_external_id="111111111111")
 
     assert result.inserted == 2  # two different periods
     assert result.rows_written == 2
 
 
 def test_ingest_uses_friendly_account_name_when_provided(session: Session, tmp_path: Path) -> None:
-    csv_path = _write_csv(tmp_path / "focus.csv", [_rds_row()])
-    ingest_focus_csv(
+    file_path = _write_csv(tmp_path / "focus.csv", [_rds_row()])
+    ingest_focus_file(
         session=session,
-        csv_path=csv_path,
+        path=file_path,
         account_external_id="222222222222",
         account_name="prod-eu",
     )
@@ -152,8 +159,29 @@ def test_ingest_uses_friendly_account_name_when_provided(session: Session, tmp_p
 
 def test_ingest_raises_on_missing_file(session: Session, tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        ingest_focus_csv(
+        ingest_focus_file(
             session=session,
-            csv_path=tmp_path / "nonexistent.csv",
+            path=tmp_path / "nonexistent.csv",
             account_external_id="111111111111",
         )
+
+
+def test_ingest_supports_parquet(session: Session, tmp_path: Path) -> None:
+    """V1 spec: prospect FOCUS data arrives in Parquet. The same ingest
+    pipeline must accept it without code changes."""
+    file_path = _write_parquet(tmp_path / "focus.parquet", [_rds_row(billed="250.00")])
+
+    result = ingest_focus_file(
+        session=session,
+        path=file_path,
+        account_external_id="111111111111",
+    )
+
+    assert result.inserted == 1
+    assert result.updated == 0
+    assert result.rows_read == 1
+
+    charges = session.query(FocusChargeORM).all()
+    assert len(charges) == 1
+    assert charges[0].service == "AmazonRDS"
+    assert charges[0].billed_cost == 250.0

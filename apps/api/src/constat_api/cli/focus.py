@@ -1,8 +1,12 @@
-"""FOCUS CSV ingestion CLI.
+"""FOCUS ingestion CLI.
+
+Supports both CSV and Parquet FOCUS 1.0 exports. The format is detected
+by file extension via `load_focus()`.
 
 Usage:
-    python -m constat_api.cli.focus --account 111111111111 --csv path/to/focus.csv
-    python -m constat_api.cli.focus --account 111111111111 --csv focus.csv --account-name prod
+    python -m constat_api.cli.focus --account 111111111111 --file path/to/focus.csv
+    python -m constat_api.cli.focus --account 111111111111 --file path/to/focus.parquet
+    python -m constat_api.cli.focus --account 111111111111 --file focus.csv --account-name prod
 
 The function is split from the entry point so it's easily testable with the
 shared session fixture.
@@ -18,7 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from constat_focus.aggregator import aggregate_for_storage
-from constat_focus.loader import load_focus_csv
+from constat_focus.loader import load_focus
 from sqlalchemy.orm import Session
 
 from constat_api.db import SessionLocal
@@ -30,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IngestResult:
-    csv_path: str
+    file_path: str
     account_external_id: str
     account_id: str
     rows_read: int
@@ -40,24 +44,24 @@ class IngestResult:
     duration_seconds: float
 
 
-def ingest_focus_csv(
+def ingest_focus_file(
     *,
     session: Session,
-    csv_path: Path,
+    path: Path,
     account_external_id: str,
     account_name: str | None = None,
 ) -> IngestResult:
-    """Load + aggregate + upsert one FOCUS CSV.
+    """Load + aggregate + upsert one FOCUS file (CSV or Parquet).
 
     Caller owns the session transaction. This function does NOT commit.
     """
     start = time.monotonic()
 
-    if not csv_path.exists():
-        raise FileNotFoundError(f"FOCUS CSV not found: {csv_path}")
+    if not path.exists():
+        raise FileNotFoundError(f"FOCUS file not found: {path}")
 
-    raw_charges = list(load_focus_csv(csv_path))
-    logger.info("Loaded %d FOCUS rows from %s", len(raw_charges), csv_path)
+    raw_charges = list(load_focus(path))
+    logger.info("Loaded %d FOCUS rows from %s", len(raw_charges), path)
 
     aggregated = aggregate_for_storage(raw_charges)
     logger.info("Aggregated into %d (account, service, period) rows", len(aggregated))
@@ -68,7 +72,7 @@ def ingest_focus_csv(
 
     duration = time.monotonic() - start
     return IngestResult(
-        csv_path=str(csv_path),
+        file_path=str(path),
         account_external_id=account_external_id,
         account_id=str(account.id),
         rows_read=len(raw_charges),
@@ -79,10 +83,19 @@ def ingest_focus_csv(
     )
 
 
+# Back-compat alias for older callers/tests. New code should use ingest_focus_file.
+ingest_focus_csv = ingest_focus_file
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Ingest a FOCUS CSV export into Constat.")
+    parser = argparse.ArgumentParser(description="Ingest a FOCUS 1.0 file into Constat.")
     parser.add_argument("--account", required=True, help="AWS account ID (12-digit)")
-    parser.add_argument("--csv", required=True, type=Path, help="Path to FOCUS CSV file")
+    parser.add_argument(
+        "--file",
+        required=True,
+        type=Path,
+        help="Path to FOCUS file (.csv or .parquet)",
+    )
     parser.add_argument(
         "--account-name", default=None, help="Optional friendly name for the account"
     )
@@ -98,9 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         with SessionLocal() as session:
-            result = ingest_focus_csv(
+            result = ingest_focus_file(
                 session=session,
-                csv_path=args.csv,
+                path=args.file,
                 account_external_id=args.account,
                 account_name=args.account_name,
             )
