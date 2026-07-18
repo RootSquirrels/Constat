@@ -187,25 +187,26 @@ When a MATCH happens, the insight payload is:
   "pricing_tier": "year_3_plus",
   "pricing_usd_per_vcpu_hour": 0.20,
   "pricing_tier_label": "year_3_plus",
-  "recommendation": "Upgrade to PostgreSQL 12 LTS now to stop Extended Support fees"
+  "vcpu": 4,
+  "extended_support_monthly_usd": 584.0,
+  "recommendation": "Upgrade to PostgreSQL 12 LTS now to stop Extended Support fees",
+  "catalog_version": "2026-07-18"
 }
 ```
 
-The monthly cost is **not** in the payload. The customer computes it:
+The monthly cost **is** in the payload: `extended_support_monthly_usd`
+is computed server-side as `vcpu * pricing_usd_per_vcpu_hour * 730`
+(730 h/month), rounded to cents. It is the canonical monetary key
+registered in `constat_core.monetary.MONETARY` (ADR-13) — the same
+key `mysql_eol` and `aurora_eol` use — and it is what the CSV export
+and the restitution read. `vcpu` (resolved from the instance class
+via the catalog) and `catalog_version` (the catalog date stamp, so
+sales can cite "based on the AWS RDS PG release calendar dated …")
+ride along.
 
-```
-monthly_cost_usd = pricing_usd_per_vcpu_hour * vcpu * 730
-```
+For `db.m5.xlarge` (4 vCPU) on PG 11 in year 3+: `4 * 0.20 * 730 = $584`.
 
-For `db.m5.xlarge` (4 vCPU) on PG 11 in year 3+: `0.20 * 4 * 730 = $584`.
-
-For `db.m5.xlarge` (4 vCPU) on PG 12 in year 1-2: `0.10 * 4 * 730 = $292`.
-
-The customer-visible cost is in the **title** rendered by the web
-app's `InsightCard` (or in a future detail page that joins
-`payload` + `aws.rds.vcpu`). V1 surfaces the inputs; the customer
-does the multiplication. When we build the cost column in V2, this
-becomes a derived fact.
+For `db.m5.xlarge` (4 vCPU) on PG 12 in year 1-2: `4 * 0.10 * 730 = $292`.
 
 ## Severity matrix
 
@@ -320,8 +321,6 @@ it monthly is the operational bar.
   per-instance cost; the customer can multiply by the deployment
   shape. V2: add `aws.rds.multi_az` and `aws.rds.read_replica_count`
   to the catalog lookup.
-- **No Aurora PostgreSQL handling.** Aurora's EOL and pricing model
-  is different. V2: separate rule.
 - **No `db.r8g` (next-gen Graviton) handling.** Will appear in the
   catalog when AWS publishes the vCPU table.
 - **No "before 11" handling.** PG 10 and earlier are out of

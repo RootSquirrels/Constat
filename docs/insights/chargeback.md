@@ -16,9 +16,9 @@ This document is the contract for the rule. Code:
 - CLI: `apps/api/src/constat_api/cli/focus.py`
 
 > **Work-in-progress note.** The aggregation contract is being
-> iterated (per-period aggregation, tag-based grouping in V2). This
-> doc describes the current V1 contract. The resolver is the source
-> of truth — when in doubt, read the code.
+> iterated (per-period aggregation, per-row tag attribution shipped
+> in migration 0009). This doc describes the current contract. The
+> resolver is the source of truth — when in doubt, read the code.
 
 ## What the rule proves
 
@@ -142,12 +142,14 @@ class AggregatedCost:
     charge_count: int
     period_start: date | None = None
     period_end: date | None = None
-    tags: dict[str, str] = field(default_factory=dict)  # V2
+    tags: list[dict[str, str]] = field(default_factory=list)
 ```
 
-The `tags` field is empty in V1. V2 will populate it from
-`focus_charges.resource_id` joined with `resources` (if the resource
-has tags).
+The `tags` field carries every unique per-row tag dict seen across
+the input FOCUS rows that contributed to the aggregate (empty list
+when no tags were present). It is populated from the per-row tag
+storage in `focus_charge_tags` (migration 0009) and feeds the
+`tag_key` re-aggregation below.
 
 ### `drift_amortized_minus_billed`
 
@@ -194,9 +196,15 @@ For each `AggregatedCost` row, one `Insight` with this payload:
   "amortized_cost_usd": 1180.00,
   "drift_amortized_minus_billed_usd": -54.56,
   "charge_count": 12,
-  "tags": {}
+  "tag_key": "",
+  "tag_value": "",
+  "tags": [{"Application": "web"}, {"Application": "api"}]
 }
 ```
+
+`tag_key` / `tag_value` are empty for a plain run; they are set when
+the run was a `tag_key` re-aggregation (see below). `tags` lists the
+unique per-row tag dicts that contributed to the aggregate.
 
 The title is human-readable:
 
@@ -324,18 +332,18 @@ The `chargeback` runner accepts an optional `tag_key` body field
 FOCUS data by (account, service, period, tag_value), where
 `tag_value` is the value of the requested tag on each input row.
 
-**Storage:** `focus_charges.tags` is a JSONB column that stores the
-list of unique tag dicts seen for each (account, service, period)
-row. The list preserves per-row heterogeneity — when a (service,
-period) bucket has 3 rows with `Application=web` and 1 row with
-`Application=api`, the stored list is `[{web}, {api}]`, not
-collapsed to a mode.
+**Storage:** tags are stored per input row in the `focus_charge_tags`
+table (migration 0009): one row per (focus_charge, key, value), once
+per contributing FOCUS input row. The count of rows for a given
+(key, value) IS the signal that drives attribution — there is
+deliberately no unique constraint, because duplicates are the weight.
 
-**Splitting:** when the runner re-aggregates by `tag_key="Application"`
-and a stored row has 2 unique tag values, the row's cost is split
-evenly (1/N) across the values. This is a V1 approximation — the
-exact per-row tag data is lost in storage. V2 will move to per-row
-tag storage and lift the split.
+**Splitting:** when the runner re-aggregates by `tag_key="Application"`,
+each tag value's cost share is **proportional to its input-row count**.
+When a (service, period) bucket has 3 rows with `Application=web` and
+1 row with `Application=api`, web gets 3/4 of the cost and api gets
+1/4 — not the old V1 even split (1/N per unique value), which was
+wrong for heterogeneous tag data.
 
 **Untagged bucket:** charges with no tag for the requested key
 go to `__untagged__` with their full cost (no split).
@@ -344,7 +352,7 @@ go to `__untagged__` with their full cost (no split).
 
 | File | What it pins |
 |---|---|
-| `tests/test_chargeback.py` | `aggregate_by_period` groups correctly; `build_insights` produces one Insight per `AggregatedCost`; severity thresholds trigger correctly; direction is correct |
+| `tests/test_chargeback.py` | `aggregate_by_period` groups correctly; `build_insights` produces one Insight per `AggregatedCost`; all drift insights emit at `INFO` (severity escalation removed, audit F-13); direction is correct |
 | `tests/test_chargeback_runner.py` | The runner emits one insight per (account, service, period), `period_label` is in the payload, `insight_runs` is updated |
 | `tests/test_focus_loader.py` | The loader validates the 11 required columns, parses dates, handles malformed rows gracefully |
 | `tests/test_focus_aggregator.py` | `aggregate_for_storage` collapses per-(account, service, period); resource_id/sub_account_id collapsed via mode |
@@ -381,8 +389,6 @@ go to `__untagged__` with their full cost (no split).
 
 ## What's missing in V1 (deliberate)
 
-- **Tag-based grouping.** V2. The `tags` field is in
-  `AggregatedCost` already; the runner doesn't populate it yet.
 - **INCONCLUSIVE branch for missing periods.** V2. Today, "I loaded
   July but not August" is invisible.
 - **Multi-source cost facts (CUR + Athena).** V2. The FOCUS CSV
