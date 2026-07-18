@@ -152,8 +152,11 @@ resource "aws_ecs_task_definition" "scan" {
       join(" && ", [
         "printf '%s' \"$CONSTAT_SCAN_TARGETS_JSON\" > /tmp/targets.json",
         "python -m constat_api.cli.aws --targets /tmp/targets.json",
-        "python -m constat_api.cli.run_insights --rule rds_eol",
-        "python -m constat_api.cli.run_insights --rule chargeback",
+        # --all iterates every rule registered in RUNNERS. Do NOT list
+        # rules here: the previous hardcoded pair silently skipped 4 of
+        # 6 rules (committee finding). tests/test_run_insights_cli.py
+        # pins this file to --all.
+        "python -m constat_api.cli.run_insights --all",
       ])
     ]
 

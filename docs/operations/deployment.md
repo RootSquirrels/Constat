@@ -18,7 +18,7 @@ your machine
 │   (note: there is no __main__.py or console script yet — uvicorn is
 │    the invocation; the CLIs below DO run as python -m)
 ├── uv run python -m constat_api.cli.aws --targets targets.json
-├── uv run python -m constat_api.cli.run_insights --rule rds_eol
+├── uv run python -m constat_api.cli.run_insights --all   (or --rule <name> to target one)
 └── cd apps/web && npm run dev          → web on :3000
 ```
 
