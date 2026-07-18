@@ -146,9 +146,11 @@ def apply_retention(
         # We don't track creation time on focus_charges; we have
         # `ingested_at`. Use that as the cutoff. (For V2 we'd add
         # a created_at column or use period_end.)
-        stmt = delete(ObservationORM).where(
-            ObservationORM.tenant_id == tenant_id,
-            ObservationORM.ingested_at < cutoff,
+        from constat_api.orm import FocusChargeORM
+
+        stmt = delete(FocusChargeORM).where(
+            FocusChargeORM.tenant_id == tenant_id,
+            FocusChargeORM.ingested_at < cutoff,
         )
     elif table_name == "audit_events":
         from constat_api.orm import AuditEventORM
