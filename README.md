@@ -28,6 +28,7 @@ pip install uv
 uv sync
 docker compose up -d
 uv run pytest -v
+cd apps/web && npm install && npm run dev   # web on http://localhost:3000
 ```
 
 ## Layout

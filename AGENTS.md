@@ -115,7 +115,7 @@ uv run pytest -v                    # tests
 uv run ruff check .                 # lint
 uv run ruff format .                # format
 uv run python -m constat_api        # API on http://localhost:8000
-cd apps/web && pnpm install && pnpm dev   # web on http://localhost:3000
+cd apps/web && npm install && npm run dev   # web on http://localhost:3000
 ```
 
 ## Where things will get decided later
