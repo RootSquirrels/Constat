@@ -4,13 +4,21 @@ Update cadence: monthly, on AWS announcement. PRs welcome when AWS publishes cha
 """
 
 from constat_core.catalog.aws import (
-    EXT_SUPPORT_USD_PER_VCPU_HOUR,
-    POSTGRES_EOL_DATE,
+    POSTGRES_EOL,
     RDS_INSTANCE_VCPU,
+    PostgresEOLInfo,
+    extended_support_tier,
+    postgres_eol_info,
+    price_per_vcpu_hour,
+    vcpu_for_instance_class,
 )
 
 __all__ = [
-    "EXT_SUPPORT_USD_PER_VCPU_HOUR",
-    "POSTGRES_EOL_DATE",
+    "POSTGRES_EOL",
     "RDS_INSTANCE_VCPU",
+    "PostgresEOLInfo",
+    "extended_support_tier",
+    "postgres_eol_info",
+    "price_per_vcpu_hour",
+    "vcpu_for_instance_class",
 ]

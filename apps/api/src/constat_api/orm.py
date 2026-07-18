@@ -227,3 +227,21 @@ class InsightRunORM(Base):
     resources_scanned: Mapped[int | None] = mapped_column(Integer)
     insights_emitted: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class InconclusiveORM(Base):
+    __tablename__ = "inconclusive"
+
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    rule_name: Mapped[str] = mapped_column(String, nullable=False)
+    resource_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("resources.id", ondelete="CASCADE")
+    )
+    account_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("accounts.id", ondelete="CASCADE")
+    )
+    missing_facts: Mapped[list[str]] = mapped_column(JSONBType(), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

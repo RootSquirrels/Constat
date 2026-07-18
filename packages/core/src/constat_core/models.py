@@ -83,3 +83,24 @@ class Insight(BaseModel):
     computed_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=__import__("datetime").timezone.utc)
     )
+
+
+class Inconclusive(BaseModel):
+    """A 'we don't know' record. The evaluation could not complete because
+    key facts were missing or malformed. The GTM promise is to surface
+    what the customer doesn't know — INCONCLUSIVE is its honest form
+    (criterion n°15: visible, never silent).
+
+    Distinct from Insight (which says "there IS a gap"). Distinct from
+    NO_MATCH (which says "we know there's no gap").
+    """
+
+    id: UUID | None = None
+    rule_name: str  # e.g. "rds_eol"
+    resource_id: UUID | None = None
+    account_id: str | None = None
+    missing_facts: list[str]  # e.g. ["aws.rds.vcpu", "aws.rds.engine_version"]
+    reason: str | None = None
+    computed_at: datetime = Field(
+        default_factory=lambda: datetime.now(tz=__import__("datetime").timezone.utc)
+    )
