@@ -3,9 +3,9 @@
 Natural key: (account_id, region, resource_type, native_id).
 Upsert by that key: if exists, bump `last_seen_at`; if not, insert.
 
-Retirement: `retired_at` is set when a successful scan proves the
-resource is gone (see `retire_stale_resources`). Until then, the
-resource is "active" (retired_at IS NULL).
+Retirement: `retired_at` is set when TWO consecutive successful scans
+both missed the resource (see `retire_stale_resources`, F-08). Until
+then, the resource is "active" (retired_at IS NULL).
 """
 
 from __future__ import annotations
@@ -16,8 +16,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from constat_api.orm import ResourceORM
-from constat_api.repositories import source_runs as source_runs_repo
+from constat_api.orm import ResourceORM, SourceRunORM
+
+# F-08: a resource is retired only after this many CONSECUTIVE successful
+# scans in the same scope both missed it. One scan is not proof of
+# deletion: a transient collection gap (partial page, throttled call)
+# would otherwise "delete" live resources — the F-01 failure mode.
+CONSECUTIVE_SCANS_FOR_RETIREMENT = 2
 
 
 def upsert_resource(
@@ -82,6 +87,36 @@ def count_resources(session: Session, account_id: UUID | None = None) -> int:
     return int(session.execute(stmt).scalar_one())
 
 
+def _recent_successful_runs(
+    session: Session,
+    *,
+    account_id: UUID,
+    region: str,
+    resource_type: str,
+    source: str,
+    limit: int,
+) -> list[SourceRunORM]:
+    """The `limit` most recent successful runs for the scope, newest first.
+
+    Lives here (not in repositories/source_runs.py) because retirement is
+    its only consumer; ordered by started_at so "the two latest scans"
+    means what an operator would expect.
+    """
+    stmt = (
+        select(SourceRunORM)
+        .where(
+            SourceRunORM.account_id == account_id,
+            SourceRunORM.region == region,
+            SourceRunORM.resource_type == resource_type,
+            SourceRunORM.source == source,
+            SourceRunORM.status == "success",
+        )
+        .order_by(SourceRunORM.started_at.desc())
+        .limit(limit)
+    )
+    return list(session.execute(stmt).scalars())
+
+
 def retire_stale_resources(
     session: Session,
     *,
@@ -90,13 +125,15 @@ def retire_stale_resources(
     resource_type: str,
     source: str,
 ) -> int:
-    """Mark resources in scope as retired when a successful scan proved they're gone.
+    """Mark resources in scope as retired when TWO consecutive successful
+    scans both proved they're gone.
 
     Returns the number of resources newly retired. Call this AFTER a
-    successful scan in the same scope: the latest successful run is the
-    proof that this scope was scanned. Any active resource in the scope
-    with `last_seen_at < latest_run.finished_at` was not seen in the
-    latest run -> it's gone (or moved) -> retire it.
+    successful scan in the same scope. We look up the two most recent
+    successful runs; a resource is retired only when its `last_seen_at`
+    predates the started_at of BOTH runs — i.e. it was unseen in the two
+    latest complete scans (F-08). If fewer than 2 successful runs exist
+    for the scope, nothing is retired: one scan is not proof of deletion.
 
     This is the only path that sets `retired_at`. Without it, the
     GTM promise "we never claim a resource is alive without proof" is
@@ -105,30 +142,36 @@ def retire_stale_resources(
     Idempotent: re-running on the same scope after a successful scan
     retires 0 additional rows.
     """
-    run = source_runs_repo.latest_successful_run(
+    runs = _recent_successful_runs(
         session,
         account_id=account_id,
         region=region,
         resource_type=resource_type,
         source=source,
+        limit=CONSECUTIVE_SCANS_FOR_RETIREMENT,
     )
-    if run is None or run.started_at is None:
-        # No proof the scope was ever complete. Don't retire anything
-        # (the runner will emit INCONCLUSIVE for these resources).
+    if len(runs) < CONSECUTIVE_SCANS_FOR_RETIREMENT or any(r.started_at is None for r in runs):
+        # Not enough proof the scope was scanned completely, twice. Don't
+        # retire anything (the runner will emit INCONCLUSIVE for these
+        # resources).
         return 0
 
+    # Unseen in BOTH runs <=> last_seen_at < min(started_at of the two).
+    # runs is newest-first, so the oldest of the two is the last element.
+    #
     # We compare against run.started_at, not run.finished_at. Reason:
     # start_run is called BEFORE the per-resource upsert_resource calls,
     # so run.started_at < any resource's last_seen_at when it was just
-    # seen in this run. The "stale" condition is therefore
-    # `last_seen_at < run.started_at`: the resource's last observation
-    # predates this run, so it wasn't seen.
+    # seen in that run. The "stale" condition is therefore
+    # `last_seen_at < oldest started_at`: the resource's last observation
+    # predates both runs, so neither saw it.
+    oldest_started_at = runs[-1].started_at
     stmt = select(ResourceORM).where(
         ResourceORM.account_id == account_id,
         ResourceORM.region == region,
         ResourceORM.resource_type == resource_type,
         ResourceORM.retired_at.is_(None),
-        ResourceORM.last_seen_at < run.started_at,
+        ResourceORM.last_seen_at < oldest_started_at,
     )
     stale = session.execute(stmt).scalars().all()
     now = datetime.now(tz=UTC)

@@ -25,7 +25,7 @@ from typing import Any
 from uuid import uuid4
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from constat_aws_rds.collector import (
     DEFAULT_REGIONS,
     collect_db_instances,
@@ -55,6 +55,8 @@ class TargetAccount:
 
     role_arn = None -> use the base session as-is (single-account mode).
     external_id = the shared secret configured in the prospect's trust policy.
+        REQUIRED when role_arn is set (F-06: no ExternalId = confused-deputy
+        risk); `_assume_role` refuses to call STS without it.
     regions = None -> use the default set.
     """
 
@@ -83,19 +85,47 @@ AssumeRoleFn = Callable[[boto3.Session, TargetAccount], boto3.Session]
 ScanFn = Callable[[boto3.Session, list[str]], Iterator[dict[str, Any]]]
 
 
+def _classify_error(code: str) -> str:
+    """Bucket an AWS error code (or exception class name) into a coarse class.
+
+    Operators triage by class, not by the dozens of individual codes:
+    AccessDenied -> fix the trust policy; Throttling/Timeout -> transient,
+    retry later; Unknown -> investigate. Used in the recorded error string
+    so the source_runs row is self-explanatory.
+    """
+    lowered = code.lower()
+    if "accessdenied" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
+        return "AccessDenied"
+    if "throttl" in lowered or "limitexceeded" in lowered or "toomanyrequests" in lowered:
+        return "Throttling"
+    if "timeout" in lowered or "timedout" in lowered:
+        return "Timeout"
+    return "Unknown"
+
+
 def _assume_role(base_session: boto3.Session, target: TargetAccount) -> boto3.Session:
-    """Default assume_role: STS AssumeRole with optional ExternalId."""
+    """Default assume_role: STS AssumeRole with a mandatory ExternalId."""
     if target.role_arn is None:
         return base_session
+
+    if not target.external_id:
+        # Confused-deputy defense (F-06): assuming a cross-account role
+        # without an ExternalId means anyone who learns the role ARN can
+        # assume it. Refuse BEFORE calling STS — the API router validates
+        # this too, but the collector is the last line of defense.
+        raise ValueError(
+            f"TargetAccount {target.aws_account_id}: role_arn is set but "
+            "external_id is empty — refusing to assume a cross-account role "
+            "without an ExternalId (confused-deputy risk)."
+        )
 
     sts = base_session.client("sts")
     kwargs: dict[str, Any] = {
         "RoleArn": target.role_arn,
         "RoleSessionName": f"constat-{uuid4()}",
         "DurationSeconds": 3600,
+        "ExternalId": target.external_id,
     }
-    if target.external_id:
-        kwargs["ExternalId"] = target.external_id
 
     response = sts.assume_role(**kwargs)
     creds = response["Credentials"]
@@ -181,6 +211,12 @@ def collect_target(
         region_resources = 0
         region_error: str | None = None
         region_started = time.monotonic()
+        # F-01: a run is 'success' ONLY if the scan loop ran to completion.
+        # region_error alone is not enough: an exception type we don't catch
+        # below would escape with region_error still None, and the finally
+        # block would mislabel the run 'success' — then the retirement
+        # sweep would "delete" resources that are actually alive.
+        scan_completed = False
         try:
             if run is None:
                 # Another scan is already active for this scope. Skip to avoid
@@ -220,17 +256,36 @@ def collect_target(
                 session.flush()
 
             # Scan completed without exception -> reset the breaker.
+            scan_completed = True
             consecutive_errors = 0
 
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
-            region_error = f"{error_code}: {e}"
+            error_class = _classify_error(error_code)
+            region_error = f"{error_class} ({error_code}): {e}"
+            errors.append(f"{region}: {region_error}")
+            consecutive_errors += 1
+            logger.warning("Region %s failed: %s", region, e)
+        except BotoCoreError as e:
+            # BotoCoreError is NOT a ClientError: read/connect timeouts,
+            # connection resets, endpoint failures. Caught separately
+            # (F-01) so it (a) marks the run failed instead of escaping,
+            # and (b) counts toward the circuit breaker like ClientError —
+            # a network blip in 2 consecutive regions means the rest are
+            # likely degraded too.
+            error_class = _classify_error(type(e).__name__)
+            region_error = f"{error_class} ({type(e).__name__}): {e}"
             errors.append(f"{region}: {region_error}")
             consecutive_errors += 1
             logger.warning("Region %s failed: %s", region, e)
         finally:
             if run is not None:
-                status = "success" if region_error is None else "failed"
+                # An exception that escapes BOTH except blocks (an
+                # unexpected bug) still lands here with scan_completed
+                # False -> the run is marked 'failed' and no retirement
+                # happens. Only a fully completed, error-free scan is
+                # a 'success'.
+                status = "success" if (scan_completed and region_error is None) else "failed"
                 source_runs_repo.finish_run(
                     session,
                     run,
@@ -244,9 +299,13 @@ def collect_target(
                     duration_seconds=time.monotonic() - region_started,
                 )
                 # On successful scans, retire resources in this scope that
-                # weren't seen in this run. This is the GTM promise:
-                # "we never claim a resource is alive without proof".
-                if status == "success" and not dry_run:
+                # the TWO most recent successful runs both missed (F-08:
+                # one scan is not proof of deletion — a transient gap
+                # could otherwise "delete" live resources). This is the
+                # GTM promise: "we never claim a resource is alive
+                # without proof". scan_completed is redundant with
+                # status == "success" but states the invariant explicitly.
+                if status == "success" and scan_completed and not dry_run:
                     try:
                         retired = resources_repo.retire_stale_resources(
                             session,

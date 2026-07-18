@@ -120,7 +120,7 @@ def test_upsert_resource_resurrects_retired(session: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Retirement: a successful scan proves stale resources are gone.
+# Retirement: two consecutive successful scans prove stale resources are gone.
 # ---------------------------------------------------------------------------
 
 
@@ -139,8 +139,8 @@ def _complete_run(session, acc, *, region="eu-west-1") -> SourceRunORM:
 
 
 def test_retire_stale_resources_marks_unseen_as_retired(session: Session) -> None:
-    """A successful scan in a scope retires resources that weren't seen
-    in that scan."""
+    """Two consecutive successful scans that both miss a resource retire
+    it (F-08). A resource seen in either run stays active."""
     acc = _account(session)
     r1 = resources_repo.upsert_resource(
         session,
@@ -164,7 +164,8 @@ def test_retire_stale_resources_marks_unseen_as_retired(session: Session) -> Non
     r2.last_seen_at = datetime.now(tz=UTC)
     session.commit()
 
-    # Run a successful scan now.
+    # Two successful scans now, both missing r1.
+    _complete_run(session, acc)
     _complete_run(session, acc)
 
     retired = resources_repo.retire_stale_resources(
@@ -208,8 +209,36 @@ def test_retire_stale_resources_does_nothing_without_proof(session: Session) -> 
     assert r.retired_at is None
 
 
+def test_retire_stale_resources_does_nothing_after_a_single_scan(session: Session) -> None:
+    """F-08: ONE successful scan is not proof of deletion. Even a very
+    stale resource survives the first successful scan of the scope."""
+    acc = _account(session)
+    r = resources_repo.upsert_resource(
+        session,
+        acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        native_id="arn:1",
+    )
+    r.last_seen_at = datetime.now(tz=UTC) - timedelta(days=30)
+    session.commit()
+
+    _complete_run(session, acc)
+
+    retired = resources_repo.retire_stale_resources(
+        session,
+        account_id=acc.id,
+        region="eu-west-1",
+        resource_type="AWS::RDS::DBInstance",
+        source="aws_rds",
+    )
+    assert retired == 0
+    session.refresh(r)
+    assert r.retired_at is None
+
+
 def test_retire_stale_resources_is_idempotent(session: Session) -> None:
-    """A second call after a successful scan retires 0 rows."""
+    """A second call after two successful scans retires 0 rows."""
     acc = _account(session)
     r = resources_repo.upsert_resource(
         session,
@@ -221,6 +250,7 @@ def test_retire_stale_resources_is_idempotent(session: Session) -> None:
     r.last_seen_at = datetime.now(tz=UTC) - timedelta(hours=2)
     session.commit()
 
+    _complete_run(session, acc)
     _complete_run(session, acc)
     first = resources_repo.retire_stale_resources(
         session,
