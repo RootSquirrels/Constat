@@ -23,21 +23,21 @@ Design:
   reads the same format; the contract is the metrics, not the lib.
 
 Cardinality budget per metric (rough):
-- `constat_insights_emitted_total{rule, severity}` — rule ∈ {rds_eol,
-  chargeback} × severity ∈ {info, warning, critical} → ≤ 6 series
-- `constat_inconclusive_total{rule, reason}` — rule ∈ {rds_eol} ×
-  reason ∈ {scope_not_proven, missing_facts, no_facts, malformed}
-  → ≤ 4 series
+- `constat_insights_emitted_total{rule, severity}` — rule in {rds_eol,
+  chargeback} cross severity in {info, warning, critical} -> at most 6 series
+- `constat_inconclusive_total{rule, reason}` — rule in {rds_eol} cross
+  reason in {scope_not_proven, missing_facts, no_facts, malformed}
+  -> at most 4 series
 - `constat_insights_run_duration_seconds{rule}` — 2 series
-- `constat_focus_rows_total{outcome}` — outcome ∈ {ingested, skipped}
-  → 2 series
+- `constat_focus_rows_total{outcome}` — outcome in {ingested, skipped}
+  -> 2 series
 - `constat_source_run_duration_seconds{region, status}` — bounded
-  by region count × status count; status ∈ {success, failed,
+  by region count cross status count; status in {success, failed,
   partial}
 - `constat_http_requests_total{method, path, status}` — bounded by
-  route count × method count × status count
+  route count cross method count cross status count
 - `constat_http_request_duration_seconds{method, path}` — bounded
-  by route count × method count
+  by route count cross method count
 """
 
 from __future__ import annotations

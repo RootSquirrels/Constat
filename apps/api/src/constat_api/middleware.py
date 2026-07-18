@@ -117,17 +117,19 @@ class HTTPMetricsMiddleware(BaseHTTPMiddleware):
         if path in _EXCLUDED_PATHS:
             return await call_next(request)
 
-        # FastAPI populates `request.scope["route"]` after routing.
-        # For 404s (no match), it's absent. We collapse those to
-        # "unmatched" to keep cardinality bounded.
-        route = request.scope.get("route")
-        path_label = getattr(route, "path", "unmatched") if route is not None else "unmatched"
-
         start = time.monotonic()
         status_code = 500
+        path_label = "unmatched"
         try:
             response = await call_next(request)
             status_code = response.status_code
+            # FastAPI populates `request.scope["route"]` AFTER routing
+            # has matched. For 404s (no match), it's absent. We use
+            # the template path for cardinality bounding, fall back
+            # to "unmatched" for the 404 case.
+            route = request.scope.get("route")
+            if route is not None:
+                path_label = getattr(route, "path", "unmatched")
             return response
         finally:
             duration = time.monotonic() - start
