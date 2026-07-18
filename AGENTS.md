@@ -28,6 +28,8 @@ Constat/
 │       ├── aurora_eol/          # rule: Aurora MySQL/PG Extended Support → €/month
 │       ├── ebs_gp2_to_gp3/      # rule: gp2 volume → gp3 savings → €/month
 │       ├── ebs_unattached/      # rule: available volume → monthly waste
+│       ├── snapshot_orphan/     # rule: snapshot whose volume is gone → €/month
+│       ├── ec2_stopped_with_storage/  # rule: stopped instance storage → €/month
 │       └── chargeback/          # rule: per account × service, amortized vs brut
 ├── apps/
 │   ├── api/                     # FastAPI — orchestrator + REST

@@ -130,7 +130,10 @@ pas de Docker sur la machine), `ruff check`/`format` propres, `mypy` core propre
 | `aurora.extended_support` | **FAIT** | `packages/insights/aurora_eol` (aurora-mysql 2/3 + aurora-postgresql 11-15). Découverte catalog : pas de tier année-3 pour Aurora MySQL (contrairement à l'hypothèse du tableau) — sourcé. |
 | `ebs.gp2_to_gp3` | **FAIT** | `packages/insights/ebs_gp2_to_gp3` + catalog EBS — le connecteur EC2/EBS a été construit (scopes source_run propres, preuve d'absence préservée). Montant : `savings_monthly_usd` (registre ADR-13). |
 | `ebs.unattached` | **FAIT** | `packages/insights/ebs_unattached` — volumes `available` × tarif catalog (`monthly_waste_usd`). Type de volume absent du catalog ⇒ INCONCLUSIVE `catalog.volume_type_price_missing`, jamais d'insight « gratuit ». |
-| `snapshot.orphan`, `ec2.stopped_with_storage` | **PROCHAIN CHANTIER** | Même connecteur EBS/EC2 désormais en place ; restent DescribeSnapshots (croisement volumes × AMI) et DescribeInstances `stopped` + IP élastiques, plus leurs entrées catalog. |
+| `snapshot.orphan` | **FAIT** | `packages/insights/snapshot_orphan` — MATCH si volume source absent de l'inventaire prouvé (`aws.ec2.snapshot.volume_exists`, injecté par le post-pass de corrélation du collecteur) et description sans référence `ami-` (conservateur ; corroboration DescribeImages = V2). Description manquante ⇒ INCONCLUSIVE, jamais de MATCH destructeur non prouvé. |
+| `ec2.stopped_with_storage` | **FAIT** | `packages/insights/ec2_stopped_with_storage` — instance `stopped` × volumes attachés (fact `aws.ec2.instance.attached_volumes` injecté au scan). Type non catalogué ⇒ somme partielle + `pricing_incomplete: true`. IP élastiques explicitement hors scope (`elastic_ip_cost_excluded`, DescribeAddresses non collecté — seuil : un prospect le demande). |
+
+**Vague 1 complète : 6 règles monétaires + chargeback en production.** Le scheduler ECS tourne désormais `--all` (plus de liste de règles codée en dur — même classe de dérive que le bug monétaire, corrigée par le comité).
 
 Le runner a été généralisé au passage (`RESOURCE_RULES` + `run_resource_rule`) :
 ajouter le prochain insight basé ressource = un package resolver + une ligne de registre.
