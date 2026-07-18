@@ -209,9 +209,12 @@ version = "0.0.0"
 source = { editable = "apps/api" }
 dependencies = [
     { name = "constat-aurora-eol" },
+    { name = "constat-aws-ec2" },
     { name = "constat-aws-rds" },
     { name = "constat-chargeback" },
     { name = "constat-core" },
+    { name = "constat-ebs-gp2-to-gp3" },
+    { name = "constat-ebs-unattached" },
     { name = "constat-ec2-stopped-with-storage" },
     { name = "constat-focus" },
     { name = "constat-mysql-eol" },
@@ -229,9 +232,12 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "constat-aurora-eol", editable = "packages/insights/aurora_eol" },
+    { name = "constat-aws-ec2", editable = "packages/connectors/aws_ec2" },
     { name = "constat-aws-rds", editable = "packages/connectors/aws_rds" },
     { name = "constat-chargeback", editable = "packages/insights/chargeback" },
     { name = "constat-core", editable = "packages/core" },
+    { name = "constat-ebs-gp2-to-gp3", editable = "packages/insights/ebs_gp2_to_gp3" },
+    { name = "constat-ebs-unattached", editable = "packages/insights/ebs_unattached" },
     { name = "constat-ec2-stopped-with-storage", editable = "packages/insights/ec2_stopped_with_storage" },
     { name = "constat-focus", editable = "packages/connectors/focus" },
     { name = "constat-mysql-eol", editable = "packages/insights/mysql_eol" },

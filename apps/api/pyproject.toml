@@ -6,10 +6,13 @@ requires-python = ">=3.13"
 dependencies = [
     "constat-core",
     "constat-aws-rds",
+    "constat-aws-ec2",
     "constat-focus",
     "constat-rds-eol",
     "constat-mysql-eol",
     "constat-aurora-eol",
+    "constat-ebs-gp2-to-gp3",
+    "constat-ebs-unattached",
     "constat-chargeback",
     "constat-snapshot-orphan",
     "constat-ec2-stopped-with-storage",
