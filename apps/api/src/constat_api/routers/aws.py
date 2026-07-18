@@ -12,13 +12,14 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from constat_api.auth import verify_api_key
 from constat_api.collectors.aws import TargetAccount, collect_targets
 from constat_api.db import get_db
+from constat_api.idempotency import cache_response, get_cached_or_none
 from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.settings import get_base_aws_session
 
@@ -67,10 +68,27 @@ class CleanupResponse(BaseModel):
     threshold_hours: float
 
 
+def _idempotency_key_header(
+    x_idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> str | None:
+    """Read the Idempotency-Key header (or None when absent)."""
+    return x_idempotency_key
+
+
 @router.post("", response_model=CollectResponse)
 def trigger_aws_collect(
-    body: CollectRequest, session: Session = Depends(get_db)
+    body: CollectRequest,
+    idempotency_key: str | None = Depends(_idempotency_key_header),
+    session: Session = Depends(get_db),
 ) -> CollectResponse:
+    # Idempotency replay: if a request with this key was processed
+    # recently, return the cached response. Same key = same result,
+    # body is ignored on replay.
+    if idempotency_key:
+        cached = get_cached_or_none("collect_aws", idempotency_key)
+        if cached is not None:
+            return CollectResponse.model_validate(cached)
+
     targets = [
         TargetAccount(
             aws_account_id=t.aws_account_id,
@@ -90,7 +108,7 @@ def trigger_aws_collect(
         force=body.force,
         max_consecutive_region_errors=body.max_consecutive_region_errors,
     )
-    return CollectResponse(
+    response = CollectResponse(
         results=[
             CollectResultOut(
                 aws_account_id=r.aws_account_id,
@@ -104,6 +122,13 @@ def trigger_aws_collect(
             for r in results
         ]
     )
+    if idempotency_key:
+        cache_response(
+            "collect_aws",
+            idempotency_key,
+            response.model_dump(mode="json"),
+        )
+    return response
 
 
 @router.post("/cleanup-stuck-runs", response_model=CleanupResponse)

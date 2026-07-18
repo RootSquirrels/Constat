@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from constat_api.auth import verify_api_key
 from constat_api.db import get_db
+from constat_api.idempotency import cache_response, get_cached_or_none
 from constat_api.insights.runner import RUNNERS, run_rule
 
 router = APIRouter(
@@ -42,14 +43,30 @@ class RunResultOut(BaseModel):
     period_label: str = ""
 
 
+def _idempotency_key_header(
+    x_idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> str | None:
+    """Read the Idempotency-Key header (or None when absent)."""
+    return x_idempotency_key
+
+
 @router.post("/run", response_model=RunResultOut)
 def run_insights_endpoint(
     body: RunRequest,
+    idempotency_key: str | None = Depends(_idempotency_key_header),
     today: date | None = Query(
         default=None, description="Override 'today' for deterministic EOL/pricing calc (ISO date)."
     ),
     session: Session = Depends(get_db),
 ) -> RunResultOut:
+    # Idempotency replay: if a request with this key was processed
+    # recently, return the cached response. Same key = same result,
+    # body is ignored on replay.
+    if idempotency_key:
+        cached = get_cached_or_none("insights_run", idempotency_key)
+        if cached is not None:
+            return RunResultOut.model_validate(cached)
+
     if body.rule not in RUNNERS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -65,7 +82,7 @@ def run_insights_endpoint(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    return RunResultOut(
+    response = RunResultOut(
         rule_name=result.rule_name,
         resources_scanned=result.resources_scanned,
         insights_emitted=result.insights_emitted,
@@ -73,3 +90,10 @@ def run_insights_endpoint(
         errors=result.errors,
         period_label=result.period_label,
     )
+    if idempotency_key:
+        cache_response(
+            "insights_run",
+            idempotency_key,
+            response.model_dump(mode="json"),
+        )
+    return response
