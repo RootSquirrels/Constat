@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: constat-postgres
+    environment:
+      POSTGRES_USER: constat
+      POSTGRES_PASSWORD: constat
+      POSTGRES_DB: constat
+    ports:
+      - "5432:5432"
+    volumes:
+      - constat-pg-data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constat -d constat"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: constat-minio
+    environment:
+      MINIO_ROOT_USER: constat
+      MINIO_ROOT_PASSWORD: constat-secret
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - constat-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  constat-pg-data:
+  constat-minio-data:

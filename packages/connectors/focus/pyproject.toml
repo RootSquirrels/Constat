@@ -1,0 +1,15 @@
+[project]
+name = "constat-focus"
+version = "0.0.0"
+description = "FOCUS (FinOps Open Cost and Usage Specification) loader"
+requires-python = ">=3.13"
+dependencies = [
+    "constat-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/constat_focus"]
