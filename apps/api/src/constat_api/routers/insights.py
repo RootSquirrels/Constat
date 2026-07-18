@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.auth import _get_settings, verify_api_key
+from constat_api.audit import get_audit_db, record_read
+from constat_api.auth import Principal, _get_settings, require_operator, verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import insights as repo
 from constat_api.settings import Settings
@@ -40,6 +41,8 @@ def list_insights_endpoint(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
 ) -> list[Insight]:
     # Validate the filter value at the boundary so a typo returns 400
     # rather than a ValueError leaking as 500 from the repo.
@@ -51,7 +54,7 @@ def list_insights_endpoint(
                 f"must be 'open' or one of {sorted(repo.ACK_STATUSES)}"
             ),
         )
-    return repo.list_insights(
+    insights = repo.list_insights(
         session,
         rule_name=rule_name,
         severity=severity,
@@ -60,6 +63,22 @@ def list_insights_endpoint(
         limit=limit,
         offset=offset,
     )
+    # Read attribution (CISO 3.3): who saw the insights list, with which
+    # filters present (never their values) and how many rows came back.
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="insights",
+        route="/insights",
+        filters={
+            "rule_name": rule_name is not None,
+            "severity": severity is not None,
+            "account_id": account_id is not None,
+            "ack_status": ack_status is not None,
+        },
+        row_count=len(insights),
+    )
+    return insights
 
 
 def _monthly_cost_and_basis(insight: Insight) -> tuple[float | None, str]:
@@ -82,6 +101,8 @@ def export_insights_csv_endpoint(
     limit: int = Query(default=500, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
 ) -> Response:
     """CSV export of the current insights — the artifact a prospect's
     champion circulates internally. Same filters as GET /insights,
@@ -122,6 +143,20 @@ def export_insights_csv_endpoint(
                 insight.computed_at.isoformat(),
             ]
         )
+    # The export is the highest-leakage read we serve (a full CSV that
+    # leaves the system) — attribution is non-negotiable here.
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="insights",
+        route="/insights/export.csv",
+        filters={
+            "rule_name": rule_name is not None,
+            "severity": severity is not None,
+            "account_id": account_id is not None,
+        },
+        row_count=len(insights),
+    )
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
@@ -130,14 +165,31 @@ def export_insights_csv_endpoint(
 
 
 @router.get("/{insight_id}", response_model=Insight)
-def get_insight_endpoint(insight_id: UUID, session: Session = Depends(get_db)) -> Insight:
+def get_insight_endpoint(
+    insight_id: UUID,
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
+) -> Insight:
     insight = repo.get_insight(session, insight_id)
     if insight is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="insight not found")
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="insight",
+        route="/insights/{insight_id}",
+        row_count=1,
+    )
     return insight
 
 
-@router.post("", response_model=Insight, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=Insight,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_operator)],
+)
 def create_insight_endpoint(
     insight: Insight,
     session: Session = Depends(get_db),
@@ -179,7 +231,7 @@ class AckIn(BaseModel):
     ack_by: str | None = None
 
 
-@router.patch("/{insight_id}", response_model=Insight)
+@router.patch("/{insight_id}", response_model=Insight, dependencies=[Depends(require_operator)])
 def patch_insight_endpoint(
     insight_id: UUID,
     body: AckIn,

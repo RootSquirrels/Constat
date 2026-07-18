@@ -107,6 +107,7 @@ def session(engine: Engine) -> Iterator[Session]:
 @pytest.fixture
 def client(session: Session) -> Iterator[TestClient]:
     """FastAPI TestClient wired to the in-memory test DB session via dep override."""
+    from constat_api.audit import get_audit_db
     from constat_api.db import get_db
     from constat_api.main import app
 
@@ -117,6 +118,12 @@ def client(session: Session) -> Iterator[TestClient]:
             pass  # session lifecycle owned by the fixture
 
     app.dependency_overrides[get_db] = _override_get_db
+    # The audit-write dep (read attribution, CISO 3.3) gets the same test
+    # session: in production it MUST be an independent session (see
+    # get_audit_db), but in tests pointing it at the real Postgres URL
+    # would make every read-endpoint test hit the network. Using the
+    # shared in-memory session also lets tests assert on the audit rows.
+    app.dependency_overrides[get_audit_db] = _override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

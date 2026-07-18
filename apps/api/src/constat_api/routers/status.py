@@ -19,7 +19,8 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.audit import get_audit_db, record_read
+from constat_api.auth import Principal, verify_api_key
 from constat_api.db import get_db
 from constat_api.orm import (
     AccountORM,
@@ -75,7 +76,11 @@ class StatusResponse(BaseModel):
 
 
 @router.get("", response_model=StatusResponse)
-def get_status(session: Session = Depends(get_db)) -> StatusResponse:
+def get_status(
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
+) -> StatusResponse:
     """Aggregate fleet-wide counts and the most recent runs.
 
     Latency: ~10ms on the pilot volume. Each count is one index scan.
@@ -130,6 +135,16 @@ def get_status(session: Session = Depends(get_db)) -> StatusResponse:
             status=last_sr.status,
             resources_found=last_sr.resources_found,
         )
+
+    # Read attribution (CISO 3.3): /status is the restitution view's
+    # data source — fleet-wide counts in one payload.
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="status",
+        route="/status",
+        row_count=1,
+    )
 
     return StatusResponse(
         generated_at=now.isoformat(),

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import require_operator, verify_api_key
 from constat_api.collectors.aws import TargetAccount, collect_targets
 from constat_api.db import get_db
 from constat_api.idempotency import cache_response, get_cached_or_none
@@ -89,7 +89,7 @@ def _idempotency_key_header(
     return x_idempotency_key
 
 
-@router.post("", response_model=CollectResponse)
+@router.post("", response_model=CollectResponse, dependencies=[Depends(require_operator)])
 def trigger_aws_collect(
     body: CollectRequest,
     idempotency_key: str | None = Depends(_idempotency_key_header),
@@ -146,7 +146,9 @@ def trigger_aws_collect(
     return response
 
 
-@router.post("/cleanup-stuck-runs", response_model=CleanupResponse)
+@router.post(
+    "/cleanup-stuck-runs", response_model=CleanupResponse, dependencies=[Depends(require_operator)]
+)
 def trigger_cleanup_stuck_runs(
     threshold_hours: float = 2.0,
     session: Session = Depends(get_db),

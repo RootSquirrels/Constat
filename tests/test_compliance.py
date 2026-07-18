@@ -345,7 +345,9 @@ def test_retention_policies_endpoint_seeds_and_lists(client: TestClient, session
     policies = list_response.json()
     table_names = {p["table_name"] for p in policies}
     assert "observations" in table_names
-    assert "audit_events" in table_names
+    # audit_events is excluded by design (immutable since migration
+    # 0014 — retention of the audit log is archival, never deletion).
+    assert "audit_events" not in table_names
     assert all(p["enabled"] for p in policies)
 
 
@@ -422,12 +424,14 @@ def test_aws_scan_writes_audit_and_pii_rows(client: TestClient, session: Session
     assert "resources_written" in audit[0].metadata_json
     assert "account_id" not in audit[0].metadata_json
 
-    # PII: account_id + role_arn + region are classified
+    # PII: account_id + role_arn are classified. The region is NOT
+    # (known-issues §10): regions are not customer-identifying, the
+    # per-scan region rows were noise in pii_classifications.
     pii_rows = session.query(PIIClassificationORM).all()
     field_names = {r.field_name for r in pii_rows}
     assert "aws_account_id" in field_names
     assert "arn" in field_names
-    assert "region" in field_names
+    assert "region" not in field_names
 
     # The PII rows store the hash, not the value
     for pii in pii_rows:

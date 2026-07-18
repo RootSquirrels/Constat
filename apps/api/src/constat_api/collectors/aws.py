@@ -594,6 +594,11 @@ def collect_target(
         # ingested. The hash, not the value, is stored. The classifier
         # is defensive — it returns None for empty values and raises
         # on disallowed sensitivities.
+        #
+        # account_id and role_arn only. The AWS region is NOT classified
+        # here (known-issues §10): a region is not customer-identifying,
+        # and classifying one row per (account, region) per scan was pure
+        # noise in pii_classifications.
         from constat_api.pii import PIIClassifier
 
         pii = PIIClassifier(session)
@@ -609,14 +614,6 @@ def collect_target(
                 resource_id=target.aws_account_id,
                 field_name="arn",
                 value=target.role_arn,
-            )
-        # Classify the resource native_ids (ARN for RDS).
-        for region in regions:
-            pii.record(
-                resource_type="resource",
-                resource_id=f"{target.aws_account_id}:{region}",
-                field_name="region",
-                value=region,
             )
         # Audit: log the scan. Actor defaults to "system" (the
         # collector runs in the API process; the API key actor is

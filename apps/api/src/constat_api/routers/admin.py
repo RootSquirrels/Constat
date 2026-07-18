@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import require_operator, verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import inconclusive as inconclusive_repo
 
@@ -27,7 +27,11 @@ class CleanupResponse(BaseModel):
     deleted: int
 
 
-@router.post("/cleanup-inconclusives", response_model=CleanupResponse)
+@router.post(
+    "/cleanup-inconclusives",
+    response_model=CleanupResponse,
+    dependencies=[Depends(require_operator)],
+)
 def cleanup_inconclusives(
     older_than_days: int = Query(
         default=30, ge=1, le=365, description="Delete records older than N days."

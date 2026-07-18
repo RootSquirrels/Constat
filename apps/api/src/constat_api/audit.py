@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from constat_api.db import SessionLocal
 from constat_api.orm import AuditEventORM
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.settings import DEFAULT_TENANT_ID, settings
+from constat_api.tenant import bind_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,11 @@ logger = logging.getLogger(__name__)
 ACTOR_SYSTEM_CLEANUP = "system:cleanup_stuck_runs"
 ACTOR_SYSTEM_RETENTION = "system:retention"
 ACTOR_SYSTEM = "system"
+
+# Read attribution (CISO requirement 3.3): every sensitive API read is
+# recorded with this action, actor = the principal's name ("alice",
+# "default", or "anonymous" when auth is open).
+ACTION_API_READ = "api.read"
 
 
 # Fields that MUST NOT appear in audit metadata. The list is enforced
@@ -158,3 +166,72 @@ def record_event(
         target_id=target_id,
         metadata=metadata,
     )
+
+
+# ---------------------------------------------------------------------------
+# Read attribution — "who saw my data" (CISO requirement 3.3)
+# ---------------------------------------------------------------------------
+
+
+def get_audit_db() -> Iterator[Session]:
+    """FastAPI dependency: a short, INDEPENDENT session for audit writes.
+
+    Read-attribution writes must NEVER share the request's read session:
+    an audit write failure (lock, RLS violation, connection drop) must
+    not be able to corrupt or roll back the read it describes. This
+    session is opened around the single INSERT and closed immediately.
+    """
+    session = SessionLocal()
+    bind_tenant(session, settings.default_tenant_id)
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def record_read(
+    session: Session,
+    *,
+    actor: str,
+    target_type: str,
+    route: str,
+    filters: Mapping[str, bool] | None = None,
+    row_count: int,
+) -> None:
+    """Attribute one sensitive READ to its principal.
+
+    One audit_events row per request — fine at pilot volume (tens of
+    reads/day). If volume grows, revisit with sampling or aggregation
+    rather than dropping attribution.
+
+    Metadata is strictly non-PII per this module's contract: the route
+    path template, which filters were present (booleans, never their
+    values), and the number of rows returned.
+
+    AVAILABILITY BEATS AUDIT, deliberately: if the audit write fails we
+    roll back the audit session, emit a loud warning (this is the signal
+    to alert on — an "AUDIT GAP" line means unaudited reads were served),
+    and serve the read anyway. A broken audit sink must not take the
+    product's read paths down with it.
+    """
+    metadata: dict[str, Any] = {"route": route, "row_count": row_count}
+    for key, present in (filters or {}).items():
+        metadata[f"filter_{key}"] = bool(present)
+    try:
+        record_event(
+            session,
+            action=ACTION_API_READ,
+            actor=actor,
+            target_type=target_type,
+            metadata=metadata,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.warning(
+            "AUDIT GAP: failed to record api.read on %s for actor %s — "
+            "serving the read anyway (availability beats audit)",
+            route,
+            actor,
+            exc_info=True,
+        )

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import require_operator, verify_api_key
 from constat_api.cli.focus import ingest_focus_file
 from constat_api.db import get_db
 
@@ -41,7 +41,7 @@ class IngestResponse(BaseModel):
     duration_seconds: float
 
 
-@router.post("", response_model=IngestResponse)
+@router.post("", response_model=IngestResponse, dependencies=[Depends(require_operator)])
 def trigger_focus_ingest(body: IngestRequest, session: Session = Depends(get_db)) -> IngestResponse:
     try:
         result = ingest_focus_file(

@@ -11,6 +11,10 @@ All require auth (P0#1 X-API-Key). The /audit-events and
 /retention-policies endpoints are what the security team will
 point to when answering "show me your access log" and "what's
 your data retention policy?".
+
+RBAC (CISO review): GET /audit-events and POST /retention/run are
+operator-only — the audit log answers "who saw what", so it must not
+itself be readable by every reader, and retention deletes data.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import require_operator, verify_api_key
 from constat_api.db import get_db
 from constat_api.orm import (
     AuditEventORM,
@@ -54,7 +58,11 @@ class AuditEventOut(BaseModel):
     metadata: dict[str, Any]
 
 
-@router.get("/audit-events", response_model=list[AuditEventOut])
+@router.get(
+    "/audit-events",
+    response_model=list[AuditEventOut],
+    dependencies=[Depends(require_operator)],
+)
 def list_audit_events(
     actor: str | None = Query(
         default=None, description="Filter by actor (e.g. 'system:retention')"
@@ -202,7 +210,9 @@ class RetentionRunResult(BaseModel):
     per_table: dict[str, int]
 
 
-@router.post("/retention/run", response_model=RetentionRunResult)
+@router.post(
+    "/retention/run", response_model=RetentionRunResult, dependencies=[Depends(require_operator)]
+)
 def trigger_retention_run(
     session: Session = Depends(get_db),
 ) -> RetentionRunResult:

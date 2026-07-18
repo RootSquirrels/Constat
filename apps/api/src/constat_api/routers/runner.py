@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.auth import require_operator, verify_api_key
 from constat_api.db import get_db
 from constat_api.idempotency import cache_response, get_cached_or_none
 from constat_api.insights.runner import RUNNERS, run_rule
@@ -50,7 +50,7 @@ def _idempotency_key_header(
     return x_idempotency_key
 
 
-@router.post("/run", response_model=RunResultOut)
+@router.post("/run", response_model=RunResultOut, dependencies=[Depends(require_operator)])
 def run_insights_endpoint(
     body: RunRequest,
     idempotency_key: str | None = Depends(_idempotency_key_header),

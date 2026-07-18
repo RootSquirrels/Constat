@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.audit import get_audit_db, record_read
+from constat_api.auth import Principal, verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import accounts as accounts_repo
 
@@ -35,8 +36,19 @@ def list_accounts_endpoint(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
 ) -> list[AccountOut]:
     rows = accounts_repo.list_accounts(session, limit=limit, offset=offset)
+    # Read attribution (CISO 3.3): the account list is the customer-
+    # identifying inventory — who enumerated it must be on record.
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="accounts",
+        route="/accounts",
+        row_count=len(rows),
+    )
     return [
         AccountOut(
             id=str(r.id),

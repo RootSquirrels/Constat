@@ -12,7 +12,8 @@ from constat_core.models import Inconclusive
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from constat_api.auth import verify_api_key
+from constat_api.audit import get_audit_db, record_read
+from constat_api.auth import Principal, require_operator, verify_api_key
 from constat_api.db import get_db
 from constat_api.repositories import inconclusive as repo
 
@@ -30,28 +31,59 @@ def list_inconclusive_endpoint(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
 ) -> list[Inconclusive]:
-    return repo.list_inconclusive(
+    items = repo.list_inconclusive(
         session,
         rule_name=rule_name,
         account_id=account_id,
         limit=limit,
         offset=offset,
     )
+    # Read attribution (CISO 3.3): the "we don't know" surface is as
+    # sensitive as the insights themselves.
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="inconclusives",
+        route="/inconclusives",
+        filters={
+            "rule_name": rule_name is not None,
+            "account_id": account_id is not None,
+        },
+        row_count=len(items),
+    )
+    return items
 
 
 @router.get("/{inconclusive_id}", response_model=Inconclusive)
 def get_inconclusive_endpoint(
-    inconclusive_id: UUID, session: Session = Depends(get_db)
+    inconclusive_id: UUID,
+    session: Session = Depends(get_db),
+    principal: Principal = Depends(verify_api_key),
+    audit_session: Session = Depends(get_audit_db),
 ) -> Inconclusive:
     """O(1) lookup via repo.get_inconclusive. Replaces the previous small-N scan."""
     item = repo.get_inconclusive(session, inconclusive_id)
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="inconclusive not found")
+    record_read(
+        audit_session,
+        actor=principal.name,
+        target_type="inconclusive",
+        route="/inconclusives/{inconclusive_id}",
+        row_count=1,
+    )
     return item
 
 
-@router.post("", response_model=Inconclusive, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=Inconclusive,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_operator)],
+)
 def create_inconclusive_endpoint(
     item: Inconclusive, session: Session = Depends(get_db)
 ) -> Inconclusive:
