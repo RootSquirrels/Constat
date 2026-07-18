@@ -24,8 +24,11 @@ resource "aws_secretsmanager_secret" "database_url" {
 
 resource "aws_secretsmanager_secret_version" "database_url" {
   secret_id = aws_secretsmanager_secret.database_url.id
-  # Same DSN shape the app expects locally (see .env.example).
-  secret_string = "postgresql://constat:${var.db_password}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/constat"
+  # The runtime DSN uses `constat_app` (created by migration 0012),
+  # NOT `constat` (the owner). The owner has DDL + ALTER POLICY
+  # rights; the runtime role has DML only and is bound by RLS. See
+  # architecture doc §11.2 and known-issues.md §2.
+  secret_string = "postgresql://constat_app:${var.db_app_password}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/constat"
 }
 
 resource "aws_secretsmanager_secret" "scan_targets" {

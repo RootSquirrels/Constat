@@ -5,10 +5,23 @@ variable "aws_region" {
 }
 
 variable "db_password" {
-  description = "Master password for the pilot RDS instance. Also embedded in the CONSTAT_DATABASE_URL secret."
+  description = "Master password for the pilot RDS instance. Used to bootstrap the cluster and to ALTER the runtime role's password at apply time."
   type        = string
   sensitive   = true
   # No default on purpose: must be supplied via tfvars or TF_VAR_db_password.
+}
+
+variable "db_app_password" {
+  description = <<-EOT
+    Password for the `constat_app` runtime role (created by migration
+    0012). The application (API, collector, CLI) connects as this role
+    in prod, NOT as `constat` (the owner). Owner has DDL and ALTER
+    POLICY rights; the runtime role has DML only and is bound by RLS.
+    See architecture doc §11.2.
+  EOT
+  type        = string
+  sensitive   = true
+  # No default on purpose: must be supplied via tfvars or TF_VAR_db_app_password.
 }
 
 variable "api_key" {
