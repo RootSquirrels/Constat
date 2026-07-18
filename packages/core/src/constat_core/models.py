@@ -50,8 +50,8 @@ class Fact(BaseModel):
     """
 
     id: UUID | None = None
-    resource_id: UUID | None
-    account_id: str | None
+    resource_id: UUID | None = None
+    account_id: str | None = None
     namespace: str  # e.g. "aws.rds"
     key: str
     value: Any
@@ -75,8 +75,8 @@ class Insight(BaseModel):
 
     id: UUID | None = None
     rule_name: str  # e.g. "rds_eol"
-    resource_id: UUID | None
-    account_id: str | None
+    resource_id: UUID | None = None
+    account_id: str | None = None
     severity: Severity
     title: str
     payload: dict[str, Any]

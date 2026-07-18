@@ -1,57 +1,56 @@
-"""Constat API — V1 skeleton.
+"""Constat API — V1 (with persistence).
 
-Endpoints:
-- GET  /health        — liveness
-- GET  /insights      — list current insights (stub; DB-backed in next commit)
-- POST /collect/aws   — trigger an AWS RDS collection run (stub; no-op in V1)
+Routers:
+- /health    — DB ping
+- /insights  — list/get/post insights
+- /collect/* — ingestion triggers (stubs; real impl in commit #2/#3)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+
+from constat_api.routers import health, insights
+from constat_api.settings import settings
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Constat API",
+    title=settings.api_title,
     description="Cloud inventory observability — the écart chiffré.",
-    version="0.0.0",
+    version="0.1.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class InsightOut(BaseModel):
-    id: str
-    rule_name: str
-    severity: str
-    title: str
-    payload: dict[str, Any]
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-# Stub: in-memory insights. Will be replaced by a DB-backed query in the next commit.
-_INSIGHTS: list[dict[str, Any]] = []
-
-
-@app.get("/insights", response_model=list[InsightOut])
-def list_insights() -> list[dict[str, Any]]:
-    """List all current insights. V1: stub."""
-    return _INSIGHTS
+app.include_router(health.router)
+app.include_router(insights.router)
 
 
 @app.post("/collect/aws")
 def trigger_aws_collect() -> dict[str, str]:
     """Trigger an AWS RDS collection run. V1: no-op stub.
 
-    Real implementation will: assume cross-account role, call the connector,
-    write to Postgres + S3.
+    Real implementation lands in commit #3 (cross-account AssumeRole).
     """
     logger.info("AWS collection trigger received (no-op in V1)")
+    return {"status": "queued"}
+
+
+@app.post("/collect/focus")
+def trigger_focus_collect() -> dict[str, str]:
+    """Trigger a FOCUS ingestion run. V1: no-op stub.
+
+    Real implementation lands in commit #2 (FOCUS CLI).
+    """
+    logger.info("FOCUS collection trigger received (no-op in V1)")
     return {"status": "queued"}
