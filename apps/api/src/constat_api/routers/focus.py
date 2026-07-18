@@ -32,7 +32,9 @@ class IngestRequest(BaseModel):
 
 class IngestResponse(BaseModel):
     account_id: str
-    rows_read: int
+    rows_total: int  # data rows in the file (header excluded for CSV)
+    rows_read: int  # rows that parsed successfully
+    rows_skipped: int  # rows_total - rows_read; malformed/dropped by the loader
     rows_written: int
     inserted: int
     updated: int
@@ -53,7 +55,9 @@ def trigger_focus_ingest(body: IngestRequest, session: Session = Depends(get_db)
 
     return IngestResponse(
         account_id=result.account_id,
+        rows_total=result.rows_total,
         rows_read=result.rows_read,
+        rows_skipped=result.rows_skipped,
         rows_written=result.rows_written,
         inserted=result.inserted,
         updated=result.updated,

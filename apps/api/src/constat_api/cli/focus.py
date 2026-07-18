@@ -10,6 +10,15 @@ Usage:
 
 The function is split from the entry point so it's easily testable with the
 shared session fixture.
+
+Quality tracking (UX/ops P2 item 7):
+- `rows_total`: every data row in the file (header excluded for CSV, parquet
+  metadata for Parquet). Computed before parsing.
+- `rows_read`: the rows that parsed successfully (== `len(raw_charges)`).
+- `rows_skipped`: `rows_total - rows_read` (malformed rows that were
+  logged and dropped by the loader).
+- The /collect/focus endpoint surfaces all three so the DAF can see
+  "we ingested 1000 lines, 5 were broken" without grepping logs.
 """
 
 from __future__ import annotations
@@ -37,11 +46,40 @@ class IngestResult:
     file_path: str
     account_external_id: str
     account_id: str
+    rows_total: int
     rows_read: int
+    rows_skipped: int
     rows_written: int
     inserted: int
     updated: int
     duration_seconds: float
+
+
+def _count_rows_total(path: Path) -> int:
+    """Best-effort total row count for a FOCUS file.
+
+    For CSV: count lines minus 1 (the header). Approximate for files
+    with embedded newlines in quoted fields; close enough for the
+    skip-rate metric.
+
+    For Parquet: read the file's metadata footer (no full scan).
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        with path.open("rb") as f:
+            # Empty-file guard: 0 rows even before subtracting the header.
+            n = sum(1 for _ in f)
+        return max(0, n - 1)
+    if suffix == ".parquet":
+        try:
+            import pyarrow.parquet as pq  # local import: heavy dep
+
+            md = pq.read_metadata(path)
+            return md.num_rows
+        except Exception as exc:
+            logger.warning("Could not read Parquet metadata for %s: %s", path, exc)
+            return -1  # sentinel: unknown
+    raise ValueError(f"Unsupported FOCUS file extension: {suffix!r}")
 
 
 def ingest_focus_file(
@@ -54,14 +92,35 @@ def ingest_focus_file(
     """Load + aggregate + upsert one FOCUS file (CSV or Parquet).
 
     Caller owns the session transaction. This function does NOT commit.
+
+    Returns an IngestResult with rows_total / rows_read / rows_skipped so
+    the caller (CLI or /collect/focus router) can report quality stats.
     """
     start = time.monotonic()
 
     if not path.exists():
         raise FileNotFoundError(f"FOCUS file not found: {path}")
 
-    raw_charges = list(load_focus(path))
-    logger.info("Loaded %d FOCUS rows from %s", len(raw_charges), path)
+    rows_total = _count_rows_total(path)
+
+    skipped: list[tuple[int, str]] = []
+
+    def on_skip(line_or_idx: int, exc: Exception) -> None:
+        skipped.append((line_or_idx, str(exc)))
+
+    raw_charges = list(load_focus(path, on_skip=on_skip))
+    rows_read = len(raw_charges)
+    # rows_total is best-effort (-1 for unreadable parquet metadata).
+    # In that case, rows_skipped is "at least len(skipped)" but we report
+    # the exact count the loader tracked.
+    rows_skipped = len(skipped) if rows_total < 0 else max(0, rows_total - rows_read)
+    logger.info(
+        "Loaded %d/%d FOCUS rows from %s (%d skipped)",
+        rows_read,
+        rows_total if rows_total >= 0 else "?",
+        path,
+        rows_skipped,
+    )
 
     aggregated = aggregate_for_storage(raw_charges)
     logger.info("Aggregated into %d (account, service, period) rows", len(aggregated))
@@ -75,7 +134,9 @@ def ingest_focus_file(
         file_path=str(path),
         account_external_id=account_external_id,
         account_id=str(account.id),
-        rows_read=len(raw_charges),
+        rows_total=rows_total,
+        rows_read=rows_read,
+        rows_skipped=rows_skipped,
         rows_written=inserted + updated,
         inserted=inserted,
         updated=updated,

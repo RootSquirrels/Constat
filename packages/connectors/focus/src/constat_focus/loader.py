@@ -15,7 +15,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -161,11 +161,19 @@ def _validate_columns(fieldnames: list[str] | None, *, source: str) -> None:
         raise ValueError(f"FOCUS 1.0 {source} missing required columns: {sorted(missing)}")
 
 
-def load_focus_csv(path: str | Path) -> Iterator[FocusCharge]:
+def load_focus_csv(
+    path: str | Path,
+    *,
+    on_skip: Callable[[int, Exception], None] | None = None,
+) -> Iterator[FocusCharge]:
     """Stream FOCUS 1.0 charges from a CSV file.
 
     Validates required columns up front. Bad rows are logged and skipped, not
     fatal — FOCUS exports in the wild contain occasional garbage.
+
+    `on_skip(line_no, exc)` is called for each row that fails to parse. Use it
+    to track rows_skipped in the ingest result. The caller is responsible for
+    counting rows_total separately (e.g. `sum(1 for _ in open(path)) - 1`).
     """
     path = Path(path)
     with path.open(newline="", encoding="utf-8") as f:
@@ -176,15 +184,23 @@ def load_focus_csv(path: str | Path) -> Iterator[FocusCharge]:
                 yield _row_to_charge(row)
             except Exception as exc:
                 logger.warning("FOCUS CSV: skipping malformed row at line %d: %s", line_no, exc)
+                if on_skip is not None:
+                    on_skip(line_no, exc)
                 continue
 
 
-def load_focus_parquet(path: str | Path) -> Iterator[FocusCharge]:
+def load_focus_parquet(
+    path: str | Path,
+    *,
+    on_skip: Callable[[int, Exception], None] | None = None,
+) -> Iterator[FocusCharge]:
     """Stream FOCUS 1.0 charges from a Parquet file.
 
     Reads the table in row groups; pyarrow handles the columnar->row conversion.
     Tags is a JSON-encoded string column in the Parquet file (FOCUS 1.0 spec),
     not a struct column, so we parse it the same way as the CSV loader.
+
+    `on_skip(row_idx, exc)` is called for each row that fails to parse.
     """
     import pyarrow.parquet as pq  # local import: pyarrow is a heavy dep
 
@@ -201,19 +217,27 @@ def load_focus_parquet(path: str | Path) -> Iterator[FocusCharge]:
             yield _row_to_charge(row)
         except Exception as exc:
             logger.warning("FOCUS Parquet: skipping malformed row at index %d: %s", row_idx, exc)
+            if on_skip is not None:
+                on_skip(row_idx, exc)
             continue
 
 
-def load_focus(path: str | Path) -> Iterator[FocusCharge]:
+def load_focus(
+    path: str | Path,
+    *,
+    on_skip: Callable[[int, Exception], None] | None = None,
+) -> Iterator[FocusCharge]:
     """Dispatch to CSV or Parquet loader based on file extension.
 
     V1: extension-based dispatch (.csv, .parquet). Other extensions raise.
     Caller is responsible for `list()`-ing the iterator if it needs a list.
+
+    `on_skip(line_or_index, exc)` is forwarded to the chosen loader.
     """
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return load_focus_csv(path)
+        return load_focus_csv(path, on_skip=on_skip)
     if suffix == ".parquet":
-        return load_focus_parquet(path)
+        return load_focus_parquet(path, on_skip=on_skip)
     raise ValueError(f"Unsupported FOCUS file extension: {suffix!r} (V1 supports .csv, .parquet)")
