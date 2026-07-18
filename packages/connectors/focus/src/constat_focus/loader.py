@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # FOCUS 1.0 columns we actually require in V1. The full spec has 43+; we only
 # fail-loud on what the chargeback insight and cost-to-resource attribution need.
 # A column missing from the source file means the export is not FOCUS 1.0 conformant.
+#
+# Region is NOT in this set on purpose: FOCUS 1.0 renamed `Region` to
+# `RegionId` (spec §2.32/2.33, https://focus.finops.org/focus-specification/v1-0/).
+# Requiring `Region` would reject every spec-conformant export. The region
+# check is done separately in _validate_columns (either name accepted).
 FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {
         "BillingAccountId",
@@ -36,11 +41,14 @@ FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
         "BilledCost",
         "EffectiveCost",  # FOCUS 1.0: the amortized cost (AmortizedCost was renamed in 1.0)
         "PricingCategory",
-        "Region",
         "ResourceId",  # FOCUS 1.0: for cost-to-resource attribution
         "SubAccountId",  # FOCUS 1.0: AWS Organizations account ID
     }
 )
+
+# Accepted region columns, in preference order: the FOCUS 1.0 name first,
+# the pre-1.0 name second (older exports keep loading).
+FOCUS_REGION_COLUMNS: tuple[str, ...] = ("RegionId", "Region")
 
 # Optional FOCUS 1.0 columns. Missing -> empty/default. Present -> parsed.
 # `Tags` is the JSON-encoded map<string,string> for resource tags.
@@ -141,7 +149,7 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
         account_id=str(row.get("BillingAccountId", "")).strip(),
         account_name=str(row.get("BillingAccountName", "")).strip(),
         service=str(row.get("ServiceName", "")).strip(),
-        region=_opt_str(row.get("Region")),
+        region=_opt_str(row.get("RegionId")) or _opt_str(row.get("Region")),
         pricing_category=_opt_str(row.get("PricingCategory")),
         period_start=_parse_date(str(row["ChargePeriodStart"])),
         period_end=_parse_date(str(row["ChargePeriodEnd"])),
@@ -159,6 +167,11 @@ def _validate_columns(fieldnames: list[str] | None, *, source: str) -> None:
     missing = FOCUS_REQUIRED_COLUMNS - set(fieldnames)
     if missing:
         raise ValueError(f"FOCUS 1.0 {source} missing required columns: {sorted(missing)}")
+    if not any(c in fieldnames for c in FOCUS_REGION_COLUMNS):
+        raise ValueError(
+            f"FOCUS 1.0 {source} missing required columns: "
+            f"['RegionId'] (pre-1.0 'Region' also accepted)"
+        )
 
 
 def load_focus_csv(
