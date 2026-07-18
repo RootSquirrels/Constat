@@ -152,13 +152,33 @@ checks the scope proof first; without it, no insight is emitted and an
 
 The Insight is the product. The Inconclusive is the differentiator.
 
+### Operator acknowledgment (P1 item 1)
+
+Each insight has three optional fields that track the operator's
+triage state:
+
+- `ack_status` — one of `NULL` (open / not yet triaged, the
+  default), `acknowledged`, `in_progress`, `resolved`,
+  `dismissed`.
+- `ack_at` — when the latest transition happened; server-set on
+  PATCH.
+- `ack_by` — free-form operator identifier (email, team, bot).
+  No users table in V1.
+
+Set via `PATCH /insights/{id}`; filtered via `?ack_status=open` on
+`GET /insights`; surfaced in the `/insights/inbox` page. The
+schema is in `db/migrations/0013_insight_acks.sql`; the contract
+is "last write wins" (no audit history in V1).
+
 Code:
 - Pydantic: `packages/core/src/constat_core/models.py::Insight`
-- Table: `insights` (`db/migrations/0001_init.sql`)
+- Table: `insights` (`db/migrations/0001_init.sql` + `0013_insight_acks.sql`)
 - Runners: `apps/api/src/constat_api/insights/runner.py::run_rds_eol`,
   `…::run_chargeback`
 - Resolvers: `packages/insights/rds_eol/src/constat_rds_eol/resolver.py`,
   `packages/insights/chargeback/src/constat_chargeback/resolver.py`
+- PATCH endpoint: `apps/api/src/constat_api/routers/insights.py`
+- Inbox page: `apps/web/app/insights/inbox/page.tsx`
 
 ---
 

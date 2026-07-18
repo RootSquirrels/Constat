@@ -50,6 +50,10 @@ List insights, with optional filters and pagination.
 - `rule_name: str?` — filter by rule (`rds_eol`, `chargeback`)
 - `severity: 'info' | 'warning' | 'critical'?`
 - `account_id: UUID?` — filter to a single prospect account
+- `ack_status: 'open' | 'acknowledged' | 'in_progress' | 'resolved' | 'dismissed'?` —
+  filter by operator-triage state. `'open'` is a virtual value
+  meaning `ack_status IS NULL` (the default for newly-emitted insights);
+  the others match the column directly. Powers the `/insights/inbox` page.
 - `limit: int = 100` (1..500)
 - `offset: int = 0`
 
@@ -117,6 +121,62 @@ exposed to a public UI yet.
 **Request body**: `Insight` (no id required, server assigns one)
 **Response 201**: `Insight` (with id)
 **Response 422**: Pydantic validation error
+
+## `PATCH /insights/{insight_id}`
+
+P1 item 1: operator acknowledgment. The pilot's operator uses this
+to triage the daily insight list. PATCH is the right verb (partial
+update; only the ack fields change).
+
+**Request body**:
+```json
+{ "ack_status": "in_progress", "ack_by": "ops@prospect.com" }
+```
+
+- `ack_status` is **required**. One of `acknowledged`, `in_progress`,
+  `resolved`, `dismissed`. The router returns 400 on any other value.
+- `ack_by` is optional but recommended. Free-form string (email,
+  team, bot). No users table in V1; the value is whatever the
+  operator passes.
+- `ack_at` is **server-set** (`datetime.now(UTC)` at the moment of
+  the PATCH). The client cannot override it; Pydantic silently
+  drops unknown fields.
+
+**Response 200**: the updated `Insight` (with the new `ack_status`,
+`ack_at`, `ack_by` echoed back).
+
+```json
+{
+  "id": "3f6c…",
+  "rule_name": "rds_eol",
+  "severity": "critical",
+  "title": "RDS PostgreSQL 11 is in Extended Support",
+  "ack_status": "in_progress",
+  "ack_at": "2026-07-19T08:42:13Z",
+  "ack_by": "ops@prospect.com",
+  "computed_at": "2026-07-19T05:00:04Z",
+  "…"
+}
+```
+
+**Errors**:
+- 400 if `ack_status` is not one of the 4 valid values.
+- 404 if `insight_id` doesn't exist (or belongs to another tenant — the
+  endpoint respects the RLS policy, so a wrong-tenant id is 404, not
+  403, by design).
+
+**Semantics** (V1, "minimal"):
+- Last write wins. There is no audit history. A second PATCH
+  overwrites the first.
+- The runner / collector **never** writes these fields. Only
+  this endpoint.
+- An insight with `ack_status: null` is "open / not yet triaged".
+  The default for newly-emitted insights. Filter with
+  `?ack_status=open` on `GET /insights`.
+
+**Audit history (V2)**: a separate `insight_acks` table (one row
+per transition). Out of scope for the pilot; the current contract
+is "last write wins" + the cloud audit log on the SaaS side.
 
 ## `POST /insights/run`
 

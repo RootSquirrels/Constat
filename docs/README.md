@@ -44,6 +44,13 @@ marked as such.
     end-to-end V1 demo path (ingest → scan → run insights → see in UI).
   - **[known-issues.md](./development/known-issues.md)** — drift between ORM
     and SQL migrations, and other traps.
+- **Infrastructure / onboarding**
+  - **[`../infra/customer-iam-role.yaml`](../infra/customer-iam-role.yaml)**
+    + **[`../infra/customer-iam-role.md`](../infra/customer-iam-role.md)** —
+    P1 item 2: the prospect-side IAM role. One-click CloudFormation
+    stack the prospect deploys in their own AWS account to grant
+    Constat read-only access. Includes deploy instructions, rotation
+    procedure, and revocation.
 - **GTM**
   - **[positioning.md](./gtm/positioning.md)** — the customer-facing
     positioning. Use this for decks and one-pagers.
