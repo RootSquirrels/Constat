@@ -1,27 +1,32 @@
-"""Insight runner: for each resource, evaluate rules and emit insights/inconclusive.
+"""Insight runner: orchestrates rule evaluation across resources/facts.
 
-For each resource in `resources`:
-1. Scope check: is there a successful source_run for (account, region, type)?
-   If no -> emit INCONCLUSIVE with reason 'scope_not_proven'. Stop here.
-2. Fetch facts. If empty -> emit INCONCLUSIVE with reason 'no_facts'. Stop here.
-3. Call the rule's evaluate function. Get InsightResult.
-4. Emit insights (MATCH) and/or inconclusive (INCONCLUSIVE).
+Two rule types:
+- Resource-based (rds_eol): for each resource, fetch facts, evaluate.
+  Scope-completeness via source_runs (AWS scan must have succeeded).
+- Account-based (chargeback): for each (account, service) tuple in
+  focus_charges, aggregate costs, emit drift insights. No source_run
+  check (FOCUS is ingested manually; "completeness" = "user gave us data").
 
 The runner is the integration point for the inventory-first promise:
-we never claim MATCH or NO_MATCH unless the scope was provably scanned.
+we never claim MATCH/NO_MATCH for a resource unless the scope was
+provably scanned. For account-based rules, the assumption is that
+FOCUS data IS complete (we can't prove otherwise; the user is the source).
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
+from constat_chargeback.resolver import aggregate, build_insights
 from constat_core.models import Fact, Inconclusive
+from constat_focus.loader import FocusCharge
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
 from sqlalchemy.orm import Session
 
-from constat_api.orm import InsightRunORM, ResourceORM
+from constat_api.orm import FocusChargeORM, InsightRunORM, ResourceORM
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import inconclusive as inconclusive_repo
 from constat_api.repositories import insights as insights_repo
@@ -42,6 +47,7 @@ class RunResult:
     insights_emitted: int
     inconclusive_emitted: int
     errors: list[str]
+    period_label: str = ""  # for account-based rules: which period was aggregated
 
 
 def _is_scope_proven(session: Session, resource: ResourceORM) -> bool:
@@ -65,7 +71,8 @@ def _emit_inconclusive(
     session: Session,
     *,
     rule_name: str,
-    resource: ResourceORM,
+    resource_id,
+    account_id: str | None,
     missing_facts: list[str],
     reason: str,
 ) -> None:
@@ -73,8 +80,8 @@ def _emit_inconclusive(
         session,
         Inconclusive(
             rule_name=rule_name,
-            resource_id=resource.id,
-            account_id=str(resource.account_id) if resource.account_id else None,
+            resource_id=resource_id,
+            account_id=account_id,
             missing_facts=missing_facts,
             reason=reason,
         ),
@@ -135,6 +142,22 @@ def _evaluate_resource(
     return list(result.insights), inconclusive
 
 
+def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
+    return FocusCharge(
+        account_id=str(orm.account_id) if orm.account_id else "",
+        account_name="",  # not stored in focus_charges; account_id is the FOCUS BillingAccountId
+        service=orm.service,
+        region=orm.region,
+        pricing_category=orm.pricing_category,
+        period_start=orm.period_start,
+        period_end=orm.period_end,
+        billed_cost=orm.billed_cost,
+        amortized_cost=orm.amortized_cost,
+        resource_id=orm.resource_id,
+        sub_account_id=orm.sub_account_id,
+    )
+
+
 def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
     """Run the rds_eol rule across all resources. Emits insights and inconclusive.
 
@@ -179,3 +202,87 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
         inconclusive_emitted=inconclusive_emitted,
         errors=errors,
     )
+
+
+def run_chargeback(session: Session, *, period_label: str = "all-time") -> RunResult:
+    """Run the chargeback rule across all FOCUS charges.
+
+    For each (account, service) tuple, aggregate costs and emit an
+    insight with the amortized-vs-billed drift. No source_run check:
+    FOCUS is "complete by ingestion" (the user is the source).
+
+    For V1, aggregates across ALL periods per (account, service). The
+    period_label in the insight payload documents the scope ("all-time"
+    or a specific period). V2: aggregate per (account, service, period).
+    """
+    run = InsightRunORM(
+        tenant_id=DEFAULT_TENANT_ID,
+        rule_name="chargeback",
+        status="running",
+    )
+    session.add(run)
+    session.commit()
+
+    # Distinct accounts that have FOCUS data
+    account_ids = {row[0] for row in session.query(FocusChargeORM.account_id).distinct().all()}
+    insights_emitted = 0
+    errors: list[str] = []
+
+    for account_id in account_ids:
+        try:
+            orm_charges = (
+                session.query(FocusChargeORM).filter(FocusChargeORM.account_id == account_id).all()
+            )
+            if not orm_charges:
+                continue
+
+            charges = [_focus_charge_to_pydantic(c) for c in orm_charges]
+            aggregated = aggregate(charges)
+            insights = build_insights(aggregated, period_label=period_label)
+            for insight in insights:
+                insights_repo.insert_insight(session, insight)
+                insights_emitted += 1
+        except Exception as exc:
+            errors.append(f"account {account_id}: {exc}")
+            logger.exception("Account %s chargeback failed", account_id)
+
+    run.finished_at = datetime.now(tz=UTC)
+    run.status = "success" if not errors else "partial"
+    run.resources_scanned = len(account_ids)
+    run.insights_emitted = insights_emitted
+    session.commit()
+
+    return RunResult(
+        rule_name="chargeback",
+        resources_scanned=len(account_ids),
+        insights_emitted=insights_emitted,
+        inconclusive_emitted=0,  # chargeback doesn't emit INCONCLUSIVE in V1
+        errors=errors,
+        period_label=period_label,
+    )
+
+
+# Dispatcher for CLI and HTTP endpoint.
+RunnerFn = Callable[..., RunResult]
+
+RUNNERS: dict[str, RunnerFn] = {
+    "rds_eol": run_rds_eol,
+    "chargeback": run_chargeback,
+}
+
+
+def run_rule(
+    session: Session,
+    rule_name: str,
+    *,
+    today: date | None = None,
+    period_label: str = "all-time",
+) -> RunResult:
+    """Dispatch to the rule's runner. Raises ValueError on unknown rule."""
+    if rule_name not in RUNNERS:
+        raise ValueError(f"unknown rule: {rule_name} (V1 supports: {sorted(RUNNERS)})")
+    if rule_name == "rds_eol":
+        return run_rds_eol(session, today=today)
+    if rule_name == "chargeback":
+        return run_chargeback(session, period_label=period_label)
+    raise ValueError(f"runner dispatch failed for {rule_name}")

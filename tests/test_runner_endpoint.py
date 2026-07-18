@@ -117,10 +117,22 @@ def test_run_endpoint_with_inconclusive(client: TestClient, session) -> None:
 def test_run_endpoint_rejects_unknown_rule(client: TestClient) -> None:
     response = client.post(
         "/insights/run",
-        json={"rule": "chargeback"},
+        json={"rule": "made_up_rule"},
     )
     assert response.status_code == 400
     assert "unknown rule" in response.json()["detail"]
+
+
+def test_run_endpoint_supports_chargeback(client: TestClient, session) -> None:
+    """chargeback is now a supported V1 rule."""
+    response = client.post(
+        "/insights/run",
+        json={"rule": "chargeback", "period_label": "all-time"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["rule_name"] == "chargeback"
+    assert body["period_label"] == "all-time"
 
 
 def test_run_endpoint_optional_today(client: TestClient, session) -> None:

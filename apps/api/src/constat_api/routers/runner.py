@@ -13,13 +13,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from constat_api.db import get_db
-from constat_api.insights.runner import run_rds_eol
+from constat_api.insights.runner import RUNNERS, run_rule
 
 router = APIRouter(prefix="/insights", tags=["insights-runner"])
 
 
 class RunRequest(BaseModel):
     rule: str = "rds_eol"
+    period_label: str = "all-time"
 
 
 class RunResultOut(BaseModel):
@@ -28,6 +29,7 @@ class RunResultOut(BaseModel):
     insights_emitted: int
     inconclusive_emitted: int
     errors: list[str]
+    period_label: str = ""
 
 
 @router.post("/run", response_model=RunResultOut)
@@ -38,16 +40,25 @@ def run_insights_endpoint(
     ),
     session: Session = Depends(get_db),
 ) -> RunResultOut:
-    if body.rule != "rds_eol":
+    if body.rule not in RUNNERS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"unknown rule: {body.rule} (V1 supports: rds_eol)",
+            detail=f"unknown rule: {body.rule} (V1 supports: {sorted(RUNNERS)})",
         )
-    result = run_rds_eol(session, today=today)
+    try:
+        result = run_rule(
+            session,
+            body.rule,
+            today=today,
+            period_label=body.period_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return RunResultOut(
         rule_name=result.rule_name,
         resources_scanned=result.resources_scanned,
         insights_emitted=result.insights_emitted,
         inconclusive_emitted=result.inconclusive_emitted,
         errors=result.errors,
+        period_label=result.period_label,
     )
