@@ -5,6 +5,7 @@ Usage:
     python -m constat_api.cli.run_insights --rule rds_eol --today 2026-07-18
     python -m constat_api.cli.run_insights --rule chargeback        # all-time, all accounts
     python -m constat_api.cli.run_insights --rule chargeback --period-label 2026-07
+    python -m constat_api.cli.run_insights --rule chargeback --tag-key Application
 """
 
 from __future__ import annotations
@@ -39,6 +40,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default="all-time",
         help="Label stored in the insight payload. Used by chargeback.",
     )
+    parser.add_argument(
+        "--tag-key",
+        default=None,
+        help=(
+            "FOCUS tag key to re-aggregate by (e.g. 'Application', 'CostCenter'). "
+            "Only used by the chargeback rule. Charges with no tag for the key are "
+            "bucketed as '__untagged__'."
+        ),
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging.")
     return parser
 
@@ -57,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.rule,
                 today=args.today,
                 period_label=args.period_label,
+                tag_key=args.tag_key,
             )
     except Exception:
         logger.exception("Run failed")

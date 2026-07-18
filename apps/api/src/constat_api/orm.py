@@ -213,6 +213,10 @@ class FocusChargeORM(Base):
     )
     resource_id: Mapped[str | None] = mapped_column(String)
     sub_account_id: Mapped[str | None] = mapped_column(String)
+    # FOCUS Tags: list of unique tag dicts seen for this (service, period)
+    # row. Used by the chargeback_by_tag runner to re-aggregate by any tag
+    # key (Application, CostCenter, ...). See migration 0008.
+    tags: Mapped[list[dict[str, str]]] = mapped_column(JSONBType(), nullable=False, default=list)
     charge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

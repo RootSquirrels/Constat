@@ -28,6 +28,7 @@ def _add_focus(
     pricing: str = "On-Demand",
     period_start: date = date(2026, 7, 1),
     period_end: date = date(2026, 7, 31),
+    tags: list[dict[str, str]] | None = None,
 ) -> None:
     focus_charges_repo.upsert_aggregated(
         session,
@@ -45,6 +46,7 @@ def _add_focus(
                 amortized_cost=Decimal(amortized),
                 resource_id=None,
                 sub_account_id=None,
+                tags=list(tags) if tags else [],
                 charge_count=1,
             )
         ],
@@ -157,3 +159,105 @@ def test_chargeback_runner_records_insight_run_metadata(session: Session) -> Non
     assert run.resources_scanned == 1
     assert run.insights_emitted == 1
     assert result.period_label == "2026-07"
+
+
+# ---------------------------------------------------------------------------
+# Tag-based chargeback runner
+# ---------------------------------------------------------------------------
+
+
+def test_chargeback_runner_with_tag_key_splits_cost_across_values(
+    session: Session,
+) -> None:
+    """V1 storage keeps one row per (account, service, period) with a list
+    of unique tag dicts. When the runner re-aggregates by a tag key, each
+    (service, period) row's cost is split evenly across the matching tag
+    values."""
+    acc = _account(session, "111111111111")
+    _add_focus(
+        session,
+        acc.id,
+        service="AmazonRDS",
+        billed="200",
+        amortized="200",
+        tags=[{"Application": "web"}, {"Application": "api"}],
+    )
+
+    result = run_chargeback(session, tag_key="Application")
+
+    # 1 (account, service, period) -> 2 insights (one per tag value)
+    assert result.insights_emitted == 2
+    assert result.resources_scanned == 1
+    assert result.period_label.endswith("tag_key=Application")
+
+    rows = session.query(InsightORM).all()
+    by_value = {r.payload["tag_value"]: r for r in rows}
+    assert set(by_value.keys()) == {"web", "api"}
+    # Even split: 100 each
+    assert by_value["web"].payload["billed_cost_usd"] == 100.0
+    assert by_value["api"].payload["billed_cost_usd"] == 100.0
+
+
+def test_chargeback_runner_with_tag_key_untagged_bucket(session: Session) -> None:
+    """A row with no tag for the requested key -> __untagged__ insight."""
+    acc = _account(session, "111111111111")
+    _add_focus(
+        session,
+        acc.id,
+        service="AmazonRDS",
+        billed="100",
+        tags=[{"CostCenter": "42"}],  # no Application
+    )
+
+    result = run_chargeback(session, tag_key="Application")
+
+    assert result.insights_emitted == 1
+    insight = session.query(InsightORM).one()
+    assert insight.payload["tag_value"] == "__untagged__"
+    assert insight.payload["billed_cost_usd"] == 100.0
+
+
+def test_chargeback_runner_without_tag_key_emits_per_period(
+    session: Session,
+) -> None:
+    """Regression: when tag_key is None, the runner keeps its V1 behavior
+    (one insight per (account, service, period))."""
+    acc = _account(session, "111111111111")
+    _add_focus(
+        session,
+        acc.id,
+        service="AmazonRDS",
+        billed="100",
+        tags=[{"Application": "web"}, {"Application": "api"}],
+    )
+
+    result = run_chargeback(session)  # no tag_key
+
+    # No tag split: 1 insight per (account, service, period).
+    assert result.insights_emitted == 1
+    insight = session.query(InsightORM).one()
+    # The insight should have tag_key=None and tag_value=None.
+    assert insight.payload["tag_key"] is None
+    assert insight.payload["tag_value"] is None
+    # Cost is the full amount, not split.
+    assert insight.payload["billed_cost_usd"] == 100.0
+
+
+def test_chargeback_runner_with_tag_key_persists_tags_in_storage(
+    session: Session,
+) -> None:
+    """Regression: the runner must read the stored `tags` list correctly
+    (not the old empty default). The FOCUS_ORM is written with a list of
+    unique tag dicts; the runner must re-create the per-row FocusCharge
+    with that list."""
+    acc = _account(session, "111111111111")
+    _add_focus(
+        session,
+        acc.id,
+        service="AmazonRDS",
+        billed="100",
+        tags=[{"Application": "web", "CostCenter": "42"}],
+    )
+    run_chargeback(session, tag_key="Application")
+    insight = session.query(InsightORM).one()
+    assert insight.payload["tag_value"] == "web"

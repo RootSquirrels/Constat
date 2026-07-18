@@ -227,7 +227,11 @@ justification in the PR description.
 - **Azure, ServiceNow, Prisma, EDR connectors.** V2+.
 - **Streaming, Neo4j, Iceberg, EKS.** Seuil-triggered, not V1.
 - **Remediation / `SendCommand` / write role.** V3.
-- **Tag-based chargeback grouping (Application, CostCenter).** V2.
+- **Tag-based chargeback grouping (Application, CostCenter).** V1:
+  `chargeback` rule accepts `tag_key`. Cost is split evenly (1/N)
+  across matching tag values; full cost goes to `__untagged__` when
+  no tag for the key is present. V2 will move to per-row tag
+  storage.
 
 ## Where to read next
 

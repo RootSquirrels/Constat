@@ -89,8 +89,8 @@ def test_loads_valid_focus_1_0_row(tmp_path: Path) -> None:
     assert r.amortized_cost == Decimal("120.00")
     assert r.resource_id == "arn:aws:rds:eu-west-1:111111111111:db:myapp"
     assert r.sub_account_id == "222222222222"
-    # Tags column is optional; missing -> empty dict.
-    assert r.tags == {}
+    # Tags column is optional; missing -> empty list.
+    assert r.tags == []
 
 
 def test_missing_required_column_raises(tmp_path: Path) -> None:
@@ -190,10 +190,11 @@ def test_csv_parses_tags_column(tmp_path: Path) -> None:
 
     rows = list(load_focus_csv(p))
     assert len(rows) == 1
-    assert rows[0].tags == {"Application": "web", "CostCenter": "42"}
+    # The loader wraps the per-row tag dict in a single-element list.
+    assert rows[0].tags == [{"Application": "web", "CostCenter": "42"}]
 
 
-def test_csv_treats_blank_tags_as_empty_dict(tmp_path: Path) -> None:
+def test_csv_treats_blank_tags_as_empty_list(tmp_path: Path) -> None:
     p = _write_csv(
         tmp_path,
         [
@@ -215,7 +216,7 @@ def test_csv_treats_blank_tags_as_empty_dict(tmp_path: Path) -> None:
         include_tags=True,
     )
     rows = list(load_focus_csv(p))
-    assert rows[0].tags == {}
+    assert rows[0].tags == []
 
 
 def test_csv_handles_invalid_tags_json(tmp_path: Path) -> None:
@@ -242,7 +243,7 @@ def test_csv_handles_invalid_tags_json(tmp_path: Path) -> None:
     )
     rows = list(load_focus_csv(p))
     assert len(rows) == 1
-    assert rows[0].tags == {}
+    assert rows[0].tags == []
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +282,12 @@ def test_loads_valid_focus_1_0_parquet_row(tmp_path: Path) -> None:
     assert r.amortized_cost == Decimal("120.00")
     assert r.resource_id == "arn:aws:rds:eu-west-1:111111111111:db:myapp"
     assert r.sub_account_id == "222222222222"
-    assert r.tags == {"Application": "web"}
+    assert r.tags == [{"Application": "web"}]
 
 
-def test_parquet_missing_tags_column_yields_empty_dict(tmp_path: Path) -> None:
+def test_parquet_missing_tags_column_yields_empty_list(tmp_path: Path) -> None:
     """Tags is optional in FOCUS 1.0. A Parquet file without the column
-    should still load, with tags={} on every row."""
+    should still load, with tags=[] on every row."""
     p = _write_parquet(
         tmp_path,
         [
@@ -309,7 +310,7 @@ def test_parquet_missing_tags_column_yields_empty_dict(tmp_path: Path) -> None:
 
     rows = list(load_focus_parquet(p))
     assert len(rows) == 1
-    assert rows[0].tags == {}
+    assert rows[0].tags == []
 
 
 def test_parquet_missing_required_column_raises(tmp_path: Path) -> None:

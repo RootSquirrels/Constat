@@ -58,7 +58,14 @@ class FocusCharge:
     Field naming uses our mental model:
     - billed_cost    ← FOCUS BilledCost (what you pay)
     - amortized_cost ← FOCUS EffectiveCost (amortized over the period)
-    - tags           ← FOCUS Tags (JSON map; empty if column missing/blank)
+    - tags           ← FOCUS Tags (list of unique tag dicts seen)
+
+    `tags` is always a list. A raw FOCUS row carries exactly one tag dict, so
+    the loader wraps it in a single-element list. After aggregation by
+    (service, period), the list contains all unique tag dicts across input
+    rows — heterogeneous tag values are preserved, not collapsed to a mode.
+    The chargeback runner iterates this list to re-aggregate by any tag key
+    (Application, CostCenter, ...).
     """
 
     account_id: str
@@ -72,7 +79,7 @@ class FocusCharge:
     amortized_cost: Decimal
     resource_id: str | None
     sub_account_id: str | None
-    tags: dict[str, str]
+    tags: list[dict[str, str]]
 
 
 def _parse_date(s: str) -> date:
@@ -129,6 +136,7 @@ def _parse_tags(raw: str | None) -> dict[str, str]:
 
 def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
     """Build a FocusCharge from a dict row (CSV) or from a pyarrow Row mapping."""
+    raw_tags = _parse_tags(row.get("Tags"))
     return FocusCharge(
         account_id=str(row.get("BillingAccountId", "")).strip(),
         account_name=str(row.get("BillingAccountName", "")).strip(),
@@ -141,7 +149,7 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
         amortized_cost=_parse_decimal(row.get("EffectiveCost")),
         resource_id=_opt_str(row.get("ResourceId")),
         sub_account_id=_opt_str(row.get("SubAccountId")),
-        tags=_parse_tags(row.get("Tags")),
+        tags=[raw_tags] if raw_tags else [],
     )
 
 

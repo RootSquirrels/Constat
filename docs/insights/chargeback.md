@@ -242,8 +242,10 @@ absolute drift.
   FOCUS exports them at the account level, not the resource level.
   V1 surfaces them at the account level. The customer filters
   `service` to see them.
-- **No showback split across teams.** V1 emits per (account,
-  service, period). V2: per (account, tag, period).
+- **Showback across teams is supported via `tag_key`.** V1 emits
+  per (account, service, period, tag_value) when `tag_key` is set
+  (e.g. `tag_key="Application"`). Charges without a tag for the
+  key go to `__untagged__`.
 - **No Reserved Instance / Savings Plan recommendations.** The
   drift is a signal; we don't act on it.
 
@@ -285,13 +287,17 @@ is the customer's way of saying "this run is the July view".
 
 ```bash
 # One account, one period (the typical V1 ingest)
-python -m constat_api.cli.focus --account 111111111111 --csv focus-july.csv
+python -m constat_api.cli.focus --account 111111111111 --file focus-july.csv  # CSV
+python -m constat_api.cli.focus --account 111111111111 --file focus-july.parquet  # Parquet
 
 # All accounts with FOCUS data, default period_label "all-time"
 python -m constat_api.cli.run_insights --rule chargeback
 
 # Tagged with the period the customer ran the rule for
 python -m constat_api.cli.run_insights --rule chargeback --period-label "2026-07"
+
+# Per-tag breakdown (the typical DAF question: "how much per Application?")
+python -m constat_api.cli.run_insights --rule chargeback --tag-key Application
 ```
 
 ## HTTP
@@ -300,6 +306,11 @@ python -m constat_api.cli.run_insights --rule chargeback --period-label "2026-07
 curl -X POST 'http://localhost:8000/insights/run' \
   -H 'Content-Type: application/json' \
   -d '{"rule": "chargeback", "period_label": "2026-07"}'
+
+# Tag-based
+curl -X POST 'http://localhost:8000/insights/run' \
+  -H 'Content-Type: application/json' \
+  -d '{"rule": "chargeback", "tag_key": "Application"}'
 ```
 
 The response is the same `RunResult` shape as `rds_eol`:
@@ -318,6 +329,33 @@ The response is the same `RunResult` shape as `rds_eol`:
 `resources_scanned` is the count of distinct accounts in
 `focus_charges`. `insights_emitted` is the count of (account,
 service, period) groups that produced a non-zero insight.
+
+When `tag_key` is set, `insights_emitted` is the count of (account,
+service, period, tag_value) groups instead, and `period_label` is
+augmented to `"{label} tag_key={key}"` for traceability.
+
+## Tag-based aggregation (V1)
+
+The `chargeback` runner accepts an optional `tag_key` body field
+(CLI flag `--tag-key`). When set, the rule re-aggregates the
+FOCUS data by (account, service, period, tag_value), where
+`tag_value` is the value of the requested tag on each input row.
+
+**Storage:** `focus_charges.tags` is a JSONB column that stores the
+list of unique tag dicts seen for each (account, service, period)
+row. The list preserves per-row heterogeneity — when a (service,
+period) bucket has 3 rows with `Application=web` and 1 row with
+`Application=api`, the stored list is `[{web}, {api}]`, not
+collapsed to a mode.
+
+**Splitting:** when the runner re-aggregates by `tag_key="Application"`
+and a stored row has 2 unique tag values, the row's cost is split
+evenly (1/N) across the values. This is a V1 approximation — the
+exact per-row tag data is lost in storage. V2 will move to per-row
+tag storage and lift the split.
+
+**Untagged bucket:** charges with no tag for the requested key
+go to `__untagged__` with their full cost (no split).
 
 ## Tests that pin the contract
 

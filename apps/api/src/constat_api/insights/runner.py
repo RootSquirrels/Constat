@@ -20,7 +20,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
-from constat_chargeback.resolver import aggregate_by_period, build_insights
+from constat_chargeback.resolver import (
+    aggregate_by_period,
+    aggregate_by_tag,
+    build_insights,
+)
 from constat_core.models import Fact, Inconclusive
 from constat_focus.loader import FocusCharge
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
@@ -143,6 +147,11 @@ def _evaluate_resource(
 
 
 def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
+    # `tags` is stored as a list of unique tag dicts (one per FOCUS input
+    # row that contributed to this aggregated (service, period) bucket).
+    # Each input row's tag dict is a single element; the list preserves
+    # heterogeneity so aggregate_by_tag can split cost across values.
+    tags = list(orm.tags) if orm.tags else []
     return FocusCharge(
         account_id=str(orm.account_id) if orm.account_id else "",
         account_name="",  # not stored in focus_charges; account_id is the FOCUS BillingAccountId
@@ -155,7 +164,7 @@ def _focus_charge_to_pydantic(orm: FocusChargeORM) -> FocusCharge:
         amortized_cost=orm.amortized_cost,
         resource_id=orm.resource_id,
         sub_account_id=orm.sub_account_id,
-        tags={},  # tags persisted in V2 (per-row); V1 ORM has no tags column yet
+        tags=tags,
     )
 
 
@@ -205,16 +214,23 @@ def run_rds_eol(session: Session, *, today: date | None = None) -> RunResult:
     )
 
 
-def run_chargeback(session: Session, *, period_label: str = "all-time") -> RunResult:
+def run_chargeback(
+    session: Session,
+    *,
+    period_label: str = "all-time",
+    tag_key: str | None = None,
+) -> RunResult:
     """Run the chargeback rule across all FOCUS charges.
 
     For each (account, service) tuple, aggregate costs and emit an
     insight with the amortized-vs-billed drift. No source_run check:
     FOCUS is "complete by ingestion" (the user is the source).
 
-    For V1, aggregates across ALL periods per (account, service). The
-    period_label in the insight payload documents the scope ("all-time"
-    or a specific period). V2: aggregate per (account, service, period).
+    Args:
+        period_label: human-readable label for the aggregation scope.
+        tag_key: when set, re-aggregate by (account, service, period,
+            tag_value) where tag_value is taken from each row's tag dict.
+            Charges with no tag for the key are bucketed as `UNTAGGED`.
     """
     run = InsightRunORM(
         tenant_id=DEFAULT_TENANT_ID,
@@ -238,7 +254,10 @@ def run_chargeback(session: Session, *, period_label: str = "all-time") -> RunRe
                 continue
 
             charges = [_focus_charge_to_pydantic(c) for c in orm_charges]
-            aggregated = aggregate_by_period(charges)
+            if tag_key:
+                aggregated = aggregate_by_tag(charges, tag_key=tag_key)
+            else:
+                aggregated = aggregate_by_period(charges)
             insights = build_insights(aggregated, period_label=period_label)
             for insight in insights:
                 insights_repo.insert_insight(session, insight)
@@ -253,13 +272,15 @@ def run_chargeback(session: Session, *, period_label: str = "all-time") -> RunRe
     run.insights_emitted = insights_emitted
     session.commit()
 
+    effective_label = f"{period_label} tag_key={tag_key}" if tag_key else period_label
+
     return RunResult(
         rule_name="chargeback",
         resources_scanned=len(account_ids),
         insights_emitted=insights_emitted,
         inconclusive_emitted=0,  # chargeback doesn't emit INCONCLUSIVE in V1
         errors=errors,
-        period_label=period_label,
+        period_label=effective_label,
     )
 
 
@@ -278,6 +299,7 @@ def run_rule(
     *,
     today: date | None = None,
     period_label: str = "all-time",
+    tag_key: str | None = None,
 ) -> RunResult:
     """Dispatch to the rule's runner. Raises ValueError on unknown rule."""
     if rule_name not in RUNNERS:
@@ -285,5 +307,5 @@ def run_rule(
     if rule_name == "rds_eol":
         return run_rds_eol(session, today=today)
     if rule_name == "chargeback":
-        return run_chargeback(session, period_label=period_label)
+        return run_chargeback(session, period_label=period_label, tag_key=tag_key)
     raise ValueError(f"runner dispatch failed for {rule_name}")

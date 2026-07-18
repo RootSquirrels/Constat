@@ -105,6 +105,10 @@ request). The response includes the run summary.
   An unknown rule returns 400.
 - `period_label`: free-form label, stored in the insight payload.
   Default `"all-time"`. Used by the `chargeback` rule.
+- `tag_key: str?` — when set, the `chargeback` rule re-aggregates
+  by the chosen FOCUS tag (e.g. `"Application"`, `"CostCenter"`).
+  Charges without a tag for the key go to the `__untagged__`
+  bucket. Ignored by `rds_eol`.
 
 **Query parameters**:
 - `today: date?` (ISO `YYYY-MM-DD`) — override the current date for

@@ -1,7 +1,9 @@
 """Aggregate raw FOCUS 1.0 charges into one row per (service, period).
 
 Pure logic — no DB, no I/O. Dedup key: (service, period_start, period_end)
-for a given account. resource_id, region, tags are collapsed via mode.
+for a given account. resource_id and region are collapsed via mode. Tags
+are preserved as a list of unique tag dicts so the chargeback runner can
+re-aggregate by any tag key.
 """
 
 from __future__ import annotations
@@ -28,7 +30,10 @@ class AggregatedFocusCharge:
     pricing_category: str | None
     resource_id: str | None
     sub_account_id: str | None
-    tags: dict[str, str]
+    # All unique tag dicts seen across the input rows for this (service, period).
+    # Empty list when no row carried tags. The list preserves per-row data
+    # even when the underlying tag values are heterogeneous.
+    tags: list[dict[str, str]]
 
 
 def _mode(values: list[str]) -> str | None:
@@ -40,19 +45,32 @@ def _mode(values: list[str]) -> str | None:
     return counter.most_common(1)[0][0]
 
 
-def _mode_dict(values: list[dict[str, str]]) -> dict[str, str]:
-    """Return the most common dict, or {} if all are empty.
+def _unique_dicts(
+    values: list[list[dict[str, str]]] | list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Return the list of unique non-empty tag dicts, preserving first-seen order.
 
-    Used for FOCUS Tags. When tags are heterogeneous across rows, the most
-    common one wins; the rest is lost. V1 limitation — V2 will store per-row
-    tags in a join table.
+    Accepts either a flat `list[dict]` (per-row tag lists merged) or a
+    `list[list[dict]]` (a list of per-row tag lists). The latter is what
+    we get from `FocusCharge.tags` (each row has its own list of dicts).
+
+    Used for FOCUS Tags: heterogeneous tag values across rows must all be
+    preserved so the chargeback runner can re-aggregate by any tag key.
+    Dicts are compared by value (frozenset of items).
     """
-    non_empty = [v for v in values if v]
-    if not non_empty:
-        return {}
-    # Dicts are unhashable, so convert to a hashable frozenset of items
-    counter: Counter[frozenset[tuple[str, str]]] = Counter(frozenset(d.items()) for d in non_empty)
-    return dict(counter.most_common(1)[0][0])
+    seen: set[frozenset[tuple[str, str]]] = set()
+    out: list[dict[str, str]] = []
+    for v in values:
+        # Normalize: if v is a list of dicts, iterate it; else treat v as one dict.
+        items: list[dict[str, str]] = v if isinstance(v, list) else [v]  # type: ignore[list-item]
+        for d in items:
+            if not d:
+                continue
+            key = frozenset(d.items())
+            if key not in seen:
+                seen.add(key)
+                out.append(d)
+    return out
 
 
 def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocusCharge]:
@@ -75,7 +93,7 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 pricing_category=_mode([r.pricing_category for r in rows]),
                 resource_id=_mode([r.resource_id for r in rows]),
                 sub_account_id=_mode([r.sub_account_id for r in rows]),
-                tags=_mode_dict([r.tags for r in rows]),
+                tags=_unique_dicts([r.tags for r in rows]),
             )
         )
     return results

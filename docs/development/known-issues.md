@@ -67,7 +67,7 @@ index.
 
 ## 4. FOCUS ingestion assumes a single CSV per account
 
-**Where:** `apps/api/src/constat_api/cli/focus.py::ingest_focus_csv`
+**Where:** `apps/api/src/constat_api/cli/focus.py::ingest_focus_file`
 upserts on `(account, service, period)`. Re-ingesting the same
 file is idempotent. Re-ingesting a *different* file that covers
 the same period is also idempotent — but it **overwrites** the
@@ -86,8 +86,11 @@ weekly exports, accumulate *manually* in a `cost_facts` table
 `(period, account, service, source_id, billed, amortized, ...)`;
 the `focus_charges` table becomes a view or a rollup.
 
-**Who owns the fix:** the workstream that adds tag-based chargeback
-(V2).
+**Tag-based chargeback (item 1 of the user request)** landed in V1
+via `chargeback --tag-key Application` (HTTP body field `tag_key`).
+The cost split is even (1/N across matching tag values); a
+`__untagged__` bucket catches charges with no tag for the key. See
+`docs/insights/chargeback.md` and migration 0008.
 
 ## 5. The web app's `chargeback` page is a stub
 

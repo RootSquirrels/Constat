@@ -45,6 +45,7 @@ def upsert_aggregated(
             existing.pricing_category = agg.pricing_category
             existing.resource_id = agg.resource_id
             existing.sub_account_id = agg.sub_account_id
+            existing.tags = list(agg.tags)
             updated += 1
         else:
             session.add(
@@ -59,6 +60,7 @@ def upsert_aggregated(
                     amortized_cost=agg.amortized_cost,
                     resource_id=agg.resource_id,
                     sub_account_id=agg.sub_account_id,
+                    tags=list(agg.tags),
                     charge_count=agg.charge_count,
                 )
             )

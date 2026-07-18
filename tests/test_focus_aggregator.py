@@ -19,7 +19,7 @@ def _charge(
     pricing: str = "On-Demand",
     resource_id: str = "arn:rds:1",
     sub_account_id: str = "111",
-    tags: dict[str, str] | None = None,
+    tags: list[dict[str, str]] | None = None,
 ) -> FocusCharge:
     return FocusCharge(
         account_id="111111111111",
@@ -33,7 +33,7 @@ def _charge(
         amortized_cost=Decimal(amortized),
         resource_id=resource_id,
         sub_account_id=sub_account_id,
-        tags=tags if tags is not None else {},
+        tags=tags if tags is not None else [],
     )
 
 
@@ -106,7 +106,7 @@ def test_aggregator_handles_null_resource_id():
             amortized_cost=Decimal("10"),
             resource_id=None,
             sub_account_id=None,
-            tags={},
+            tags=[],
         )
     ]
     agg = aggregate_for_storage(rows)
@@ -115,14 +115,39 @@ def test_aggregator_handles_null_resource_id():
     assert agg[0].charge_count == 1
 
 
-def test_aggregator_picks_mode_for_tags():
-    """When multiple FOCUS rows have tags, the dominant (most common) tag
-    dict wins. Tags are stored at the (service, period) granularity."""
+def test_aggregator_preserves_unique_tag_dicts():
+    """When multiple FOCUS rows have tags, all unique tag dicts are kept.
+    This is what the chargeback_by_tag runner needs to re-aggregate by
+    any tag key (Application, CostCenter, ...)."""
     rows = [
-        _charge(tags={"Application": "web"}),
-        _charge(tags={"Application": "web"}),
-        _charge(tags={"Application": "api"}),
+        _charge(tags=[{"Application": "web"}]),
+        _charge(tags=[{"Application": "web"}]),
+        _charge(tags=[{"Application": "api"}]),
     ]
     agg = aggregate_for_storage(rows)
     assert len(agg) == 1
-    assert agg[0].tags == {"Application": "web"}
+    # Order preserved: web first, then api (first-seen).
+    assert agg[0].tags == [{"Application": "web"}, {"Application": "api"}]
+
+
+def test_aggregator_dedupes_identical_tag_dicts():
+    """Identical tag dicts across rows are collapsed to one entry."""
+    rows = [
+        _charge(tags=[{"Application": "web", "CostCenter": "42"}]),
+        _charge(tags=[{"Application": "web", "CostCenter": "42"}]),
+    ]
+    agg = aggregate_for_storage(rows)
+    assert len(agg) == 1
+    assert agg[0].tags == [{"Application": "web", "CostCenter": "42"}]
+
+
+def test_aggregator_handles_mixed_tag_presence():
+    """Some rows have tags, some don't. The non-empty ones are kept."""
+    rows = [
+        _charge(tags=[{"Application": "web"}]),
+        _charge(tags=[]),
+        _charge(tags=[{"Application": "api"}]),
+    ]
+    agg = aggregate_for_storage(rows)
+    assert len(agg) == 1
+    assert agg[0].tags == [{"Application": "web"}, {"Application": "api"}]

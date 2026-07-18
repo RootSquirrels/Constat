@@ -21,6 +21,11 @@ router = APIRouter(prefix="/insights", tags=["insights-runner"])
 class RunRequest(BaseModel):
     rule: str = "rds_eol"
     period_label: str = "all-time"
+    # V1: tag-based chargeback. When set, the chargeback rule groups
+    # costs by (account, service, period, tag_value) instead of
+    # (account, service, period). Tag key examples: "Application",
+    # "CostCenter". Ignored by rds_eol.
+    tag_key: str | None = None
 
 
 class RunResultOut(BaseModel):
@@ -51,6 +56,7 @@ def run_insights_endpoint(
             body.rule,
             today=today,
             period_label=body.period_label,
+            tag_key=body.tag_key,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

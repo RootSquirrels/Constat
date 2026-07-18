@@ -143,3 +143,66 @@ def test_run_endpoint_optional_today(client: TestClient, session) -> None:
     body = response.json()
     # PG14 in 2026-07-18: too far from EOL (591 days) -> no insight
     assert body["insights_emitted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tag-based chargeback via the HTTP endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_run_endpoint_chargeback_with_tag_key(client: TestClient, session) -> None:
+    """V1: the chargeback rule accepts a `tag_key` body field. When set,
+    insights are split by the matching tag value."""
+    from datetime import date
+    from decimal import Decimal
+
+    from constat_api.orm import FocusChargeORM
+    from constat_api.repositories import accounts as accounts_repo
+    from constat_api.repositories import focus_charges as focus_charges_repo
+    from constat_api.settings import DEFAULT_TENANT_ID
+
+    acc = accounts_repo.get_or_create(session, "111111111111")
+    focus_charges_repo.upsert_aggregated(
+        session,
+        acc.id,
+        [
+            FocusChargeORM(  # type: ignore[call-arg]
+                tenant_id=DEFAULT_TENANT_ID,
+                account_id=acc.id,
+                service="AmazonRDS",
+                period_start=date(2026, 7, 1),
+                period_end=date(2026, 7, 31),
+                region="eu-west-1",
+                pricing_category="On-Demand",
+                billed_cost=Decimal("200"),
+                amortized_cost=Decimal("200"),
+                resource_id=None,
+                sub_account_id=None,
+                tags=[{"Application": "web"}, {"Application": "api"}],
+                charge_count=1,
+            )
+        ],
+    )
+    session.commit()
+
+    response = client.post(
+        "/insights/run",
+        json={"rule": "chargeback", "tag_key": "Application"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["rule_name"] == "chargeback"
+    assert body["insights_emitted"] == 2
+    assert "tag_key=Application" in body["period_label"]
+
+
+def test_run_endpoint_chargeback_rejects_empty_tag_key_in_body(client: TestClient, session) -> None:
+    """tag_key is optional; an empty string is treated as None (no split)."""
+    response = client.post(
+        "/insights/run",
+        json={"rule": "chargeback", "tag_key": ""},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # No data -> no insights; the empty tag_key is treated as not set.
+    assert body["insights_emitted"] == 0

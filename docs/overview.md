@@ -61,7 +61,9 @@ visible proof of the inventory-first promise.
 ## V1 is not
 
 - Not a CNAPP — no vulnerability scanning, no exposure analysis.
-- Not a FinOps showback — no chargeback across teams by tag, no RI/SP
+- Not a FinOps showback — no chargeback across teams without tag
+  data; per-tag aggregation via `tag_key` is supported but uses a
+  1/N cost split. No RI/SP
   optimization recommendations.
 - Not a CMDB — no ServiceNow-style configuration items, no
   reconciliation workflow.
