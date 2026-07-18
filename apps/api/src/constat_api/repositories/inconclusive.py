@@ -65,3 +65,25 @@ def count_inconclusive(session: Session, *, rule_name: str | None = None) -> int
     if rule_name is not None:
         stmt = stmt.where(InconclusiveORM.rule_name == rule_name)
     return int(session.execute(stmt).scalar_one())
+
+
+def delete_older_than(session: Session, *, older_than_days: int) -> int:
+    """Delete inconclusive records older than N days.
+
+    UX/ops P2 item 8: the inconclusive table grows without bound. A
+    "missing fact" listed 6 months ago is no longer actionable. Schedule
+    this from cron / k8s CronJob / Task Scheduler (see the ops doc).
+
+    Returns the number of rows deleted. The caller owns the transaction.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import delete as sa_delete
+
+    if older_than_days < 0:
+        raise ValueError(f"older_than_days must be >= 0, got {older_than_days}")
+
+    cutoff = datetime.now(tz=UTC) - timedelta(days=older_than_days)
+    stmt = sa_delete(InconclusiveORM).where(InconclusiveORM.computed_at < cutoff)
+    result = session.execute(stmt)
+    return int(result.rowcount or 0)
