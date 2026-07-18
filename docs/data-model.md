@@ -366,10 +366,12 @@ schema level where possible.
    same scope.** The collector opens the run, writes facts, then
    closes the run. Closing before opening → race. (The
    `_is_scope_proven` check in the runner is the contract test.)
-6. **`retired_at` is set only by a dedicated retirement job, never by
-   the collector.** V1 doesn't ship retirement; when it does, the
-   schema is ready. Don't set `retired_at` opportunistically from
-   `collect_target`.
+6. **`retired_at` is set by the collector, only after two consecutive
+   successful scans both missed the resource**
+   (`CONSECUTIVE_SCANS_FOR_RETIREMENT`). One missed scan proves nothing
+   (the resource may have been briefly invisible); two consecutive
+   successful scans of the same scope prove the absence. Never set
+   `retired_at` from a failed or partial scan.
 7. **`observations.payload` is the source-of-truth payload.** Don't
    filter fields in the collector; allowlist at read time if needed.
    The historical record must be reproducible.
