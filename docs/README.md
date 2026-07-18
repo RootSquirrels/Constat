@@ -25,8 +25,13 @@ marked as such.
     insight. Conceptual model and data flow. The aggregation contract is
     still being iterated; see the source.
 - **API**
-  - **[endpoints.md](./api/endpoints.md)** — the 6 routers, request/response
-    shapes, error semantics.
+  - **[endpoints.md](./api/endpoints.md)** — the 9 routers, request/response
+    shapes, error semantics, auth, request_id.
+- **Operations**
+  - **[logging.md](./operations/logging.md)** — structlog + request_id
+    middleware. JSON output in prod, colored in dev.
+  - **[inconclusive-cleanup.md](./operations/inconclusive-cleanup.md)** —
+    scheduled cleanup of the `inconclusive` table. CLI + endpoint.
 - **Development**
   - **[setup.md](./development/setup.md)** — local dev environment.
   - **[running-the-stack.md](./development/running-the-stack.md)** — the

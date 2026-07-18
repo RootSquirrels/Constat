@@ -236,8 +236,6 @@ absolute drift.
 - **No scope proof check.** Unlike `rds_eol`, the runner does not
   look at `source_runs`. FOCUS is the user's data; the runner
   trusts the user's ingest.
-- **No tag-based grouping.** `Application`, `CostCenter`,
-  `Environment` are not in the payload. V2.
 - **No allocation of shared costs (NAT, data transfer, support).**
   FOCUS exports them at the account level, not the resource level.
   V1 surfaces them at the account level. The customer filters
