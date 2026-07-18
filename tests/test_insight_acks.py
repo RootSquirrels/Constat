@@ -17,11 +17,9 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from constat_api.orm import InsightORM
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-
-from constat_api.orm import InsightORM
-
 
 VALID_ACK_STATUSES = [
     "acknowledged",
