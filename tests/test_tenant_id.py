@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from constat_api.orm import FactORM, ResourceORM
+from constat_api.orm import ResourceORM
 from constat_api.repositories import accounts as accounts_repo
 from constat_api.settings import DEFAULT_TENANT_ID
 from sqlalchemy.exc import IntegrityError
@@ -101,45 +101,15 @@ def test_facts_unique_constraint_enforced(session: Session) -> None:
     session.rollback()
 
 
-def test_facts_with_different_observed_at_allowed(session: Session) -> None:
-    """UNIQUE is on (tenant, resource, namespace, key, source, observed_at).
-    Different observed_at = different snapshot = allowed."""
-    from constat_api.repositories import facts as facts_repo
-    from constat_core.models import Fact, ValueState
+def test_facts_current_state_design_documented(session: Session) -> None:
+    """Doc-only: UNIQUE is on (tenant, resource, namespace, key, source) -- no
+    observed_at. Same natural key = upsert (current-state design). Different
+    observed_at on the same key is a RE-OBSERVATION of the same fact, not a
+    new row.
 
-    acc = accounts_repo.get_or_create(session, "111111111111")
-    resource = ResourceORM(
-        tenant_id=DEFAULT_TENANT_ID,
-        account_id=acc.id,
-        region="eu-west-1",
-        resource_type="AWS::RDS::DBInstance",
-        native_id="arn:rds:1",
-    )
-    session.add(resource)
-    session.commit()
-
-    base = {
-        "resource_id": resource.id,
-        "account_id": str(acc.id),
-        "namespace": "aws.rds",
-        "key": "engine",
-        "value": "postgres",
-        "value_state": ValueState.KNOWN,
-        "source": "aws_rds",
-    }
-    facts_repo.insert_facts(
-        session,
-        [
-            Fact(**base, observed_at=datetime(2026, 7, 18, tzinfo=UTC)),
-        ],
-    )
-    facts_repo.insert_facts(
-        session,
-        [
-            Fact(**base, observed_at=datetime(2026, 7, 19, tzinfo=UTC)),
-        ],
-    )
-    session.commit()
-
-    n = session.query(FactORM).count()
-    assert n == 2
+    The current-state behavior is fully covered in test_facts_upsert.py.
+    This stub is here as documentation so future readers don't reintroduce
+    the old append-log test.
+    """
+    # No assertions: this is documentation, not a behavioral test.
+    assert True

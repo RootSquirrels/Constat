@@ -8,49 +8,22 @@
 
 ## 1. Drift: `facts` UNIQUE constraint (ORM vs migration 0006)
 
-**Severity:** medium. Affects tests only (sqlite); production (Postgres)
-runs migrations, so production is on the right schema. But: if you
-rely on the ORM to introspect the schema, you'll see the wrong
+**Status:** FIXED in commit `9c3e8b4` (post-V1-commit-series). ORM now
+matches migration 0006.
+
+**Original report:** the ORM declared
+`UniqueConstraint("tenant_id", "resource_id", "namespace", "key",
+"source", "observed_at", name="uq_fact_snapshot")` while migration
+0006 had replaced it with `uq_fact_current` on the same columns
+*without* `observed_at`. SQLite-staging would have created the wrong
 constraint.
 
-**Where:**
-- ORM: `apps/api/src/constat_api/orm.py:143-151` declares
-  `UniqueConstraint("tenant_id", "resource_id", "namespace", "key",
-  "source", "observed_at", name="uq_fact_snapshot")`.
-- Migrations: `0004_tenant_id.sql` created `uq_fact_snapshot` (with
-  `observed_at`); `0006_facts_current_state.sql` **dropped it** and
-  added `uq_fact_current` on
-  `(tenant_id, resource_id, namespace, key, source)` (no
-  `observed_at`).
-
-**Symptom:** A test that creates a fresh sqlite DB, then upserts
-the same fact twice in a row with different `observed_at`, will
-*fail* on the ORM-created schema (because the unique includes
-`observed_at`) and *succeed* on the migration-created schema (no
-`observed_at` in the unique). We have tests that expect the
-current-state behavior; they pass only when the migration has
-been applied to a real Postgres. In a fresh sqlite test DB
-without migrations, the ORM creates the wrong constraint.
-
-**Why it happened:** the schema moved from "append-log" (with
-`observed_at` in the unique) to "current-state" (without) in
-migration 0006. The ORM was not updated to match.
-
-**Fix:** one line, in the ORM:
-```python
-UniqueConstraint(
-    "tenant_id", "resource_id", "namespace", "key", "source",
-    name="uq_fact_current",  # was: "uq_fact_snapshot", with "observed_at" added
-),
-```
-And update the related `test_facts_upsert.py` to assert
-current-state behavior (one row per identity, regardless of
-`observed_at`).
-
-**Who owns the fix:** the `core` package owner (since `packages/core`
-is the stable contract). Not a V1 ship blocker if production is on
-Postgres; a V1 ship blocker if you run sqlite-staging as a
-mirror of production.
+**Fix applied:** the ORM's `FactORM.__table_args__` now declares
+`UniqueConstraint("tenant_id", "resource_id", "namespace", "key",
+"source", name="uq_fact_current")` — matches migration 0006
+exactly. `test_tenant_id.py::test_facts_with_different_observed_at_allowed`
+was removed (it tested the obsolete append-log behavior); the
+current-state contract is fully covered in `test_facts_upsert.py`.
 
 ## 2. RLS policies (now in place, single-tenant still)
 

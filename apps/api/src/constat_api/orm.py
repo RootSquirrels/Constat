@@ -140,14 +140,17 @@ class ObservationORM(Base):
 class FactORM(Base):
     __tablename__ = "facts"
     __table_args__ = (
+        # Current-state UNIQUE: one row per (tenant, resource, namespace, key, source).
+        # observed_at is the timestamp of the most recent observation (metadata),
+        # NOT part of the key. Matches migration 0006's uq_fact_current.
+        # See docs/development/known-issues.md §1.
         UniqueConstraint(
             "tenant_id",
             "resource_id",
             "namespace",
             "key",
             "source",
-            "observed_at",
-            name="uq_fact_snapshot",
+            name="uq_fact_current",
         ),
         CheckConstraint(
             "resource_id IS NOT NULL OR account_id IS NOT NULL", name="fact_scope_present"
