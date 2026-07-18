@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+import boto3
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -20,3 +22,15 @@ class Settings:
 
 
 settings = Settings()
+
+
+def get_base_aws_session() -> boto3.Session:
+    """Build the base boto3 session used for AssumeRole.
+
+    Local dev: CONSTAT_AWS_PROFILE=<name> reads ~/.aws/credentials.
+    Prod (ECS/Fargate): use the task IAM role via default chain.
+    """
+    profile = os.getenv("CONSTAT_AWS_PROFILE")
+    if profile:
+        return boto3.Session(profile_name=profile)
+    return boto3.Session()
