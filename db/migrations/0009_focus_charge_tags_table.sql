@@ -1,4 +1,4 @@
--- 0009_focus_charge_tags.sql
+-- 0009_focus_charge_tags_table.sql
 -- V2 per-row tag storage. Replaces the V1 'tags JSONB' column's
 -- even-split approximation with a real per-input-row table.
 --

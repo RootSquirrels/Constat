@@ -78,12 +78,18 @@ class Base(DeclarativeBase):
 
 class AccountORM(Base):
     __tablename__ = "accounts"
+    __table_args__ = (
+        # Tenant-scoped external id (audit F-12, migration 0011): two
+        # tenants may reference the same AWS account id (MSP case), so
+        # uniqueness is per (tenant_id, external_id), not global.
+        UniqueConstraint("tenant_id", "external_id", name="uq_accounts_tenant_external"),
+    )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(
         GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
     )
-    external_id: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    external_id: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

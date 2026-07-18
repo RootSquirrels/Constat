@@ -1,22 +1,30 @@
 """Tests for the multi-tenant RLS scaffolding.
 
-Most of these tests run on the in-memory sqlite test engine. On sqlite,
-the Postgres RLS policies don't exist, so the GUC machinery is a no-op
-(the dialect check in `_apply_tenant_guc` short-circuits). These tests
-exercise the *application-side* contract: the tenant id is bound to the
-session, the GUC machinery is wired, and `get_db` installs the V1 default
-tenant for every request.
+Two layers:
 
-A real Postgres-backed RLS verification is documented in
-`test_rls_policies_documented` below — it points to a manual psql test
-that operators should run when the Postgres deployment is wired up.
+1. Unit tests (sqlite, always run): the application-side contract — the
+   tenant id is bound to the session, the GUC machinery is wired, and
+   `get_db` installs the V1 default tenant for every request. On sqlite
+   the Postgres RLS policies don't exist, so the GUC machinery is a no-op.
+
+2. Integration tests (Postgres, `@pytest.mark.postgres`): the real
+   2-tenant scenario against a live database. They apply migrations
+   0001 -> 0011 to a fresh schema, seed two tenants, and verify that
+   cross-tenant SELECT/INSERT is denied on every RLS table. They require
+   `CONSTAT_TEST_DATABASE_URL` (and the `psycopg` driver); without them
+   they skip cleanly. CI runs them in the Postgres job.
 """
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from contextlib import suppress
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
+import pytest
 from constat_api import db as db_module
 from constat_api.settings import DEFAULT_TENANT_ID
 from constat_api.tenant import TENANT_GUC, bind_tenant, current_tenant
@@ -135,47 +143,59 @@ def test_guc_handler_is_noop_on_sqlite(session: Session) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Documentation: how to verify RLS on a real Postgres deployment
+# Unit: accounts external_id is unique per tenant, not globally (audit F-12)
 # ---------------------------------------------------------------------------
 
 
-def test_rls_policies_documented() -> None:
-    """Manual verification steps for the Postgres RLS policies.
+def test_accounts_external_id_unique_is_tenant_scoped_in_orm() -> None:
+    """Pin the ORM side of migration 0011: UNIQUE(tenant_id, external_id),
+    no global unique on external_id (two tenants may share an AWS account id)."""
+    from constat_api.orm import AccountORM
+    from sqlalchemy import UniqueConstraint
 
-    RLS only kicks in on Postgres, which our sqlite test engine doesn't
-    exercise. Operators should run the following on the real deployment
-    (after applying 0007_rls_policies.sql):
+    table = AccountORM.__table__
+    unique_cols = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert ("tenant_id", "external_id") in unique_cols
+    assert ("external_id",) not in unique_cols
+    assert not table.c.external_id.unique
 
-        -- 1. Two tenants
-        INSERT INTO accounts (tenant_id, external_id, name) VALUES
-            ('00000000-0000-0000-0000-000000000001', '111', 'T1'),
-            ('00000000-0000-0000-0000-000000000002', '222', 'T2');
 
-        -- 2. Without a tenant context, both rows are hidden.
-        SELECT count(*) FROM accounts;          -- expect 0
-        SELECT set_config('app.current_tenant_id',
-            '00000000-0000-0000-0000-000000000001', true);
-        SELECT count(*) FROM accounts;          -- expect 1
+def test_accounts_same_external_id_two_tenants_on_sqlite(session: Session) -> None:
+    """sqlite has no RLS; this only exercises the ORM constraint shape."""
+    from constat_api.orm import AccountORM
 
-        -- 3. Switching tenant switches visibility.
-        SELECT set_config('app.current_tenant_id',
-            '00000000-0000-0000-0000-000000000002', true);
-        SELECT count(*) FROM accounts;          -- expect 1
+    session.add(AccountORM(tenant_id=uuid4(), external_id="111111111111", name="t1"))
+    session.add(AccountORM(tenant_id=uuid4(), external_id="111111111111", name="t2"))
+    session.flush()  # must not raise: uniqueness is per (tenant_id, external_id)
 
-        -- 4. Inserting under the wrong tenant fails (WITH CHECK).
-        SELECT set_config('app.current_tenant_id',
-            '00000000-0000-0000-0000-000000000001', true);
-        INSERT INTO accounts (tenant_id, external_id, name)
-            VALUES ('00000000-0000-0000-0000-000000000002', '999', 'x');
-        -- expect: new row violates row-level security policy
 
-    If any of these return unexpected counts or accept the wrong-tenant
-    insert, the policy or the GUC wiring is broken. DO NOT ship.
-    """
-    # The body is documentation. The test exists so the doc lives in
-    # the test suite (visible to whoever runs `pytest -v`) and so the
-    # project doesn't drift from the manual verification recipe.
-    assert True
+# ---------------------------------------------------------------------------
+# Unit: the accounts repository scopes lookups to the session tenant
+# ---------------------------------------------------------------------------
+
+
+def test_get_or_create_scopes_to_bound_tenant(session: Session) -> None:
+    """Two tenants sharing an external_id get two distinct accounts."""
+    from constat_api.repositories import accounts as accounts_repo
+
+    tenant_a, tenant_b = uuid4(), uuid4()
+
+    bind_tenant(session, tenant_a)
+    acc_a = accounts_repo.get_or_create(session, "111111111111")
+    assert acc_a.tenant_id == tenant_a
+
+    bind_tenant(session, tenant_b)
+    acc_b = accounts_repo.get_or_create(session, "111111111111")
+    assert acc_b.tenant_id == tenant_b
+    assert acc_b.id != acc_a.id
+
+    # Same tenant + same external_id returns the existing row.
+    again = accounts_repo.get_or_create(session, "111111111111")
+    assert again.id == acc_b.id
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +213,318 @@ def test_test_client_seeds_tenant_id_on_session(client: TestClient, session: Ses
     # the app relies on).
     bind_tenant(session, DEFAULT_TENANT_ID)
     assert current_tenant(session) == DEFAULT_TENANT_ID
+
+
+# ---------------------------------------------------------------------------
+# Integration: real 2-tenant RLS verification against Postgres
+# ---------------------------------------------------------------------------
+#
+# These tests need a live Postgres (CI provides one via a service
+# container). They skip when CONSTAT_TEST_DATABASE_URL is unset, and also
+# when the psycopg driver is not installed (CI installs it via
+# `uv run --with "psycopg[binary]"`).
+#
+# The scenario is the one the old placeholder test only documented:
+#   - apply migrations 0001 -> 0011 to a fresh schema
+#   - seed one row per RLS table under tenant A
+#   - no GUC set           -> zero rows visible on every table
+#   - GUC = tenant B       -> zero rows visible on every table
+#   - GUC = tenant B, INSERT a row stamped tenant A -> RLS violation
+#   - GUC = tenant A       -> the seeded row is visible
+
+DATABASE_URL = os.environ.get("CONSTAT_TEST_DATABASE_URL")
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
+
+TENANT_A = "00000000-0000-0000-0000-00000000000a"
+TENANT_B = "00000000-0000-0000-0000-00000000000b"
+
+# Every table that must carry a tenant isolation policy after 0001 -> 0011
+# (0007: 9 tables, 0011: the 4 tables of audit F-04).
+RLS_TABLES = [
+    "accounts",
+    "resources",
+    "observations",
+    "facts",
+    "focus_charges",
+    "insights",
+    "inconclusive",
+    "source_runs",
+    "insight_runs",
+    "focus_charge_tags",
+    "audit_events",
+    "retention_policies",
+    "pii_classifications",
+]
+
+# Minimal wrong-tenant INSERT per table (tenant_id = TENANT_A while the
+# session tenant is TENANT_B). RLS WITH CHECK fires before FK triggers,
+# so dangling FK values here are never checked.
+WRONG_TENANT_INSERTS: dict[str, tuple[str, tuple[Any, ...]]] = {
+    "accounts": (
+        "INSERT INTO accounts (tenant_id, external_id, name) VALUES (%s, %s, %s)",
+        (TENANT_A, "999999999999", "intruder"),
+    ),
+    "resources": (
+        "INSERT INTO resources (tenant_id, account_id, region, resource_type, native_id)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (TENANT_A, str(uuid4()), "eu-west-1", "AWS::RDS::DBInstance", "arn:x"),
+    ),
+    "observations": (
+        "INSERT INTO observations (tenant_id, resource_id, source, observed_at, payload)"
+        " VALUES (%s, %s, %s, NOW(), '{}'::jsonb)",
+        (TENANT_A, str(uuid4()), "aws_rds"),
+    ),
+    "facts": (
+        "INSERT INTO facts (tenant_id, account_id, namespace, key, value_state, source,"
+        " observed_at) VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+        (TENANT_A, str(uuid4()), "aws", "rds.engine", "KNOWN", "aws_rds"),
+    ),
+    "focus_charges": (
+        "INSERT INTO focus_charges (tenant_id, account_id, period_start, period_end, service)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (TENANT_A, str(uuid4()), "2026-06-01", "2026-06-30", "AmazonRDS"),
+    ),
+    "insights": (
+        "INSERT INTO insights (tenant_id, account_id, rule_name, severity, title, payload)"
+        " VALUES (%s, %s, %s, %s, %s, '{}'::jsonb)",
+        (TENANT_A, str(uuid4()), "rds_eol", "warning", "intruder"),
+    ),
+    "inconclusive": (
+        "INSERT INTO inconclusive (tenant_id, account_id, rule_name, missing_facts)"
+        " VALUES (%s, %s, %s, '[]'::jsonb)",
+        (TENANT_A, str(uuid4()), "rds_eol"),
+    ),
+    "source_runs": (
+        "INSERT INTO source_runs (tenant_id, account_id, region, resource_type, source, status)"
+        " VALUES (%s, %s, %s, %s, %s, %s)",
+        (TENANT_A, str(uuid4()), "eu-west-1", "AWS::RDS::DBInstance", "aws_rds", "success"),
+    ),
+    "insight_runs": (
+        "INSERT INTO insight_runs (tenant_id, rule_name, status) VALUES (%s, %s, %s)",
+        (TENANT_A, "rds_eol", "success"),
+    ),
+    "focus_charge_tags": (
+        "INSERT INTO focus_charge_tags (tenant_id, focus_charge_id, key, value)"
+        " VALUES (%s, %s, %s, %s)",
+        (TENANT_A, 999999999, "Application", "intruder"),
+    ),
+    "audit_events": (
+        "INSERT INTO audit_events (tenant_id, actor, action) VALUES (%s, %s, %s)",
+        (TENANT_A, "system:test", "intruder"),
+    ),
+    "retention_policies": (
+        "INSERT INTO retention_policies (tenant_id, table_name, retention_days)"
+        " VALUES (%s, %s, %s)",
+        (TENANT_A, "facts", 90),
+    ),
+    "pii_classifications": (
+        "INSERT INTO pii_classifications (tenant_id, resource_type, resource_id, field_name,"
+        " sensitivity, value_hash) VALUES (%s, %s, %s, %s, %s, %s)",
+        (TENANT_A, "account", "999999999999", "aws_account_id", "confidential", "0" * 64),
+    ),
+}
+
+requires_postgres = pytest.mark.skipif(
+    not DATABASE_URL,
+    reason="CONSTAT_TEST_DATABASE_URL unset — Postgres RLS tests need a live database",
+)
+
+
+def _psycopg() -> Any:
+    """Import psycopg lazily so the sqlite unit tests never require it."""
+    return pytest.importorskip("psycopg", reason="psycopg driver not installed")
+
+
+def _connect(dsn: str) -> Any:
+    return _psycopg().connect(dsn, autocommit=True)
+
+
+def _set_tenant(conn: Any, tenant_id: str) -> None:
+    # is_local=false: session-scoped GUC, survives across statements.
+    conn.execute("SELECT set_config('app.current_tenant_id', %s, false)", (tenant_id,))
+
+
+def _count(conn: Any, table: str) -> int:
+    # table names come from the RLS_TABLES constant, never from user input.
+    return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+
+
+@pytest.fixture(scope="module")
+def pg_migrated() -> Iterator[str]:
+    """Fresh schema with migrations 0001 -> latest applied; yields the DSN."""
+    if not DATABASE_URL:
+        pytest.skip("CONSTAT_TEST_DATABASE_URL unset — Postgres RLS tests need a live database")
+    psycopg = _psycopg()
+    migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    assert migrations, f"no migrations found in {MIGRATIONS_DIR}"
+    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+        conn.execute("DROP SCHEMA public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        for path in migrations:
+            # ClientCursor uses the simple query protocol, which is the
+            # only way to execute a whole multi-statement migration file.
+            with conn.cursor(factory=psycopg.ClientCursor) as cur:
+                cur.execute(path.read_text(encoding="utf-8"))
+    yield DATABASE_URL
+
+
+@pytest.fixture(scope="module")
+def pg_seeded(pg_migrated: str) -> Iterator[str]:
+    """Seed one row per RLS table under tenant A (plus tenant B's account)."""
+    with _connect(pg_migrated) as conn:
+        _set_tenant(conn, TENANT_A)
+        account_a = conn.execute(
+            "INSERT INTO accounts (tenant_id, external_id, name) VALUES (%s, %s, %s) RETURNING id",
+            (TENANT_A, "111111111111", "tenant-a"),
+        ).fetchone()[0]
+        resource_a = conn.execute(
+            "INSERT INTO resources (tenant_id, account_id, region, resource_type, native_id)"
+            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (TENANT_A, account_a, "eu-west-1", "AWS::RDS::DBInstance", "arn:aws:rds:::db:a"),
+        ).fetchone()[0]
+        charge_a = conn.execute(
+            "INSERT INTO focus_charges (tenant_id, account_id, period_start, period_end, service)"
+            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (TENANT_A, account_a, "2026-06-01", "2026-06-30", "AmazonRDS"),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO observations (tenant_id, resource_id, source, observed_at, payload)"
+            " VALUES (%s, %s, %s, NOW(), '{}'::jsonb)",
+            (TENANT_A, resource_a, "aws_rds"),
+        )
+        conn.execute(
+            "INSERT INTO facts (tenant_id, resource_id, namespace, key, value_state, source,"
+            " observed_at) VALUES (%s, %s, %s, %s, %s, %s, NOW())",
+            (TENANT_A, resource_a, "aws", "rds.engine", "KNOWN", "aws_rds"),
+        )
+        conn.execute(
+            "INSERT INTO insights (tenant_id, account_id, rule_name, severity, title, payload)"
+            " VALUES (%s, %s, %s, %s, %s, '{}'::jsonb)",
+            (TENANT_A, account_a, "rds_eol", "warning", "seeded"),
+        )
+        conn.execute(
+            "INSERT INTO inconclusive (tenant_id, account_id, rule_name, missing_facts)"
+            " VALUES (%s, %s, %s, '[]'::jsonb)",
+            (TENANT_A, account_a, "rds_eol"),
+        )
+        conn.execute(
+            "INSERT INTO source_runs (tenant_id, account_id, region, resource_type, source,"
+            " status) VALUES (%s, %s, %s, %s, %s, %s)",
+            (TENANT_A, account_a, "eu-west-1", "AWS::RDS::DBInstance", "aws_rds", "success"),
+        )
+        conn.execute(
+            "INSERT INTO insight_runs (tenant_id, rule_name, status) VALUES (%s, %s, %s)",
+            (TENANT_A, "rds_eol", "success"),
+        )
+        conn.execute(
+            "INSERT INTO focus_charge_tags (tenant_id, focus_charge_id, key, value)"
+            " VALUES (%s, %s, %s, %s)",
+            (TENANT_A, charge_a, "Application", "web"),
+        )
+        conn.execute(
+            "INSERT INTO audit_events (tenant_id, actor, action) VALUES (%s, %s, %s)",
+            (TENANT_A, "system:test", "scan"),
+        )
+        conn.execute(
+            "INSERT INTO retention_policies (tenant_id, table_name, retention_days)"
+            " VALUES (%s, %s, %s)",
+            (TENANT_A, "facts", 90),
+        )
+        conn.execute(
+            "INSERT INTO pii_classifications (tenant_id, resource_type, resource_id, field_name,"
+            " sensitivity, value_hash) VALUES (%s, %s, %s, %s, %s, %s)",
+            (TENANT_A, "account", "111111111111", "aws_account_id", "confidential", "a" * 64),
+        )
+    yield pg_migrated
+
+
+@requires_postgres
+@pytest.mark.postgres
+class TestPostgresRLS:
+    """The real 2-tenant RLS scenario. Runs only with a live Postgres."""
+
+    def test_every_rls_table_has_a_policy(self, pg_seeded: str) -> None:
+        """Drift guard (audit F-04): any new tenant-scoped table without a
+        policy fails here. Also verifies FORCE RLS is on (otherwise the
+        table owner — our app role — would bypass the policies)."""
+        with _connect(pg_seeded) as conn:
+            policies = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT tablename FROM pg_policies WHERE schemaname = 'public'"
+                ).fetchall()
+            }
+            forced = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT relname FROM pg_class"
+                    " WHERE relnamespace = 'public'::regnamespace"
+                    " AND relkind = 'r' AND relforcerowsecurity"
+                ).fetchall()
+            }
+        assert policies == set(RLS_TABLES)
+        assert forced == set(RLS_TABLES)
+
+    def test_no_tenant_context_sees_nothing(self, pg_seeded: str) -> None:
+        """Safe default: a session that never set the GUC sees zero rows
+        (current_setting(..., true) is NULL, so the policy hides everything)."""
+        with _connect(pg_seeded) as conn:
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 0, f"{table}: rows visible without tenant context"
+
+    def test_cross_tenant_select_returns_nothing(self, pg_seeded: str) -> None:
+        with _connect(pg_seeded) as conn:
+            _set_tenant(conn, TENANT_B)
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 0, f"{table}: tenant B sees tenant A rows"
+
+    def test_own_tenant_select_sees_seeded_rows(self, pg_seeded: str) -> None:
+        with _connect(pg_seeded) as conn:
+            _set_tenant(conn, TENANT_A)
+            for table in RLS_TABLES:
+                assert _count(conn, table) == 1, f"{table}: tenant A can't see its own row"
+
+    @pytest.mark.parametrize("table", RLS_TABLES)
+    def test_cross_tenant_insert_rejected(self, pg_seeded: str, table: str) -> None:
+        """WITH CHECK: a session for tenant B cannot insert a row stamped
+        with tenant A's id, even if it knows the id."""
+        sql, params = WRONG_TENANT_INSERTS[table]
+        with _connect(pg_seeded) as conn:
+            _set_tenant(conn, TENANT_B)
+            with pytest.raises(Exception, match="row-level security"):
+                conn.execute(sql, params)
+
+    def test_same_external_id_allowed_for_two_tenants(self, pg_seeded: str) -> None:
+        """Audit F-12: UNIQUE(tenant_id, external_id), not global — the MSP
+        case where two tenants monitor the same AWS account."""
+        with _connect(pg_seeded) as conn:
+            _set_tenant(conn, TENANT_A)
+            conn.execute(
+                "INSERT INTO accounts (tenant_id, external_id, name) VALUES (%s, %s, %s)",
+                (TENANT_A, "333333333333", "shared-a"),
+            )
+            _set_tenant(conn, TENANT_B)
+            conn.execute(
+                "INSERT INTO accounts (tenant_id, external_id, name) VALUES (%s, %s, %s)",
+                (TENANT_B, "333333333333", "shared-b"),
+            )
+            # Each tenant sees exactly its own copy.
+            assert _count_where_external(conn, "333333333333") == 1
+            _set_tenant(conn, TENANT_A)
+            assert _count_where_external(conn, "333333333333") == 1
+
+    def test_same_tenant_duplicate_external_id_rejected(self, pg_seeded: str) -> None:
+        """The composite unique constraint still holds within a tenant."""
+        with _connect(pg_seeded) as conn:
+            _set_tenant(conn, TENANT_A)
+            with pytest.raises(Exception, match="uq_accounts_tenant_external"):
+                conn.execute(
+                    "INSERT INTO accounts (tenant_id, external_id, name) VALUES (%s, %s, %s)",
+                    (TENANT_A, "111111111111", "duplicate"),
+                )
+
+
+def _count_where_external(conn: Any, external_id: str) -> int:
+    return conn.execute(
+        "SELECT count(*) FROM accounts WHERE external_id = %s", (external_id,)
+    ).fetchone()[0]

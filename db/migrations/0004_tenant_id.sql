@@ -19,6 +19,10 @@ BEGIN
     ALTER TABLE inconclusive ADD COLUMN tenant_id UUID;
     ALTER TABLE observations ADD COLUMN tenant_id UUID;
     ALTER TABLE focus_charges ADD COLUMN tenant_id UUID;
+    -- insight_runs was missed here originally; 0007's RLS policy on it
+    -- references tenant_id, so the fresh-database chain (0001 -> 0007)
+    -- failed at policy creation. Adding it where it belongs.
+    ALTER TABLE insight_runs ADD COLUMN tenant_id UUID;
 
     -- Backfill with default tenant
     UPDATE accounts SET tenant_id = default_tenant WHERE tenant_id IS NULL;
@@ -28,6 +32,7 @@ BEGIN
     UPDATE inconclusive SET tenant_id = default_tenant WHERE tenant_id IS NULL;
     UPDATE observations SET tenant_id = default_tenant WHERE tenant_id IS NULL;
     UPDATE focus_charges SET tenant_id = default_tenant WHERE tenant_id IS NULL;
+    UPDATE insight_runs SET tenant_id = default_tenant WHERE tenant_id IS NULL;
 
     -- Make NOT NULL
     ALTER TABLE accounts ALTER COLUMN tenant_id SET NOT NULL;
@@ -37,6 +42,7 @@ BEGIN
     ALTER TABLE inconclusive ALTER COLUMN tenant_id SET NOT NULL;
     ALTER TABLE observations ALTER COLUMN tenant_id SET NOT NULL;
     ALTER TABLE focus_charges ALTER COLUMN tenant_id SET NOT NULL;
+    ALTER TABLE insight_runs ALTER COLUMN tenant_id SET NOT NULL;
 END $$;
 
 -- Tenant indexes (fast lookups for V2 multi-tenant queries)
@@ -47,6 +53,7 @@ CREATE INDEX idx_insights_tenant ON insights(tenant_id);
 CREATE INDEX idx_inconclusive_tenant ON inconclusive(tenant_id);
 CREATE INDEX idx_observations_tenant ON observations(tenant_id);
 CREATE INDEX idx_focus_charges_tenant ON focus_charges(tenant_id);
+CREATE INDEX idx_insight_runs_tenant ON insight_runs(tenant_id);
 
 -- UNIQUE on facts: prevents duplicate snapshots of the same fact at the
 -- same observation time. Allows multiple scans to coexist (different

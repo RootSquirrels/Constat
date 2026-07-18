@@ -6,12 +6,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import AccountORM
+from constat_api.tenant import current_tenant
 
 
 def get_by_external_id(session: Session, external_id: str) -> AccountORM | None:
-    return session.execute(
-        select(AccountORM).where(AccountORM.external_id == external_id)
-    ).scalar_one_or_none()
+    """Find an account by external_id, scoped to the session's tenant.
+
+    external_id is unique per (tenant_id, external_id) only (migration
+    0011, audit F-12), so an unscoped lookup could match another tenant's
+    account. When the session has no tenant bound (shouldn't happen in
+    the API; possible in tests), fall back to the unscoped lookup.
+    """
+    stmt = select(AccountORM).where(AccountORM.external_id == external_id)
+    tenant_id = current_tenant(session)
+    if tenant_id is not None:
+        stmt = stmt.where(AccountORM.tenant_id == tenant_id)
+    return session.execute(stmt).scalar_one_or_none()
 
 
 def get_or_create(session: Session, external_id: str, name: str | None = None) -> AccountORM:
@@ -20,6 +30,12 @@ def get_or_create(session: Session, external_id: str, name: str | None = None) -
     if acc is not None:
         return acc
     acc = AccountORM(external_id=external_id, name=name or f"account-{external_id}")
+    # New rows belong to the session's tenant when one is bound (the ORM
+    # default is the V1 default tenant, which would fail RLS WITH CHECK
+    # under any other tenant).
+    tenant_id = current_tenant(session)
+    if tenant_id is not None:
+        acc.tenant_id = tenant_id
     session.add(acc)
     session.flush()
     return acc
