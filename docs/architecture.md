@@ -131,13 +131,16 @@ business question, not a technical one.
 
 ## Multi-tenant
 
-V1 is single-tenant. Every row has a `tenant_id` column already (since
-migration 0004), with the default tenant
-`00000000-0000-0000-0000-000000000001`. RLS policies are being added in
-a follow-up (see [`development/known-issues.md`](./development/known-issues.md)).
-
-We add `tenant_id` **now** (cheap) and pay for policies **later**
-(1 ALTER vs 7). The column is in every PK-relevant index.
+V1 is single-tenant. Every row has a `tenant_id` column (migration
+0004), with the default tenant
+`00000000-0000-0000-0000-000000000001`. RLS policies and the
+per-session GUC binding are in place since commit `dc1bb7e
+feat(api+db): multi-tenant RLS scaffolding` (migration 0007 +
+`apps/api/src/constat_api/tenant.py`). V1 still uses the default
+tenant for every connection; V2 will source the tenant from a
+request header / service-account context. See
+[`development/known-issues.md`](./development/known-issues.md) for
+the BYPASSRLS follow-up that must be resolved before V2.
 
 ## Acceptance criteria (V1)
 
@@ -215,8 +218,10 @@ justification in the PR description.
 - **Step Functions / SQS / Fargate workers.** V1 is a single
   synchronous API. We add a queue when a second connector needs a
   different cadence.
-- **Multi-tenant RLS policies.** The `tenant_id` column is in; policies
-  are coming in a dedicated migration.
+- **Multi-tenant RLS follow-up (BYPASSRLS discipline + per-request
+  tenant context).** Policies and GUC binding are in (commit
+  `dc1bb7e`); the API role is still the migration owner. Promote
+  to a non-owner, non-superuser, no-BYPASSRLS role before V2.
 - **Full `FactDefinitionRegistry` ceremony.** V1 uses a `namespace.key`
   string + `CHECK` constraint. The registry is V2.
 - **Azure, ServiceNow, Prisma, EDR connectors.** V2+.
