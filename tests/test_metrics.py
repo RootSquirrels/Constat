@@ -13,14 +13,9 @@ and histograms here. These tests pin:
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from constat_api.metrics import (
     INCONCLUSIVE_TOTAL,
     INSIGHTS_EMITTED,
-    INSIGHTS_RUN_DURATION,
-    SOURCE_RUN_DURATION,
     record_focus_rows,
     record_http_request,
     record_inconclusive,
@@ -29,7 +24,8 @@ from constat_api.metrics import (
     record_source_run,
     render_metrics,
 )
-
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 # Use unique label values per test to avoid cross-test contamination.
 # The metrics module shares one CollectorRegistry; if we used the same
@@ -148,10 +144,9 @@ def test_excluded_paths_are_not_recorded() -> None:
 @pytest.fixture
 def metrics_client() -> TestClient:
     """A FastAPI app with the HTTP middleware + /metrics endpoint."""
-    from fastapi import Response
-
-    from constat_api.middleware import HTTPMetricsMiddleware
     from constat_api.metrics import render_metrics
+    from constat_api.middleware import HTTPMetricsMiddleware
+    from fastapi import Response
 
     app = FastAPI()
     app.add_middleware(HTTPMetricsMiddleware)
@@ -193,37 +188,14 @@ def test_http_middleware_records_probe_requests(metrics_client: TestClient) -> N
 
 def test_http_middleware_skips_metrics_endpoint(metrics_client: TestClient) -> None:
     """Hitting /metrics must not itself increment the counter (no feedback)."""
-    before_text = metrics_client.get("/metrics").text
-    # Extract a counter for the GET /metrics line, if it exists. (It
-    # shouldn't, but be defensive: the counter may not be exported
-    # until something labels it.)
-    before_count = 0.0
-    for line in before_text.splitlines():
-        if line.startswith("constat_http_requests_total{"):
-            try:
-                before_count += float(line.split()[-1])
-            except (ValueError, IndexError):
-                pass
-
     # Hit /metrics 5 times.
     for _ in range(5):
         metrics_client.get("/metrics")
 
     after_text = metrics_client.get("/metrics").text
-    after_count = 0.0
-    for line in after_text.splitlines():
-        if line.startswith("constat_http_requests_total{"):
-            try:
-                after_count += float(line.split()[-1])
-            except (ValueError, IndexError):
-                pass
 
-    # The /metrics self-calls are NOT recorded (would be 5).
-    # We allow other tests in the same session to add to the count,
-    # so we only assert: the growth due to /metrics itself is zero.
-    # In an isolated run, the absolute count is the number of /probe
-    # calls from prior tests in this file. We don't compare absolute
-    # values; we check the path label.
+    # The /metrics path is in the exclusion list — its calls don't
+    # produce a `path="/metrics"` series. We assert absence.
     assert 'path="/metrics"' not in after_text
 
 
