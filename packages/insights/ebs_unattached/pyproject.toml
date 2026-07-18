@@ -1,0 +1,15 @@
+[project]
+name = "constat-ebs-unattached"
+version = "0.0.0"
+description = "Insight: EBS unattached volumes (storage cost with no consumer)"
+requires-python = ">=3.13"
+dependencies = [
+    "constat-core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/constat_ebs_unattached"]

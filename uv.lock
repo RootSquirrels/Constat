@@ -16,6 +16,7 @@ members = [
     "constat-chargeback",
     "constat-core",
     "constat-ebs-gp2-to-gp3",
+    "constat-ebs-unattached",
     "constat-focus",
     "constat-mysql-eol",
     "constat-rds-eol",
@@ -314,6 +315,17 @@ requires-dist = [
 name = "constat-ebs-gp2-to-gp3"
 version = "0.0.0"
 source = { editable = "packages/insights/ebs_gp2_to_gp3" }
+dependencies = [
+    { name = "constat-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "constat-core", editable = "packages/core" }]
+
+[[package]]
+name = "constat-ebs-unattached"
+version = "0.0.0"
+source = { editable = "packages/insights/ebs_unattached" }
 dependencies = [
     { name = "constat-core" },
 ]

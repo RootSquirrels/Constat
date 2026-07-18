@@ -40,6 +40,7 @@ from constat_chargeback.resolver import (
 )
 from constat_core.models import Fact, Inconclusive, Insight
 from constat_ebs_gp2_to_gp3.resolver import evaluate as ebs_gp2_to_gp3_evaluate
+from constat_ebs_unattached.resolver import evaluate as ebs_unattached_evaluate
 from constat_focus.loader import FocusCharge
 from constat_mysql_eol.resolver import evaluate as mysql_eol_evaluate
 from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
@@ -95,6 +96,7 @@ RESOURCE_RULES: dict[str, ResourceEvaluateFn] = {
     "mysql_eol": mysql_eol_evaluate,
     "aurora_eol": aurora_eol_evaluate,
     "ebs_gp2_to_gp3": ebs_gp2_to_gp3_evaluate,
+    "ebs_unattached": ebs_unattached_evaluate,
 }
 
 
@@ -111,6 +113,7 @@ RULE_SOURCES: dict[str, str] = {
     "mysql_eol": "aws_rds",
     "aurora_eol": "aws_rds",
     "ebs_gp2_to_gp3": "aws_ec2",
+    "ebs_unattached": "aws_ec2",
 }
 
 
@@ -479,6 +482,16 @@ def run_ebs_gp2_to_gp3(
     return run_resource_rule(session, "ebs_gp2_to_gp3", today=today, scope_max_age=scope_max_age)
 
 
+def run_ebs_unattached(
+    session: Session,
+    *,
+    today: date | None = None,
+    scope_max_age: timedelta | None = DEFAULT_SCOPE_MAX_AGE,
+) -> RunResult:
+    """Thin wrapper: run the ebs_unattached rule via the generic runner."""
+    return run_resource_rule(session, "ebs_unattached", today=today, scope_max_age=scope_max_age)
+
+
 def run_chargeback(
     session: Session,
     *,
@@ -610,6 +623,7 @@ RUNNERS: dict[str, RunnerFn] = {
     "mysql_eol": run_mysql_eol,
     "aurora_eol": run_aurora_eol,
     "ebs_gp2_to_gp3": run_ebs_gp2_to_gp3,
+    "ebs_unattached": run_ebs_unattached,
     "chargeback": run_chargeback,
 }
 
