@@ -7,6 +7,7 @@ import io
 from uuid import UUID
 
 from constat_core.models import Insight, Severity
+from constat_core.monetary import monthly_cost_and_basis
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -64,16 +65,13 @@ def list_insights_endpoint(
 def _monthly_cost_and_basis(insight: Insight) -> tuple[float | None, str]:
     """Extract the monthly cost (USD) and its value basis from the payload.
 
-    Costs live in rule-specific payload keys (the Insight contract has no
-    cost field). Chargeback drift comes from FOCUS billing rows → ACTUAL.
-    Rule estimates from catalog pricing (e.g. rds_eol) → ESTIMATED until a
-    FOCUS line confirms them (see docs/roadmap-scoreboard-features.md).
+    Delegates to the registry in constat_core.monetary — the single
+    source of truth for which payload key carries a rule's amount
+    (ADR-13). The previous hardcoded two-branch version silently
+    dropped ebs_gp2_to_gp3 savings from the CSV export.
     """
-    if insight.rule_name == "chargeback":
-        drift = insight.payload.get("drift_amortized_minus_billed_usd")
-        return (float(drift) if isinstance(drift, int | float) else None), "ACTUAL"
-    estimate = insight.payload.get("extended_support_monthly_usd")
-    return (float(estimate) if isinstance(estimate, int | float) else None), "ESTIMATED"
+    cost, basis = monthly_cost_and_basis(insight.rule_name, insight.payload)
+    return cost, basis or ""
 
 
 @router.get("/export.csv")
@@ -208,7 +206,5 @@ def patch_insight_endpoint(
         ack_by=body.ack_by,
     )
     if updated is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="insight not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="insight not found")
     return updated

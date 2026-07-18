@@ -193,22 +193,65 @@ export const api = {
 };
 
 export type ValueBasis = "ESTIMATED" | "ACTUAL";
+export type MonetaryKind = "AVOIDABLE_SAVING" | "ACCOUNTING_DELTA";
 
-// Monthly cost + value basis, read from the rule-specific payload keys
-// (the Insight contract has no cost field). Chargeback drift comes from
-// FOCUS billing rows → ACTUAL; catalog-priced rules → ESTIMATED until a
-// FOCUS line confirms them. Mirrors /insights/export.csv on the API.
+// TS mirror of packages/core/src/constat_core/monetary.py — the single
+// source of truth for monetary semantics (ADR-13). Do NOT edit this
+// table without editing the Python registry: the pin test in
+// tests/test_monetary_extraction.py fails CI when the two drift.
+//
+// kind matters for totals: an ACCOUNTING_DELTA (chargeback drift) is
+// real money but NOT a saving the customer unlocks by acting — it must
+// never be summed into a "savings" figure (client-committee finding).
+const RULE_MONETARY: Record<
+  string,
+  { payloadKey: string; valueBasis: ValueBasis; kind: MonetaryKind }
+> = {
+  rds_eol: {
+    payloadKey: "extended_support_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  mysql_eol: {
+    payloadKey: "extended_support_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  aurora_eol: {
+    payloadKey: "extended_support_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  ebs_gp2_to_gp3: {
+    payloadKey: "savings_monthly_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  ebs_unattached: {
+    payloadKey: "monthly_waste_usd",
+    valueBasis: "ESTIMATED",
+    kind: "AVOIDABLE_SAVING",
+  },
+  chargeback: {
+    payloadKey: "drift_amortized_minus_billed_usd",
+    valueBasis: "ACTUAL",
+    kind: "ACCOUNTING_DELTA",
+  },
+};
+
 export function insightMonthlyCostUsd(insight: Insight): number | null {
-  const payload = insight.payload as Record<string, unknown>;
-  const raw =
-    insight.rule_name === "chargeback"
-      ? payload.drift_amortized_minus_billed_usd
-      : payload.extended_support_monthly_usd;
+  const entry = RULE_MONETARY[insight.rule_name];
+  if (!entry) return null;
+  const raw = (insight.payload as Record<string, unknown>)[entry.payloadKey];
   return typeof raw === "number" ? raw : null;
 }
 
-export function insightValueBasis(insight: Insight): ValueBasis {
-  return insight.rule_name === "chargeback" ? "ACTUAL" : "ESTIMATED";
+export function insightValueBasis(insight: Insight): ValueBasis | "" {
+  return RULE_MONETARY[insight.rule_name]?.valueBasis ?? "";
+}
+
+export function insightMonetaryKind(insight: Insight): MonetaryKind | null {
+  return RULE_MONETARY[insight.rule_name]?.kind ?? null;
 }
 
 // Direct browser URL for the CSV export (no fetch — the browser downloads it).

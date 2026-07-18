@@ -78,17 +78,13 @@ def test_patch_accepts_all_valid_statuses(
 
 def test_patch_rejects_invalid_status(client: TestClient, session: Session) -> None:
     insight = _make_insight(session)
-    response = client.patch(
-        f"/insights/{insight.id}", json={"ack_status": "nonsense"}
-    )
+    response = client.patch(f"/insights/{insight.id}", json={"ack_status": "nonsense"})
     assert response.status_code == 400
     assert "invalid ack_status" in response.json()["detail"]
 
 
 def test_patch_returns_404_for_unknown_id(client: TestClient) -> None:
-    response = client.patch(
-        f"/insights/{uuid4()}", json={"ack_status": "acknowledged"}
-    )
+    response = client.patch(f"/insights/{uuid4()}", json={"ack_status": "acknowledged"})
     assert response.status_code == 404
 
 
@@ -112,9 +108,7 @@ def test_patch_server_sets_ack_at(client: TestClient, session: Session) -> None:
 def test_patch_ack_by_optional(client: TestClient, session: Session) -> None:
     """ack_by is optional. ack_status is required."""
     insight = _make_insight(session)
-    response = client.patch(
-        f"/insights/{insight.id}", json={"ack_status": "dismissed"}
-    )
+    response = client.patch(f"/insights/{insight.id}", json={"ack_status": "dismissed"})
     assert response.status_code == 200
     body = response.json()
     assert body["ack_status"] == "dismissed"
@@ -130,9 +124,7 @@ def test_patch_required_field_missing(client: TestClient, session: Session) -> N
 def test_patch_last_write_wins(client: TestClient, session: Session) -> None:
     """A second PATCH overwrites the first. No audit history in V1."""
     insight = _make_insight(session)
-    client.patch(
-        f"/insights/{insight.id}", json={"ack_status": "acknowledged", "ack_by": "alice"}
-    )
+    client.patch(f"/insights/{insight.id}", json={"ack_status": "acknowledged", "ack_by": "alice"})
     response = client.patch(
         f"/insights/{insight.id}", json={"ack_status": "resolved", "ack_by": "bob"}
     )

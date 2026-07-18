@@ -1,6 +1,7 @@
 import {
   api,
   ApiError,
+  insightMonetaryKind,
   insightMonthlyCostUsd,
   insightValueBasis,
   type Account,
@@ -76,8 +77,14 @@ export default async function RestitutionPage() {
   const generatedAt = new Date();
   const reasonCounts = countByReason(inconclusive);
   const chargebackByAccount = groupByAccount(chargeback);
+  // Only AVOIDABLE_SAVING amounts enter the headline total. Chargeback
+  // drift is an ACCOUNTING_DELTA — real money, but not money the customer
+  // saves by acting; mixing the two was the committee's DAF objection.
   const totalMonthly = insights.reduce(
-    (acc, i) => acc + (insightMonthlyCostUsd(i) ?? 0),
+    (acc, i) =>
+      insightMonetaryKind(i) === "AVOIDABLE_SAVING"
+        ? acc + (insightMonthlyCostUsd(i) ?? 0)
+        : acc,
     0,
   );
   const lastRun = status?.last_source_run ?? null;
@@ -178,7 +185,7 @@ export default async function RestitutionPage() {
               }}
             >
               <td style={{ padding: "0.5rem 0.75rem" }} colSpan={2}>
-                Total (known costs)
+                Total — avoidable savings (estimates; accounting deltas excluded)
               </td>
               <td style={{ padding: "0.5rem 0.75rem", textAlign: "right" }}>
                 {fmtUsd(totalMonthly)}

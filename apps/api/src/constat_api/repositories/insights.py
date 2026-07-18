@@ -117,9 +117,7 @@ def count_insights(session: Session, *, rule_name: str | None = None) -> int:
 # Acknowledged ack_status values. Defined once so the router and
 # tests share the truth source. Pydantic-side validation is in the
 # PATCH body model; this list is the canonical set.
-ACK_STATUSES: frozenset[str] = frozenset(
-    {"acknowledged", "in_progress", "resolved", "dismissed"}
-)
+ACK_STATUSES: frozenset[str] = frozenset({"acknowledged", "in_progress", "resolved", "dismissed"})
 
 
 def update_ack(

@@ -109,6 +109,14 @@ def evaluate(
     except (ValueError, IndexError):
         return InsightResult(insights=[], inconclusive_reasons=["aws.rds.engine_version.malformed"])
 
+    # Parse the vCPU count. Gate 3 guarantees the fact is KNOWN, but the
+    # value can still be malformed (a fact is JSON, not a schema). Without
+    # it we cannot price the finding — INCONCLUSIVE, never a silent skip.
+    try:
+        vcpu_count = int(vcpu.value)  # type: ignore[union-attr, arg-type]
+    except (TypeError, ValueError):
+        return InsightResult(insights=[], inconclusive_reasons=["aws.rds.vcpu.malformed"])
+
     eol_info = postgres_eol_info(major)
     if eol_info is None:
         # LTS (16+) or unknown version. No alert.
@@ -128,6 +136,7 @@ def evaluate(
                     version_value=version.value,  # type: ignore[arg-type]
                     eol_info=eol_info,
                     current=current,
+                    vcpu_count=vcpu_count,
                     days_to_event=days_to_force,
                     severity=Severity.CRITICAL,
                     title=f"RDS PostgreSQL {major} will be force-upgraded in {days_to_force} days",
@@ -166,6 +175,7 @@ def evaluate(
                 version_value=version.value,  # type: ignore[arg-type]
                 eol_info=eol_info,
                 current=current,
+                vcpu_count=vcpu_count,
                 days_to_event=days_to_eol,
                 severity=severity,
                 title=title,
@@ -183,6 +193,7 @@ def _make_insight(
     version_value: str,
     eol_info: PostgresEOLInfo,
     current: date,
+    vcpu_count: int,
     days_to_event: int,
     severity: Severity,
     title: str,
@@ -190,6 +201,12 @@ def _make_insight(
 ) -> Insight:
     tier = extended_support_tier(eol_info.eol_date, current)
     rate = price_per_vcpu_hour(eol_info, current)
+    # The number the whole product exists to produce. Regression note:
+    # the tiering refactor dropped this multiplication (vcpu was gated
+    # but never consumed) and no test caught it — the committee did.
+    # It is now covered by tests/test_monetary_extraction.py, which
+    # ties "rule emits money" to "restitution extracts money".
+    monthly_usd = round(vcpu_count * rate * HOURS_PER_MONTH, 2)
 
     return Insight(
         rule_name=RULE_NAME,
@@ -206,6 +223,10 @@ def _make_insight(
             "pricing_tier": tier,
             "pricing_usd_per_vcpu_hour": rate,
             "pricing_tier_label": "year_1_2" if tier == "year_1_2" else "year_3_plus",
+            "vcpu": vcpu_count,
+            # Canonical monetary key — registered in constat_core.monetary
+            # (same key as mysql_eol / aurora_eol).
+            "extended_support_monthly_usd": monthly_usd,
             "recommendation": recommendation,
             # Source-of-truth stamp: which catalog version produced this insight.
             # Sales can cite "based on AWS RDS PG release calendar dated
