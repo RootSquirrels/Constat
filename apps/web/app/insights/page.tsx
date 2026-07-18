@@ -1,4 +1,5 @@
-import { api, ApiError, type Insight, type Severity } from "@/lib/api";
+import Link from "next/link";
+import { api, ApiError, type Insight, type Inconclusive, type Severity } from "@/lib/api";
 import InsightCard from "@/components/InsightCard";
 
 export const dynamic = "force-dynamic"; // never cache; always fetch fresh
@@ -13,7 +14,9 @@ function groupBySeverity(insights: Insight[]): Record<Severity, Insight[]> {
 
 export default async function InsightsPage() {
   let insights: Insight[] = [];
+  let inconclusive: Inconclusive[] = [];
   let error: string | null = null;
+  let incompError: string | null = null;
 
   try {
     insights = await api.listInsights({ limit: 200 });
@@ -21,8 +24,17 @@ export default async function InsightsPage() {
     error = e instanceof ApiError ? `API ${e.status}: ${e.body}` : String(e);
   }
 
+  // Fetch inconclusive in parallel (best-effort: don't fail the page if this errors).
+  try {
+    inconclusive = await api.listInconclusive({ limit: 50 });
+  } catch (e) {
+    incompError = e instanceof ApiError ? `API ${e.status}` : String(e);
+  }
+
   const groups = groupBySeverity(insights);
   const total = insights.length;
+  const incTotal = inconclusive.length;
+  const sevWithCount = SEVERITY_ORDER.filter((s) => groups[s].length).length;
 
   return (
     <main style={{ padding: "2rem", maxWidth: "56rem" }}>
@@ -30,8 +42,41 @@ export default async function InsightsPage() {
       <p style={{ color: "#555", marginBottom: "1.5rem" }}>
         {total === 0
           ? "No insights yet."
-          : `${total} insight${total === 1 ? "" : "s"} across ${SEVERITY_ORDER.filter((s) => groups[s].length).length} severity level${SEVERITY_ORDER.filter((s) => groups[s].length).length === 1 ? "" : "s"}.`}
+          : `${total} insight${total === 1 ? "" : "s"} across ${sevWithCount} severity level${sevWithCount === 1 ? "" : "s"}.`}
       </p>
+
+      {incTotal > 0 && (
+        <div
+          style={{
+            padding: "0.75rem 1rem",
+            border: "1px solid #fde68a",
+            backgroundColor: "#fffbeb",
+            color: "#92400e",
+            borderRadius: 8,
+            marginBottom: "1.5rem",
+            display: "flex",
+            gap: "0.75rem",
+            alignItems: "center",
+          }}
+        >
+          <span style={{ fontWeight: 600 }}>{incTotal}</span>
+          <span>inconclusive record{incTotal === 1 ? "" : "s"}</span>
+          <span style={{ color: "#6b7280" }}>
+            — rule could not conclude (missing facts or scope not proven)
+          </span>
+          <Link
+            href="/inconclusives"
+            style={{ marginLeft: "auto", color: "#92400e", fontWeight: 500 }}
+          >
+            view all →
+          </Link>
+        </div>
+      )}
+      {incompError && (
+        <p style={{ color: "#9ca3af", fontSize: "0.8rem" }}>
+          (inconclusive count unavailable: {incompError})
+        </p>
+      )}
 
       {error && (
         <div

@@ -18,6 +18,16 @@ export interface Insight {
   computed_at: string; // ISO 8601
 }
 
+export interface Inconclusive {
+  id: string;
+  rule_name: string;
+  resource_id: string | null;
+  account_id: string | null;
+  missing_facts: string[];
+  reason: string | null;
+  computed_at: string;
+}
+
 export interface HealthResponse {
   status: string;
 }
@@ -28,6 +38,21 @@ export interface ListInsightsParams {
   account_id?: string;
   limit?: number;
   offset?: number;
+}
+
+export interface ListInconclusiveParams {
+  rule_name?: string;
+  account_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RunInsightsResult {
+  rule_name: string;
+  resources_scanned: number;
+  insights_emitted: number;
+  inconclusive_emitted: number;
+  errors: string[];
 }
 
 class ApiError extends Error {
@@ -70,6 +95,15 @@ export const api = {
     fetchJson<Insight[]>(`/insights${buildQuery(params)}`),
 
   getInsight: (id: string) => fetchJson<Insight>(`/insights/${id}`),
+
+  listInconclusive: (params: ListInconclusiveParams = {}) =>
+    fetchJson<Inconclusive[]>(`/inconclusives${buildQuery(params)}`),
+
+  runInsights: (rule = "rds_eol") =>
+    fetchJson<RunInsightsResult>(`/insights/run`, {
+      method: "POST",
+      body: JSON.stringify({ rule }),
+    }),
 };
 
 export { ApiError, API_URL };

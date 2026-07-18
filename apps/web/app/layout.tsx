@@ -41,6 +41,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             Insights
           </Link>
           <Link
+            href="/inconclusives"
+            style={{ color: "#4b5563", textDecoration: "none", fontSize: "0.9rem" }}
+          >
+            Inconclusives
+          </Link>
+          <Link
             href="/chargeback"
             style={{ color: "#4b5563", textDecoration: "none", fontSize: "0.9rem" }}
           >

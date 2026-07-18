@@ -1,6 +1,16 @@
 import Link from "next/link";
+import { api, type Inconclusive } from "@/lib/api";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  let inconclusive: Inconclusive[] = [];
+  try {
+    inconclusive = await api.listInconclusive({ limit: 1 });
+  } catch {
+    // best-effort: home page shouldn't fail if the API is down
+  }
+
   return (
     <main style={{ padding: "2rem", maxWidth: "48rem" }}>
       <h1 style={{ fontSize: "1.75rem", marginBottom: "0.25rem" }}>Constat</h1>
@@ -11,7 +21,7 @@ export default function Home() {
       <section
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr",
+          gridTemplateColumns: "1fr 1fr 1fr",
           gap: "1rem",
         }}
       >
@@ -31,6 +41,23 @@ export default function Home() {
           <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
             Proven gaps between what your cloud account should look like and
             what it actually looks like.
+          </p>
+        </Link>
+        <Link
+          href="/inconclusives"
+          style={{
+            display: "block",
+            padding: "1.5rem",
+            border: "1px solid #fde68a",
+            borderRadius: 8,
+            backgroundColor: "#fffbeb",
+            textDecoration: "none",
+            color: "inherit",
+          }}
+        >
+          <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>Inconclusives</h2>
+          <p style={{ margin: 0, color: "#555", fontSize: "0.9rem" }}>
+            What we can&apos;t conclude yet (missing facts, scope not proven).
           </p>
         </Link>
         <Link
