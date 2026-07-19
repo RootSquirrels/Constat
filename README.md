@@ -1,5 +1,7 @@
 # Constat
 
+[![CI](https://github.com/RootSquirrels/Constat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RootSquirrels/Constat/actions/workflows/ci.yml)
+
 **Proof-grade cloud insights. Connect a read-only role; in two hours you know what your AWS fleet is silently costing you — with evidence for every number.**
 
 In French, a *constat* is a certified statement of fact — the document a bailiff draws up that stands in court. That is the standard this product holds itself to: every value on screen carries its source, its timestamp, and an honest **"unknown"** when we cannot prove it. Never a false "compliant". Never a guessed number.
