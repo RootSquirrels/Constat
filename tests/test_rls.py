@@ -380,14 +380,18 @@ def pg_migrated() -> Iterator[str]:
     psycopg = _psycopg()
     migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
     assert migrations, f"no migrations found in {MIGRATIONS_DIR}"
-    with psycopg.connect(DATABASE_URL, autocommit=True) as conn:
+    with psycopg.connect(
+        DATABASE_URL, autocommit=True, cursor_factory=psycopg.ClientCursor
+    ) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
         for path in migrations:
             # ClientCursor uses the simple query protocol, which is the
             # only way to execute a whole multi-statement migration file.
-            with conn.cursor(factory=psycopg.ClientCursor) as cur:
-                cur.execute(path.read_text(encoding="utf-8"))
+            # It must be passed as connect()'s cursor_factory — psycopg 3's
+            # cursor() has no `factory` kwarg (the CI Postgres job proved
+            # it the hard way, 2026-07-19).
+            conn.execute(path.read_text(encoding="utf-8"))
     yield DATABASE_URL
 
 

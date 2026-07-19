@@ -115,10 +115,12 @@ jobs:
         # (the API is dialect-agnostic, tests run on sqlite by default).
         # CONSTAT_TEST_APP_DATABASE_URL is the non-owner runtime role
         # (migration 0012) exercised by the TestRuntimeRole tests.
+        # The whole suite runs with -m postgres: RLS (test_rls.py) AND
+        # audit immutability (test_audit_immutability.py, migration 0014).
         env:
           CONSTAT_TEST_DATABASE_URL: postgresql://constat:constat@localhost:5432/constat
           CONSTAT_TEST_APP_DATABASE_URL: postgresql://constat_app:constat@localhost:5432/constat
-        run: uv run --frozen --with "psycopg[binary]>=3.1" pytest tests/test_rls.py -m postgres -v
+        run: uv run --frozen --with "psycopg[binary]>=3.1" pytest -m postgres -v
 
   web:
     runs-on: ubuntu-latest
