@@ -8,6 +8,11 @@ job id. The actual scans run in the collection worker (`constat_api.worker`
 — in-process pool in inline mode, external service in sqs mode), and
 GET /collect/aws/jobs/{job_id} reports progress derived from source_runs.
 
+Targets come from the request body, or — when the body has none
+(roadmap 1.3) — from the persisted `collect_targets` table (see
+routers/collect_targets.py). The empty-body form is what the scheduler
+uses, so the fleet list lives in the DB, not in a JSON secret.
+
 Backpressure: when the in-process queue is full, the POST answers
 503 + Retry-After instead of accepting work it cannot hold.
 """
@@ -28,6 +33,7 @@ from constat_api.collectors.aws import DEFAULT_REGIONS, JOB_REGISTRY
 from constat_api.db import get_db
 from constat_api.idempotency import cache_response, get_cached_or_none
 from constat_api.repositories import collect_jobs as collect_jobs_repo
+from constat_api.repositories import collect_targets as collect_targets_repo
 from constat_api.repositories import source_runs as source_runs_repo
 
 router = APIRouter(
@@ -65,7 +71,14 @@ class TargetIn(BaseModel):
 
 
 class CollectRequest(BaseModel):
-    targets: list[TargetIn] = Field(min_length=1, description="At least one target required")
+    # None or [] = "collect every persisted collect_target" (roadmap 1.3):
+    # the scheduler calls this endpoint with an empty body instead of
+    # reading a `scan-targets` JSON secret. Explicit targets keep working
+    # exactly as before.
+    targets: list[TargetIn] | None = Field(
+        default=None,
+        description="Explicit targets, or omit to collect all persisted collect_targets",
+    )
     dry_run: bool = False
     # When True, force-start a new scan even if a previous one is stuck
     # in 'running' for the same scope. Use after a worker crash to recover.
@@ -124,6 +137,27 @@ def _idempotency_key_header(
     return x_idempotency_key
 
 
+def _persisted_targets(session: Session) -> list[TargetIn]:
+    """Load every persisted collect_target as an explicit target.
+
+    Used when the request body carries no targets (roadmap 1.3): the
+    scheduler's daily run is an empty-body POST that collects the whole
+    onboarded fleet. with_secrets=True — this IS the collect path, the
+    external_id is needed for AssumeRole.
+    """
+    return [
+        TargetIn(
+            aws_account_id=t.aws_account_id,
+            role_arn=t.role_arn,
+            external_id=t.external_id,
+            name=t.name,
+            regions=list(t.regions) if t.regions else None,
+            resource_types=list(t.resource_types) if t.resource_types else None,
+        )
+        for t in collect_targets_repo.list_targets(session, with_secrets=True)
+    ]
+
+
 @router.post("", status_code=202, response_model=CollectAcceptedResponse)
 def trigger_aws_collect(
     body: CollectRequest,
@@ -139,10 +173,21 @@ def trigger_aws_collect(
         if cached is not None:
             return CollectAcceptedResponse.model_validate(cached)
 
+    # Roadmap 1.3: no explicit targets -> collect ALL persisted
+    # collect_targets. This is what lets the ECS scheduler stop reading
+    # a `scan-targets` JSON secret: its daily run is an empty-body POST.
+    targets = body.targets if body.targets else _persisted_targets(session)
+    if not targets:
+        raise HTTPException(
+            status_code=422,
+            detail="no targets in the request body and no persisted collect_targets "
+            "— import them first via POST /collect/targets/import",
+        )
+
     # Validate resource_types BEFORE enqueueing: the collector validates
     # too, but in async mode a bad key would otherwise surface in the
     # worker, after the client already got a 202.
-    for t in body.targets:
+    for t in targets:
         if t.resource_types:
             unknown = sorted(set(t.resource_types) - set(JOB_REGISTRY))
             if unknown:
@@ -154,14 +199,14 @@ def trigger_aws_collect(
     # The job row first (flushed -> job_id), then one WorkItem per
     # (target x region). Summary is counts only — no account ids or ARNs,
     # same non-PII discipline as audit_events metadata.
-    all_resource_types = sorted({rt for t in body.targets for rt in (t.resource_types or ("rds",))})
-    n_regions = sum(len(t.regions) if t.regions else len(DEFAULT_REGIONS) for t in body.targets)
+    all_resource_types = sorted({rt for t in targets for rt in (t.resource_types or ("rds",))})
+    n_regions = sum(len(t.regions) if t.regions else len(DEFAULT_REGIONS) for t in targets)
     job = collect_jobs_repo.create_job(
         session,
         actor=principal.name,
         total_items=n_regions,
         summary={
-            "accounts": len({t.aws_account_id for t in body.targets}),
+            "accounts": len({t.aws_account_id for t in targets}),
             "regions": n_regions,
             "resource_types": all_resource_types,
         },
@@ -178,7 +223,7 @@ def trigger_aws_collect(
             force=body.force,
             dry_run=body.dry_run,
         )
-        for t in body.targets
+        for t in targets
         for region in (t.regions or DEFAULT_REGIONS)
     ]
 

@@ -243,8 +243,9 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 TENANT_A = "00000000-0000-0000-0000-00000000000a"
 TENANT_B = "00000000-0000-0000-0000-00000000000b"
 
-# Every table that must carry a tenant isolation policy after 0001 -> 0015
-# (0007: 9 tables, 0011: the 4 tables of audit F-04, 0015: collect_jobs).
+# Every table that must carry a tenant isolation policy after 0001 -> 0016
+# (0007: 9 tables, 0011: the 4 tables of audit F-04, 0015: collect_jobs,
+# 0016: collect_targets).
 RLS_TABLES = [
     "accounts",
     "resources",
@@ -260,6 +261,7 @@ RLS_TABLES = [
     "retention_policies",
     "pii_classifications",
     "collect_jobs",
+    "collect_targets",
 ]
 
 # Minimal wrong-tenant INSERT per table (tenant_id = TENANT_A while the
@@ -331,6 +333,11 @@ WRONG_TENANT_INSERTS: dict[str, tuple[str, tuple[Any, ...]]] = {
     "collect_jobs": (
         "INSERT INTO collect_jobs (tenant_id, actor, total_items) VALUES (%s, %s, %s)",
         (TENANT_A, "intruder", 1),
+    ),
+    "collect_targets": (
+        "INSERT INTO collect_targets (tenant_id, aws_account_id, role_arn, external_id)"
+        " VALUES (%s, %s, %s, %s)",
+        (TENANT_A, "999999999999", "arn:aws:iam::999999999999:role/x", "intruder-secret"),
     ),
 }
 
@@ -448,6 +455,16 @@ def pg_seeded(pg_migrated: str) -> Iterator[str]:
         conn.execute(
             "INSERT INTO collect_jobs (tenant_id, actor, total_items) VALUES (%s, %s, %s)",
             (TENANT_A, "alice", 2),
+        )
+        conn.execute(
+            "INSERT INTO collect_targets (tenant_id, aws_account_id, role_arn, external_id)"
+            " VALUES (%s, %s, %s, %s)",
+            (
+                TENANT_A,
+                "111111111111",
+                "arn:aws:iam::111111111111:role/constat-collector",
+                "s3cr3t",
+            ),
         )
     yield pg_migrated
 

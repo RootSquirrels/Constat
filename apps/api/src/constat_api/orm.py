@@ -373,6 +373,41 @@ class CollectJobORM(Base):
     summary: Mapped[dict[str, Any]] = mapped_column(JSONBType(), nullable=False, default=dict)
 
 
+class CollectTargetORM(Base):
+    """Persisted collect target (batch onboarding, migration 0016).
+
+    One row per (tenant, AWS account) to scan. POST /collect/aws with an
+    empty body collects every row here; POST /collect/targets/import
+    upserts them from a CSV.
+
+    external_id is a shared secret (F-06). It is write-only over the API —
+    the repository's `list_targets` defers it by default so a GET handler
+    cannot leak it by accident; only the collect path selects it.
+
+    The 12-digit CHECK on aws_account_id lives in the migration only:
+    its Postgres `~` regex is not portable to sqlite (tests), so the
+    repository/router re-validate in Python instead.
+    """
+
+    __tablename__ = "collect_targets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "aws_account_id", name="uq_collect_targets_tenant_account"),
+    )
+
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    aws_account_id: Mapped[str] = mapped_column(String, nullable=False)
+    role_arn: Mapped[str] = mapped_column(String, nullable=False)
+    external_id: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str | None] = mapped_column(String)
+    regions: Mapped[list[str] | None] = mapped_column(JSONBType())
+    resource_types: Mapped[list[str] | None] = mapped_column(JSONBType())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SourceRunORM(Base):
     __tablename__ = "source_runs"
     __table_args__ = (

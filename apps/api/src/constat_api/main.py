@@ -30,6 +30,7 @@ from constat_api.routers import (
     accounts,
     admin,
     aws,
+    collect_targets,
     compliance,
     focus,
     health,
@@ -116,6 +117,7 @@ app.include_router(inconclusive.router)
 app.include_router(insight_runs.router)
 app.include_router(focus.router)
 app.include_router(aws.router)
+app.include_router(collect_targets.router)
 app.include_router(runner.router)
 app.include_router(status.router)
 app.include_router(accounts.router)
