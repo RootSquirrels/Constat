@@ -1,10 +1,11 @@
 # Data model (V1)
 
-> **Source of truth for the schema is the SQL migrations**, not the ORM
-> (see [`development/known-issues.md`](./development/known-issues.md) for
-> the drift). This doc is the human-readable view of the migrations.
-> Migrations are append-only and re-runnable on a fresh DB; the ORM is
-> test-only.
+> **Source of truth for the schema is the ORM** at
+> `apps/api/src/constat_api/orm.py`. Alembic (`db/alembic/`, ADR-17)
+> autogenerates revisions from ORM diffs; the 21 historical SQL files
+> under `db/migrations/_archived/` are the pre-Alembic record and the
+> "Migration" column below points to those archived files for the
+> provenance of each table.
 
 ## The 13 tables at a glance
 
@@ -387,10 +388,15 @@ If you need a new table, the V1 hygiene is:
 - For each CHECK constraint, a regression test in `tests/`
 - For each UNIQUE constraint, a doc note on the "current-state vs
   append-log" choice (default: current-state)
+- An RLS policy in the same migration (the AGENTS.md invariant)
+  unless the table is not tenant-scoped
 
-Add the SQL migration in `db/migrations/NNNN_<scope>.sql`. Then add
-the ORM class in `apps/api/src/constat_api/orm.py`. Then add a
-repository in `apps/api/src/constat_api/repositories/`.
+Add the ORM class in `apps/api/src/constat_api/orm.py`, then
+generate the revision with `uv run alembic -c db/alembic.ini
+revision --autogenerate -m "add <table>"` (ADR-17), then add a
+repository in `apps/api/src/constat_api/repositories/`. For the
+RLS policy, hand-write the `op.execute("CREATE POLICY ...")` block
+in the revision — autogenerate cannot infer it.
 
 ## See also
 

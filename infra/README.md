@@ -114,18 +114,18 @@ docker push "$ECR_URL:latest"
 
 ## Apply the DB migrations
 
-Migrations are raw SQL in `db/migrations/` (no Alembic yet) and are NOT
-applied at container start. RDS is private, so run them from a one-off
-Fargate task in the cluster — the image ships `psycopg2` and the SQL
-files under `/app/db/migrations/`. Write this override file locally:
+Migrations are managed by Alembic (`db/alembic/`, see ADR-17) and are
+NOT applied at container start. RDS is private, so run `alembic
+upgrade head` from a one-off Fargate task in the cluster — the image
+ships the alembic CLI and the project source. Write this override file
+locally:
 
 ```json
 {
   "containerOverrides": [{
     "name": "scan",
     "command": [
-      "python", "-c",
-      "import glob,os,psycopg2; con=psycopg2.connect(os.environ['CONSTAT_DATABASE_URL']); [con.cursor().execute(open(f).read()) for f in sorted(glob.glob('/app/db/migrations/*.sql'))]; con.commit()"
+      "alembic", "-c", "db/alembic.ini", "upgrade", "head"
     ]
   }]
 }
@@ -140,8 +140,10 @@ aws ecs run-task --cluster constat-pilot --launch-type FARGATE \
   --overrides file://migrate-override.json
 ```
 
-(Watch the task's `scan` log stream for errors; each migration file is
-executed in name order, same as docker-entrypoint-initdb.d does locally.)
+(Watch the task's `scan` log stream for errors; alembic prints
+each revision it applies. The bootstrap container does NOT pre-create
+the schema — apply this one-off before the API task definition is
+rolled out.)
 
 After migrations land, force a fresh API deployment so it boots against a
 migrated schema:

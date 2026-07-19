@@ -44,10 +44,12 @@ RUN useradd --create-home --uid 10001 appuser
 
 COPY --from=build /app/.venv /app/.venv
 
-# Migrations are raw SQL applied out-of-band (no Alembic yet — see
-# infra/README.md). They ship in the image so the one-off "migrate"
-# Fargate task can run them against the private RDS instance.
-COPY db/migrations ./db/migrations
+# Migrations are managed by Alembic (db/alembic/, see ADR-17 and
+# infra/README.md). The full project source ships in the image so
+# the one-off "migrate" Fargate task can run `alembic upgrade head`
+# against the private RDS instance. The runtime stage already
+# pulled in /app/packages and /app/apps via the build stage, so
+# only the alembic config + versions directory need to be on top.
 
 ENV PATH="/app/.venv/bin:$PATH" \
     CONSTAT_ENV=pilot \

@@ -40,10 +40,11 @@ daily once the pilot is live.
 ### Pre-restore checklist
 
 1. **The dump matches the migration chain.** The app expects all
-   migrations in `db/migrations/` (0001 through 0014 today) to have
-   applied cleanly. CI proves the chain applies from scratch on every
-   push; if you restore a dump taken at migration N onto a fresh DB,
-   re-apply migrations N+1..latest afterwards.
+   Alembic revisions through `head` to have applied cleanly (the
+   chain is anchored at the post-0021 baseline; see ADR-17). CI
+   proves the chain applies from scratch on every push; if you
+   restore a dump taken at revision N onto a fresh DB, run
+   `alembic upgrade head` afterwards.
 2. **Stop the API** so no writes race the restore:
    `docker compose stop api` (or kill the local `uvicorn` process).
 3. **Restore into a scratch database first** when validating a backup —
@@ -141,4 +142,4 @@ operator host.
 
 - [`metrics.md`](./metrics.md) and [`alerting.md`](./alerting.md) — the
   alerts that tell you a restore might be needed
-- `db/migrations/` — the migration chain CI proves applies cleanly
+- `db/alembic/` — the migration chain CI proves applies cleanly (ADR-17)

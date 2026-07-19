@@ -1,7 +1,12 @@
-"""SQLAlchemy ORM models. Mirror db/migrations/0001_init.sql.
+"""SQLAlchemy ORM models.
 
-Portable: works on both Postgres (production) and sqlite (tests). Custom types
-GUID and JSONBType bridge the dialect differences.
+Canonical schema for the project. New revisions are produced from
+ORM diffs (Alembic, db/alembic/, see ADR-17). Pre-2026-07-19
+deployments used raw SQL migrations under `db/migrations/_archived/`;
+the first Alembic revision is a no-op baseline at that state.
+
+Portable: works on both Postgres (production) and sqlite (tests).
+Custom types GUID and JSONBType bridge the dialect differences.
 """
 
 from __future__ import annotations

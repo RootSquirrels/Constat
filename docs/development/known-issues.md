@@ -1,10 +1,19 @@
 # Known issues (V1)
 
 > This document tracks schema/code drift and other traps that the tests
-> don't catch. The schema source of truth is the SQL migrations in
-> `db/migrations/`, **not** the ORM in `apps/api/src/constat_api/orm.py`.
-> The ORM is test-only (sqlite in-memory). When they disagree, the
-> production database is right and the ORM is wrong.
+> don't catch. The schema source of truth is the ORM in
+> `apps/api/src/constat_api/orm.py`; Alembic (`db/alembic/`, see
+> ADR-17) autogenerates revisions from it. The 21 historical SQL
+> files under `db/migrations/_archived/` are the pre-Alembic record
+> and must not be re-applied to a fresh DB.
+>
+> The reverse-direction drift is the live concern: RLS policies, the
+> runtime role grant (`0012`), and a few indexes still live in the
+> archived SQL because the ORM doesn't model them. A follow-up
+> Alembic revision (or per-table `op.execute` calls inside future
+> revisions) is the way to bring them into the ORM, but until that
+> happens `tests/test_rls.py` (Postgres CI) is the proof that the
+> production schema is consistent end-to-end.
 
 ## 1. Drift: `facts` UNIQUE constraint (ORM vs migration 0006)
 

@@ -1,0 +1,24 @@
+db/alembic — Alembic env + versions
+
+This is the Alembic-managed schema migration infrastructure. It supersedes
+the raw SQL files in `db/migrations/_archived/` (which were the canonical
+migration path through 2026-07-19, migration 0021).
+
+How it works:
+
+- `env.py` loads the workspace src/ paths, points Alembic at
+  `constat_api.orm.Base.metadata` (single source of truth), and reads
+  the DB URL from `constat_api.settings` (the same `CONSTAT_DATABASE_URL`
+  env var the API uses).
+- `versions/` is the chain of revisions. The first revision (baseline) is
+  a no-op that anchors the chain at the schema produced by SQL
+  migrations 0001..0021.
+- `script.py.mako` is the stock revision template; autogenerate fills it
+  in based on ORM ↔ DB diff.
+
+Bootstrap (AGENTS.md dev section): `uv run alembic -c db/alembic.ini
+upgrade head` from the workspace root. CI uses the same command against
+its service-container Postgres.
+
+See ADR-17 for the rationale (baseline, no re-issue of historical
+revisions, autogenerate from ORM going forward).

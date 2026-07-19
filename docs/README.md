@@ -42,8 +42,9 @@ marked as such.
   - **[setup.md](./development/setup.md)** — local dev environment.
   - **[running-the-stack.md](./development/running-the-stack.md)** — the
     end-to-end V1 demo path (ingest → scan → run insights → see in UI).
-  - **[known-issues.md](./development/known-issues.md)** — drift between ORM
-    and SQL migrations, and other traps.
+  - **[known-issues.md](./development/known-issues.md)** — ORM vs archived
+    SQL drift, and other traps (the ORM is now the source of truth;
+    see ADR-17).
 - **Infrastructure / onboarding**
   - **[`../infra/customer-iam-role.yaml`](../infra/customer-iam-role.yaml)**
     + **[`../infra/customer-iam-role.md`](../infra/customer-iam-role.md)** —

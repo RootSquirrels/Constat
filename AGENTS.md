@@ -36,7 +36,10 @@ Constat/
 ├── apps/
 │   ├── api/                     # FastAPI — orchestrator + REST
 │   └── web/                     # Next.js — "Insights" + "Chargeback" + "Restitution" views
-├── db/migrations/               # SQL migrations (Alembic later)
+├── db/
+│   ├── alembic.ini              # Alembic config (script_location = db/alembic)
+│   ├── alembic/                 # env + revisions (canonical from 2026-07-19, ADR-17)
+│   └── migrations/_archived/    # 21 historical SQL files (pre-Alembic); do not apply
 ├── docs/pilot/                  # SLA pilote borné (projet, relecture juridique)
 ├── infra/                       # Terraform pilote (ECS+RDS+secrets) — not yet applied
 ├── deploy/prometheus/           # alerting rules
@@ -164,11 +167,9 @@ pip install uv
 uv sync
 docker compose up -d
 
-# 4. Apply migrations (all of them, in order)
-for f in db/migrations/*.sql; do
-  psql -h localhost -U constat -d constat -v ON_ERROR_STOP=1 -f "$f"
-done
-# (password: constat — see docker-compose.yml)
+# 4. Apply migrations (Alembic; see db/alembic/README + ADR-17)
+export CONSTAT_DATABASE_URL=postgresql://constat:constat@localhost:5432/constat
+uv run alembic -c db/alembic.ini upgrade head
 
 # 5. Run tests
 uv run pytest -v
@@ -188,11 +189,15 @@ uv run ruff check .                 # lint
 uv run ruff format .                # format
 uv run python -m constat_api        # API on http://localhost:8000
 cd apps/web && npm install && npm run dev   # web on http://localhost:3000
+
+# Schema migrations — Alembic, baseline at 0021 (ADR-17)
+uv run alembic -c db/alembic.ini upgrade head      # apply pending revisions
+uv run alembic -c db/alembic.ini revision --autogenerate -m "..."  # diff ORM vs DB
+uv run alembic -c db/alembic.ini stamp head        # mark existing DB as up-to-date
 ```
 
 ## Where things will get decided later
 
-- Alembic vs raw SQL (13 migrations in, still raw SQL — switch when Alembic is justified, not before).
 - ORM (we use SQLAlchemy Core, not ORM, until we have complex relations).
 - Auth on the API (API-key auth shipped: `X-API-Key` with reader/operator roles via `CONSTAT_API_KEYS`; OIDC/OAuth is V2).
 - Secrets management (AWS Secrets Manager shipped in `infra/secrets.tf`; `.env` remains the local-dev path).

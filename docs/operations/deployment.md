@@ -11,8 +11,8 @@ runbook); this doc is the operator's mental model.
 
 ```
 your machine
-├── docker compose up: postgres:16 (migrations auto-applied from
-│   db/migrations via docker-entrypoint-initdb.d) + minio (FOCUS files)
+├── docker compose up: postgres:16 (schema created via `alembic upgrade
+│   head` after the container is up — see db/alembic/README) + minio (FOCUS files)
 ├── uv run python -m constat_api → API on :8000, auth OPEN if
 │                                  CONSTAT_API_KEY unset (dev only)
 │   (uvicorn constat_api.main:app works too; the CLIs below run as python -m)
@@ -105,9 +105,9 @@ endpoints (see `docs/operations/alerting.md`).
     --network-configuration "awsvpcConfiguration={subnets=[...],securityGroups=[...],assignPublicIp=ENABLED}"
   ```
 
-**Apply DB migrations**: raw SQL from `db/migrations/`, run from a
-one-off Fargate task against the private RDS — exact command in
-`infra/README.md`.
+**Apply DB migrations**: Alembic (`alembic -c db/alembic.ini upgrade head`),
+run from a one-off Fargate task against the private RDS — exact
+command in `infra/README.md`.
 
 **Backups / restore**: RDS automated backups, 7-day retention, final
 snapshot on destroy. Procedure: see `docs/operations/backup-restore.md`.

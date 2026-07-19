@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       # Mirrors docker-compose.yml. Needed by the Postgres-marked tests
-      # (tests/test_rls.py) which apply db/migrations and verify RLS.
+      # (tests/test_rls.py) which apply Alembic migrations (see ADR-17)
+      # and verify RLS.
       postgres:
         image: postgres:16-alpine
         env:
@@ -53,15 +54,13 @@ jobs:
         run: uv run mypy packages/core/src
 
       - name: Apply migrations
-        # Catches broken migration chains (e.g. a policy referencing a
-        # column no migration added) on a pristine database.
+        # Alembic (db/alembic/, see ADR-17). Catches broken migration
+        # chains (a model referencing a column no revision added) on a
+        # pristine database. The env var must match the service block
+        # above so the URL is the owner role, not the runtime role.
         env:
-          PGPASSWORD: constat
-        run: |
-          for f in db/migrations/*.sql; do
-            echo "== $f"
-            psql -h localhost -U constat -d constat -v ON_ERROR_STOP=1 -f "$f"
-          done
+          CONSTAT_DATABASE_URL: postgresql://constat:constat@localhost:5432/constat
+        run: uv run --frozen alembic -c db/alembic.ini upgrade head
 
       - name: Test
         run: uv run pytest -v

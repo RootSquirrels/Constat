@@ -99,7 +99,7 @@ Constat/
 ├── apps/
 │   ├── api/                     # FastAPI, 11 routers
 │   └── web/                     # Next.js 15, 10 pages
-├── db/migrations/               # 13 raw-SQL migrations
+├── db/                          # Alembic-managed schema (db/alembic/, ADR-17); _archived/ holds the 21 historical SQL files
 └── tests/                       # 50 pytest files
 ```
 

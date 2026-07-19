@@ -53,7 +53,7 @@ packages/insights/       # rds_eol, mysql_eol, aurora_eol, ebs_gp2_to_gp3, ebs_u
                          # snapshot_orphan, ec2_stopped_with_storage, chargeback
 apps/api/                # FastAPI: collectors, rule runner, REST API
 apps/web/                # Next.js: insights, chargeback, POC report, run health
-db/migrations/           # plain SQL, applied and verified in CI
+db/                       # Alembic-managed schema (db/alembic/, see ADR-17); _archived/ holds the 21 historical SQL files
 infra/                   # Terraform (pilot deployment)
 docs/                    # architecture, ADRs, runbooks, benchmarks
 tests/                   # unit + Postgres-backed RLS integration tests

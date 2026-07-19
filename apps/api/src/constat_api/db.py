@@ -65,8 +65,11 @@ def get_db(principal: Annotated[Principal, Depends(optional_principal)]) -> Iter
 def create_all_tables(target_engine: Engine | None = None) -> None:
     """Create all tables from ORM metadata. Tests only.
 
-    Production uses raw SQL migrations (see db/migrations/). Keep this in sync
-    with db/migrations/0001_init.sql — drift between the two is a bug.
+    Production uses Alembic (db/alembic/, see ADR-17). `Base.metadata`
+    is the single source of truth for both paths: the test path
+    creates the schema from the ORM directly, the production path
+    diffs the ORM against the DB and emits a migration. The two
+    cannot drift.
     """
     from constat_api.orm import Base
 

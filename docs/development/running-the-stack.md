@@ -58,13 +58,12 @@ The pytest suite uses an in-memory sqlite (see
 `tests/conftest.py::engine`). It does **not** require a running
 Postgres.
 
-If the docker-compose `up` re-applies the migrations on an existing
-volume, you can re-check with:
+If you want to confirm the schema is up-to-date, Alembic is the
+source of truth (ADR-17):
 
 ```powershell
-psql -h localhost -U constat -d constat -c "SELECT version FROM _migrations ORDER BY version;"
-# (Note: V1 has no _migrations table. The SQL files in
-# db/migrations/ are the truth — 0001..0014 today.)
+uv run alembic -c db/alembic.ini current    # shows the current revision
+uv run alembic -c db/alembic.ini history    # shows the chain
 ```
 
 ### 1. Ingest a FOCUS CSV

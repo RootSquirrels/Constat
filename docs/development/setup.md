@@ -34,15 +34,22 @@ From the repo root:
 # workspace members + dev deps.
 uv sync --all-extras
 
-# 2. Start Postgres (port 5432) and MinIO (ports 9000/9001).
+# 2. Start Postgres (port 5432) and MinIO (ports 9000/9001). The
+# compose stack no longer auto-applies migrations (Alembic path;
+# see ADR-17): the schema is created by the next step.
 docker compose up -d
 
-# 3. Apply ALL the SQL migrations (0001–0014 today). The docker-compose mounts
-# ./db/migrations into the container's initdb path, so the first
-# `docker compose up` runs them automatically. If you need to
-# re-apply on a fresh DB, drop the volume:
+# 3. Apply the schema. Alembic is the canonical migration path
+# (db/alembic/); the first revision is a no-op baseline that anchors
+# the chain at the post-0021 state.
+$env:CONSTAT_DATABASE_URL = "postgresql://constat:constat@localhost:5432/constat"
+uv run alembic -c db/alembic.ini upgrade head
+
+# If you need a fresh DB: drop the volume, restart the container, and
+# re-run the alembic command.
 docker compose down -v
 docker compose up -d
+uv run alembic -c db/alembic.ini upgrade head
 ```
 
 Verify:
@@ -129,7 +136,7 @@ apps/
   api/                   # FastAPI
   web/                   # Next.js
 
-db/migrations/           # 14 raw-SQL migrations, applied in order
+db/                       # Alembic-managed schema (db/alembic/, ADR-17); _archived/ holds the 21 historical SQL files
 tests/                   # cross-package pytest
 ```
 
@@ -151,8 +158,9 @@ dependencies. `uv sync` resolves them all in one lockfile.
 ### Postgres (docker-compose)
 
 - `postgres:16-alpine`. User/db `constat`, password `constat`.
-- Mounts `db/migrations/` into `/docker-entrypoint-initdb.d/`. First
-  startup applies all migrations (0001–0014 today).
+- Schema is created by `uv run alembic -c db/alembic.ini upgrade head`
+  after `docker compose up -d` (see ADR-17; the old
+  `docker-entrypoint-initdb.d` mount is gone).
 - Healthcheck: `pg_isready -U constat -d constat` every 5s, 5 retries.
 
 If you need to inspect data:

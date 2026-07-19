@@ -29,7 +29,11 @@ services:
       - "5432:5432"
     volumes:
       - constat-pg-data:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    # No docker-entrypoint-initdb.d mount: schema is managed by Alembic
+    # (db/alembic/, see ADR-17). After `docker compose up -d`, run
+    # `uv run alembic -c db/alembic.ini upgrade head` to create the
+    # schema. The old pattern (mounting db/migrations/*.sql into the
+    # init dir) no longer applies — those files are archived.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U constat -d constat"]
       interval: 5s

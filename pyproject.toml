@@ -46,7 +46,9 @@ dev-dependencies = [
     "ruff>=0.6",
     "mypy>=1.10",
     "types-PyYAML>=6.0",
+    "boto3>=1.34",  # transitively imported by constat_api.settings at module load (alembic env needs it)
     "boto3-stubs[rds]>=1.34",
+    "alembic>=1.13",
 ]
 
 [tool.pytest.ini_options]
