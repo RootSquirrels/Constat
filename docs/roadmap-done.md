@@ -32,6 +32,16 @@
 | 3.3 | Audit des lectures (attribution) | CODE LIVRÉ 2026-07-18 | commit `648e239` : principal RBAC, `api.read`, `GET /compliance/audit-events` |
 | 3.4 | Immutabilité du journal (trigger) | CODE LIVRÉ 2026-07-18 | migration 0014 ; tests Postgres désormais exécutés en CI (`-m postgres` sur toute la suite, commit `b39dd93`) — le premier run CI vert date le critère |
 
+## Revue SRE (2026-07-19) — objections levées
+
+| Objection | Correctif | Preuve |
+|---|---|---|
+| Deux chemins opératoires incomplets (scheduler direct + async sans chaîne) | La tâche planifiée ne fait plus qu'enqueuer (`cli.aws --enqueue-all` depuis les `collect_targets` persistées) ; le worker **chaîne l'évaluation** à la fin d'un job (claim atomique `evaluation_status`, migration 0021) | commits ci-dessous ; test `test_ecs_task_enqueues_instead_of_scanning_directly` épingle ecs.tf |
+| IAM client limité à RDS | `ec2:DescribeVolumes/Snapshots/Instances` ajouté aux 2 templates (v1.1.0) ; `DescribeAddresses` exclu volontairement | `infra/customer-iam-role.yaml`, `infra/customer/stackset.yaml` |
+| Scope par défaut = RDS uniquement | Défaut = les 4 types de ressources enregistrés | `collectors/aws.py::_resolve_jobs` |
+| Race outbox (envoi SQS avant commit) | Commit du job d'abord, envoi ensuite ; échec d'envoi → `enqueue_error` sur le job + 503 ; orphelins droppés par le worker (`constat_collect_orphan_items_total`) | `routers/aws.py`, `worker.py`, tests dédiés |
+| CI sans gate infra | Job `infra` bloquant : terraform fmt/validate + docker build | `.github/workflows/ci.yml` (chantier 0.2 partiel) |
+
 ## Pré-roadmap H2 (audit V1 + vague 1, juillet 2026)
 
 - Audit V1 : 17 findings (F-01→F-17) corrigés — annexe §11 de `docs/audit-constat-v1.md`.

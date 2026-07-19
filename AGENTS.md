@@ -95,12 +95,21 @@ If you want to add a new namespace, open an issue first. We don't do EAV.
 - Cross-account AssumeRole always requires an `ExternalId` (API returns 422,
   collector raises `ValueError` otherwise). Persisted collect targets store it
   **write-only** — no GET ever returns it (masked as `external_id_set: true`).
-- Collection is **async**: `POST /collect/aws` enqueues account×region WorkItems
-  and returns 202 + `job_id` (poll `GET /collect/aws/jobs/{id}`). A worker drains
-  the queue — inline thread locally (`CONSTAT_COLLECT_MODE=inline`, default),
-  ECS service on SQS in the pilot. Per-account concurrency is bounded
-  (`CONSTAT_WORKER_PER_ACCOUNT` — AWS quotas are per-account); a full queue
-  answers 503 + Retry-After. Never reintroduce a synchronous collect path.
+- Collection is **async**: `POST /collect/aws` commits the job row FIRST,
+  then enqueues account×region WorkItems (a send failure is recorded as
+  `enqueue_error` on the job, never an orphan), returns 202 + `job_id`
+  (poll `GET /collect/aws/jobs/{id}`). A worker drains the queue — inline
+  thread locally (`CONSTAT_COLLECT_MODE=inline`, default), ECS service on
+  SQS in the pilot — and **chains rule evaluation automatically** when a
+  job completes (atomic claim via `evaluation_status`, migration 0021).
+  Per-account concurrency is bounded (`CONSTAT_WORKER_PER_ACCOUNT` — AWS
+  quotas are per-account); a full queue answers 503 + Retry-After. The
+  scheduled ECS task only enqueues (`cli.aws --enqueue-all`); nothing may
+  run collection or rule evaluation in-task. Never reintroduce a
+  synchronous collect path.
+- Default scan scope = **all four registered resource types** (rds,
+  ec2_volume, ec2_snapshot, ec2_instance) — the product's SLA coverage.
+  An explicit `resource_types: ["rds"]` is how you get an RDS-only scan.
 - Onboarding is batch: `POST /collect/targets/import` (CSV) or Organizations
   discovery (`python -m constat_api.cli.onboard`). `POST /collect/aws` with no
   explicit targets collects all persisted `collect_targets`.
