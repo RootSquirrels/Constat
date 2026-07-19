@@ -55,14 +55,14 @@ Lève la limite contractuelle de l'avenant SLA §1 une fois 1.1-1.3 démontrés.
 
 ## Chantier 2 — Un chiffre défendable devant une DAF *(semaines 3-8, parallèle)*
 
-| # | Action | Effort | Critère d'acceptation |
-|---|---|---|---|
-| 2.1 | **Tarifs par région** au catalog (plus de « US East pour tout le monde ») + devise source affichée | M | Un insight eu-west-3 cite la grille eu-west-3, datée |
-| 2.2 | **Conversion EUR** datée (taux BCE référencé), montants doubles USD/EUR | S | Restitution en € avec taux et date en pied de page |
-| 2.3 | **ESTIMATED → ACTUAL** : rapprochement ligne FOCUS ↔ ressource (ResourceId déjà chargé) ; l'estimation confirmée par facture change de statut | M | Part « confirmée par facture » affichée — la question n°2 de la DAF |
-| 2.4 | **Historique apparu/résolu** : delta entre runs, courbe « € récupérés » | M | Le KPI de renouvellement existe ; réponse à « que reste-t-il en année 2 » |
-| 2.5 | Inconclusifs = file de travail : owner + échéance sur l'acquittement existant, tri par impact potentiel | S | Sur 35 comptes, les inconclusifs sont triables, pas du bruit |
-| 2.6 | Détection FOCUS partiel/mois manquant → bandeau d'avertissement | S | Un export tronqué ne produit plus un chargeback silencieusement faux |
+| # | Action | Effort | Critère d'acceptation | Statut 2026-07-19 |
+|---|---|---|---|---|
+| 2.1 | **Tarifs par région** au catalog (plus de « US East pour tout le monde ») + devise source affichée | M | Un insight eu-west-3 cite la grille eu-west-3, datée | **CODE LIVRÉ** : grilles EBS us-east-1/eu-west-1/eu-west-3 sourcées (page AWS + Price List API), facts `region`, `price_region_exact` dans les payloads ; découverte : l'Extended Support RDS n'est **pas** uniforme (+12-18 % eu-west) — grille régionale RDS en cours d'application aux 3 règles |
+| 2.2 | **Conversion EUR** datée (taux BCE référencé), montants doubles USD/EUR | S | Restitution en € avec taux et date en pied de page | **FAIT** : `catalog/fx.py` (BCE 2026-07-17 : 1 EUR = 1,1435 USD), colonnes EUR + taux + date dans l'export CSV, double affichage $/€ dans la restitution avec pied de page BCE |
+| 2.3 | **ESTIMATED → ACTUAL** : rapprochement ligne FOCUS ↔ ressource (ResourceId déjà chargé) ; l'estimation confirmée par facture change de statut | M | Part « confirmée par facture » affichée — la question n°2 de la DAF | **CODE LIVRÉ** : réconciliation post-run native_id↔ResourceId (par famille de service FOCUS), `focus_actual_monthly_usd` + bascule ACTUAL, `kind` ADR-13 invariant. Affichage « part confirmée » en restitution : à brancher (suivi) |
+| 2.4 | **Historique apparu/résolu** : delta entre runs, courbe « € récupérés » | M | Le KPI de renouvellement existe ; réponse à « que reste-t-il en année 2 » | **CODE LIVRÉ** : table `insight_events` (0017, RLS), diff par empreinte dans les 2 runners, `GET /insights/history` + total `resolved_monthly_usd_total`. Courbe web : à brancher (suivi) |
+| 2.5 | Inconclusifs = file de travail : owner + échéance sur l'acquittement existant, tri par impact potentiel | S | Sur 35 comptes, les inconclusifs sont triables, pas du bruit | **CODE LIVRÉ** : owner/due_date/status (0018), `PATCH /inconclusives/{id}` + audit, tri règle/âge (pas de score d'impact inventé — les inconclusifs n'ont pas de montant) |
+| 2.6 | Détection FOCUS partiel/mois manquant → bandeau d'avertissement | S | Un export tronqué ne produit plus un chargeback silencieusement faux | **FAIT** : `GET /focus/coverage` (mois manquants + stale > 45 j) + bandeau ambre sur la page chargeback |
 
 ## Chantier 3 — Un SaaS qu'un RSSI signe *(semaines 6-12)*
 
