@@ -12,6 +12,7 @@ Revision ID: 8574f09d5d61
 Revises:
 Create Date: 2026-07-19 15:43:10.297453
 """
+
 from collections.abc import Sequence
 
 # revision identifiers, used by Alembic.
