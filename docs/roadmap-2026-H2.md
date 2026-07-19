@@ -56,11 +56,10 @@ sur staging (code livré, exécution à dater).
 
 ## Chantier 3 — Un SaaS qu'un RSSI signe *(semaines 6-12)*
 
-Items 3.3 et 3.4 livrés en code (voir `roadmap-done.md`). Il reste :
+Items 3.1, 3.3 et 3.4 livrés en code (voir `roadmap-done.md`). Il reste :
 
 | # | Action | Effort | Critère d'acceptation |
 |---|---|---|---|
-| 3.1 | **Tenant par requête** : résolution depuis l'identité (plus de tenant par défaut) + service accounts à scopes (ADR-10, enfin dû) | L | Test e2e 2 tenants **via l'API** sur staging ; l'étiquette « fondation » du schéma devient « démontré » |
 | 3.2 | **SSO OIDC** pour l'UI (Google/Microsoft — ce que l'ETI a déjà) | M | Login sans clé partagée ; rôles lecture/admin |
 | 3.5 | Dossier sécurité : questionnaire type pré-rempli, DPA, politique de rétention signable | M | Le RSSI reçoit le dossier avant de le demander |
 | 3.6 | Pentest externe | M | Avant le 3e client payant ; findings triés publiés au client sur demande |

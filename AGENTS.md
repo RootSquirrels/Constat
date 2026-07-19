@@ -90,6 +90,11 @@ If you want to add a new namespace, open an issue first. We don't do EAV.
 - Insight runs are delete-and-replace per rule: re-running a rule must not
   duplicate insights. Scope freshness: a successful run older than 24 h makes the
   scope `scope_stale` (INCONCLUSIVE), not "proven".
+- Tenant comes from the **authenticated identity**, never from the client:
+  `CONSTAT_API_KEYS` entries are `name:role:key[:tenant_uuid[:kind]]`
+  (defaults: default tenant, `machine`). `get_db` binds every session to the
+  principal's tenant; any `X-Tenant-ID` header is rejected with 400. Audit
+  actors are `kind:name` and audit rows land in the principal's tenant.
 - **New tenant-scoped table ⇒ RLS policy in the same migration** (ENABLE + FORCE +
   `app.current_tenant_id` GUC, copy 0007/0011). The CI Postgres job fails otherwise.
 - Cross-account AssumeRole always requires an `ExternalId` (API returns 422,

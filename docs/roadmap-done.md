@@ -29,8 +29,17 @@
 
 | # | Item | Statut | Preuve |
 |---|---|---|---|
+| 3.1 | **Tenant par requête** (résolution depuis l'identité) | CODE LIVRÉ 2026-07-19 | Clé `name:role:key[:tenant_uuid[:kind]]`, `get_db` lie la session au tenant du principal, header `X-Tenant-ID` → 400 (le client ne choisit jamais son tenant), acteurs d'audit `kind:name` dans le bon tenant, e2e 2-tenants Postgres en CI. Reste : exécution staging + sceller le chemin d'écriture (les repositories doivent estampiller le tenant courant — les inserts sous GUC non-défaut sont aujourd'hui refusés fail-closed par la RLS) |
 | 3.3 | Audit des lectures (attribution) | CODE LIVRÉ 2026-07-18 | commit `648e239` : principal RBAC, `api.read`, `GET /compliance/audit-events` |
 | 3.4 | Immutabilité du journal (trigger) | CODE LIVRÉ 2026-07-18 | migration 0014 ; tests Postgres désormais exécutés en CI (`-m postgres` sur toute la suite, commit `b39dd93`) — le premier run CI vert date le critère |
+
+## Revue architecture (2026-07-19, items 4-6)
+
+| # | Item | Correctif | Preuve |
+|---|---|---|---|
+| 5 | Contrats d'adaptateurs | 6 Protocols dans `constat_core.adapters` (Inventory/Cost conformes aux connecteurs existants + tests ; Evidence/Relationship/Workflow/Action définis, jamais d'écriture directe dans les tables) | ADR-14, `tests/test_adapter_contracts.py` |
+| 6 | Commandes/projections | La brique bloquante (publication partielle) était déjà corrigée (revue SRE) ; la discipline outbox est actée comme prérequis à toute action de remédiation | ADR-15 |
+| — | Ack perdu à chaque run (workstream parallèle) | Identité d'écart stable (`stable_id_of`) distincte de l'empreinte de cycle de vie : l'ack survit au delete-and-replace | ADR-16, `tests/test_ack_carryover.py` |
 
 ## Revue SRE (2026-07-19) — objections levées
 
