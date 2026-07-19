@@ -243,8 +243,8 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 TENANT_A = "00000000-0000-0000-0000-00000000000a"
 TENANT_B = "00000000-0000-0000-0000-00000000000b"
 
-# Every table that must carry a tenant isolation policy after 0001 -> 0011
-# (0007: 9 tables, 0011: the 4 tables of audit F-04).
+# Every table that must carry a tenant isolation policy after 0001 -> 0015
+# (0007: 9 tables, 0011: the 4 tables of audit F-04, 0015: collect_jobs).
 RLS_TABLES = [
     "accounts",
     "resources",
@@ -259,6 +259,7 @@ RLS_TABLES = [
     "audit_events",
     "retention_policies",
     "pii_classifications",
+    "collect_jobs",
 ]
 
 # Minimal wrong-tenant INSERT per table (tenant_id = TENANT_A while the
@@ -326,6 +327,10 @@ WRONG_TENANT_INSERTS: dict[str, tuple[str, tuple[Any, ...]]] = {
         "INSERT INTO pii_classifications (tenant_id, resource_type, resource_id, field_name,"
         " sensitivity, value_hash) VALUES (%s, %s, %s, %s, %s, %s)",
         (TENANT_A, "account", "999999999999", "aws_account_id", "confidential", "0" * 64),
+    ),
+    "collect_jobs": (
+        "INSERT INTO collect_jobs (tenant_id, actor, total_items) VALUES (%s, %s, %s)",
+        (TENANT_A, "intruder", 1),
     ),
 }
 
@@ -439,6 +444,10 @@ def pg_seeded(pg_migrated: str) -> Iterator[str]:
             "INSERT INTO pii_classifications (tenant_id, resource_type, resource_id, field_name,"
             " sensitivity, value_hash) VALUES (%s, %s, %s, %s, %s, %s)",
             (TENANT_A, "account", "111111111111", "aws_account_id", "confidential", "a" * 64),
+        )
+        conn.execute(
+            "INSERT INTO collect_jobs (tenant_id, actor, total_items) VALUES (%s, %s, %s)",
+            (TENANT_A, "alice", 2),
         )
     yield pg_migrated
 

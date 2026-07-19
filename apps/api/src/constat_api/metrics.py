@@ -38,6 +38,10 @@ Cardinality budget per metric (rough):
   route count cross method count cross status count
 - `constat_http_request_duration_seconds{method, path}` — bounded
   by route count cross method count
+- `constat_collect_items_total{outcome}` — outcome in {success, failed,
+  deferred} -> 3 series
+- `constat_collect_items_in_flight`, `constat_collect_queue_depth` —
+  one series each
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -119,6 +124,34 @@ FOCUS_ROWS = Counter(
 
 
 # ----------------------------------------------------------------------------
+# Collection worker metrics (async collection, roadmap 1.1 / 1.2)
+# ----------------------------------------------------------------------------
+
+COLLECT_ITEMS_TOTAL = Counter(
+    "constat_collect_items_total",
+    "Collect work items processed by the worker, partitioned by outcome "
+    "(success = acked, failed = nacked after errors/exception, deferred = "
+    "nacked because the per-account concurrency cap was reached).",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+
+COLLECT_ITEMS_IN_FLIGHT = Gauge(
+    "constat_collect_items_in_flight",
+    "Work items currently being scanned by worker threads in this process.",
+    registry=REGISTRY,
+)
+
+COLLECT_QUEUE_DEPTH = Gauge(
+    "constat_collect_queue_depth",
+    "Pending items in the in-process collect queue (ready + delayed). "
+    "Only meaningful in inline mode; on SQS, queue depth is a CloudWatch "
+    "metric and a per-replica gauge would lie.",
+    registry=REGISTRY,
+)
+
+
+# ----------------------------------------------------------------------------
 # HTTP metrics
 # ----------------------------------------------------------------------------
 
@@ -166,6 +199,19 @@ def record_focus_rows(*, ingested: int, skipped: int) -> None:
         FOCUS_ROWS.labels(outcome="ingested").inc(ingested)
     if skipped:
         FOCUS_ROWS.labels(outcome="skipped").inc(skipped)
+
+
+def record_collect_item(*, outcome: str) -> None:
+    COLLECT_ITEMS_TOTAL.labels(outcome=outcome).inc()
+
+
+def set_collect_items_in_flight(delta: int) -> None:
+    """Adjust the in-flight gauge by delta (+1 on start, -1 on finish)."""
+    COLLECT_ITEMS_IN_FLIGHT.inc(delta)
+
+
+def set_collect_queue_depth(depth: int) -> None:
+    COLLECT_QUEUE_DEPTH.set(depth)
 
 
 def record_http_request(

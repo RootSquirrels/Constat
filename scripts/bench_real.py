@@ -98,16 +98,50 @@ def _job_id_of(payload: dict[str, Any]) -> str:
 
 
 def _status_of(job: dict[str, Any]) -> str:
-    return str(job.get("status", "unknown")).lower()
+    """Job status, derived from the real API shape (GET /collect/aws/jobs/{id}).
+
+    The response has no top-level status field: it carries `pending`
+    (items not yet started), `runs_by_status` (counts) and `runs`.
+    Terminal = nothing pending and nothing running.
+    """
+    if "status" in job:  # tolerate a future explicit field
+        return str(job["status"]).lower()
+    if int(job.get("pending", 0)) > 0:
+        return "running"
+    runs_by_status = job.get("runs_by_status") or {}
+    if runs_by_status.get("running"):
+        return "running"
+    if runs_by_status.get("failed"):
+        return "failed"
+    if runs_by_status.get("partial"):
+        return "partial"
+    if runs_by_status.get("success") or "runs_by_status" in job:
+        return "success"
+    return "unknown"
 
 
 def _region_rows(job: dict[str, Any]) -> list[dict[str, Any]]:
     """Best-effort extraction of the per-region breakdown from a job detail."""
-    for key in ("regions", "results", "items", "work_items"):
+    for key in ("runs", "regions", "results", "items", "work_items"):
         rows = job.get(key)
         if isinstance(rows, list):
             return [r for r in rows if isinstance(r, dict)]
     return []
+
+
+def _iso_duration(started: object, finished: object) -> float | None:
+    """Seconds between two ISO-8601 timestamps (the job detail carries
+    started_at/finished_at, not a precomputed duration)."""
+    if not isinstance(started, str) or not isinstance(finished, str):
+        return None
+    try:
+        from datetime import datetime
+
+        start = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+        return max((end - start).total_seconds(), 0.0)
+    except ValueError:
+        return None
 
 
 def _fmt(seconds: float) -> str:
@@ -228,6 +262,8 @@ def main() -> int:
             region = row.get("region", "?")
             status = row.get("status", "?")
             duration = row.get("duration_seconds", row.get("duration"))
+            if duration is None:
+                duration = _iso_duration(row.get("started_at"), row.get("finished_at"))
             dur_txt = _fmt(float(duration)) if isinstance(duration, (int, float)) else "     n/a"
             print(f"  {info['account']}  {region:<15}  {status:<10}  {dur_txt}")
     if not any_region:

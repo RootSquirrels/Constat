@@ -14,11 +14,8 @@
 # redrive semantics are invisible to in-process metrics. This Prometheus
 # rule is the secondary signal there, and the ONLY signal in inline
 # (queue-less) mode, where failed items surface via the worker failure
-# counter. METRIC PENDING (2026-07-18): constat_collect_items_failed_total
-# is emitted by constat_api/worker.py, which is being written in
-# parallel; until apps/api/src/constat_api/metrics.py defines it, this
-# rule simply never fires (Prometheus treats a missing series as no
-# data, not an error).
+# counter. The rule reads constat_collect_items_total{outcome="failed"}
+# emitted by constat_api/worker.py (shipped 2026-07-18).
 #
 # Metric names/labels match apps/api/src/constat_api/metrics.py and
 # docs/operations/metrics.md exactly. The `reason` label on
@@ -92,9 +89,8 @@ groups:
       - alert: ConstatCollectItemsFailed
         # Collection WorkItems (account x region) failing at the worker.
         # In sqs mode the CloudWatch DLQ alarm (infra/sqs.tf) is primary;
-        # this rule is the only signal in inline mode. Metric pending
-        # the worker implementation (see header note).
-        expr: increase(constat_collect_items_failed_total[15m]) > 0
+        # this rule is the only signal in inline mode.
+        expr: increase(constat_collect_items_total{outcome="failed"}[15m]) > 0
         for: 5m
         labels:
           severity: warning

@@ -352,6 +352,27 @@ class InconclusiveORM(Base):
     )
 
 
+class CollectJobORM(Base):
+    """One accepted POST /collect/aws (async collection, migration 0015).
+
+    The row is written at enqueue time; workers do not update it — job
+    progress is DERIVED from the source_runs that carry its job_id, so a
+    crashed worker never leaves the job row itself lying. `summary` holds
+    counts only (accounts / regions / resource_types), never PII.
+    """
+
+    __tablename__ = "collect_jobs"
+
+    job_id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actor: Mapped[str] = mapped_column(String, nullable=False)
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONBType(), nullable=False, default=dict)
+
+
 class SourceRunORM(Base):
     __tablename__ = "source_runs"
     __table_args__ = (
@@ -369,6 +390,7 @@ class SourceRunORM(Base):
             sqlite_where=text("status = 'running'"),
             postgresql_where=text("status = 'running'"),
         ),
+        Index("idx_source_runs_tenant_job", "tenant_id", "job_id"),
     )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
@@ -386,6 +408,9 @@ class SourceRunORM(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     resources_found: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    # Nullable back-pointer to the collect_jobs row that enqueued this run
+    # (async collection, migration 0015). NULL for CLI / legacy sync runs.
+    job_id: Mapped[UUID | None] = mapped_column(GUID())
 
 
 class AuditEventORM(Base):

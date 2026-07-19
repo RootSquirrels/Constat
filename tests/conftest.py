@@ -11,11 +11,13 @@ force a single shared connection so all sessions see the same tables.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +25,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+# Async collection (roadmap 1.1): the API lifespan must NOT start its
+# background worker pool in tests — drains are driven deterministically
+# via drain_inline_queue() below. Set BEFORE any constat_api import,
+# because settings are read at module import time.
+os.environ.setdefault("CONSTAT_WORKER_INLINE", "0")
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_PATHS = [
@@ -74,6 +82,41 @@ def make_rds_db_dict(
         "DBSubnetGroup": {"DBSubnetGroupName": "default"},
         "Endpoint": {"Address": endpoint_host},
     }
+
+
+@pytest.fixture(autouse=True)
+def _reset_collect_queue() -> Iterator[None]:
+    """Fresh in-process collect queue per test.
+
+    The queue is a module-level singleton shared by the API router and
+    the worker; without a reset, items enqueued by one test would leak
+    into the next test's drain.
+    """
+    from constat_api.collect_queue import reset_queue
+
+    reset_queue()
+    yield
+    reset_queue()
+
+
+def drain_inline_queue(session: Session, *, max_items: int = 100) -> list[Any]:
+    """Deterministically drain the in-process collect queue (no sleeps).
+
+    Runs the worker's `drain_once` against the shared queue singleton on
+    the test's own session, so enqueued scans execute synchronously in
+    the test thread. Returns the per-item outcomes. Nacked items are
+    requeued with a not-before delay, so they are NOT returned again by
+    this call — drain once, assert, done.
+    """
+    from constat_api.collect_queue import get_queue
+    from constat_api.worker import drain_once
+
+    return drain_once(
+        lambda: session,
+        get_queue(),
+        max_items=max_items,
+        base_session=MagicMock(),
+    )
 
 
 @pytest.fixture

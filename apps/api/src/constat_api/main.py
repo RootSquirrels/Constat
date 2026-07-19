@@ -3,13 +3,21 @@
 Routers:
 - /health                       — DB ping
 - /insights                     — list/get/post insights
-- /collect/aws                  — AWS cross-account RDS collection
+- /collect/aws                  — AWS cross-account collection (async: 202 + job)
 - /collect/focus                — FOCUS CSV ingestion
+
+Lifespan: in `inline` collect mode the API process also hosts the
+collection worker pool (a few daemon threads draining the in-process
+queue). In `sqs` mode no threads start here — an external worker service
+(`python -m constat_api.worker`) drains the queue.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,10 +48,50 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Start/stop the inline collection worker pool.
+
+    Only in inline mode AND when CONSTAT_WORKER_INLINE is on — tests set
+    it to 0 (conftest) and drive worker.drain_once directly, which keeps
+    drains deterministic (no background thread racing the assertions).
+    Shutdown: set the stop event, then join briefly. Threads are daemons,
+    so a wedged region scan can never hang process exit; a healthy
+    shutdown finishes the in-flight item first.
+    """
+    stop_event = threading.Event()
+    threads: list[threading.Thread] = []
+    if settings.collect_mode == "inline" and settings.worker_inline:
+        from constat_api.collect_queue import get_queue
+        from constat_api.db import SessionLocal
+        from constat_api.worker import start_worker_pool
+
+        threads = start_worker_pool(
+            SessionLocal,
+            get_queue(),
+            concurrency=settings.worker_concurrency,
+            per_account=settings.worker_per_account,
+            stop_event=stop_event,
+        )
+        logger.info(
+            "inline collect worker pool started (%d threads, per-account cap %d)",
+            len(threads),
+            settings.worker_per_account,
+        )
+    try:
+        yield
+    finally:
+        stop_event.set()
+        for t in threads:
+            t.join(timeout=5)
+
+
 app = FastAPI(
     title=settings.api_title,
     description="Cloud inventory observability — the écart chiffré.",
     version="0.5.0",
+    lifespan=lifespan,
 )
 
 # RequestIDMiddleware is the OUTERMOST middleware so it sees every

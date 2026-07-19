@@ -31,6 +31,7 @@ def start_run(
     resource_type: str,
     source: str,
     force: bool = False,
+    job_id: UUID | None = None,
 ) -> SourceRunORM | None:
     """Start a new run. Returns None if one is already active for this scope.
 
@@ -39,6 +40,8 @@ def start_run(
             with an explanatory error and start a new one. Use this after
             `cleanup_stuck_runs` has failed to free the scope, or when
             you know the previous worker is dead (OOM, SIGKILL).
+        job_id: the collect_jobs row this run belongs to (async collection,
+            migration 0015). None for CLI / ad-hoc runs.
 
     The caller should handle None: either skip the scan (someone else is
     scanning) or treat it as a duplicate attempt.
@@ -54,6 +57,7 @@ def start_run(
         resource_type=resource_type,
         source=source,
         status="running",
+        job_id=job_id,
     )
     session.add(run)
     try:

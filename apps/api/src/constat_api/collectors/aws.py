@@ -322,6 +322,7 @@ def _run_region_job(
     aws_session: boto3.Session,
     dry_run: bool,
     force: bool,
+    job_id: UUID | None = None,
 ) -> tuple[int, int, int, str | None, list[tuple[UUID, dict[str, Any]]]]:
     """Run one (region, job) pair.
 
@@ -341,6 +342,7 @@ def _run_region_job(
         resource_type=job.resource_type,
         source=job.source,
         force=force,
+        job_id=job_id,
     )
     region_resources = 0
     region_observations = 0
@@ -477,6 +479,7 @@ def collect_target(
     dry_run: bool = False,
     force: bool = False,
     max_consecutive_region_errors: int = DEFAULT_MAX_CONSECUTIVE_REGION_ERRORS,
+    job_id: UUID | None = None,
 ) -> CollectionResult:
     """Scan one target: assume role, iterate regions/jobs, write resources/facts.
 
@@ -495,6 +498,9 @@ def collect_target(
     starting a new one. Use this to recover from stuck runs after
     `cleanup_stuck_runs` failed to free the scope, or when you know the
     previous worker is dead.
+
+    `job_id` links every source_run this scan writes to the collect_jobs
+    row that enqueued it (async collection). None for CLI / ad-hoc scans.
 
     Circuit breaker: after `max_consecutive_region_errors` consecutive
     region failures, the rest of the regions are skipped (recorded in
@@ -553,6 +559,7 @@ def collect_target(
                 aws_session=aws_session,
                 dry_run=dry_run,
                 force=force,
+                job_id=job_id,
             )
             resources_written += n_res
             observations_written += n_obs

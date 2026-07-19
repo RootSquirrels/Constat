@@ -10,8 +10,8 @@ end-to-end tests through /collect/aws and /insights/run that verify:
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from constat_api import idempotency
@@ -26,6 +26,8 @@ from constat_api.orm import InsightRunORM
 from constat_api.settings import DEFAULT_TENANT_ID
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+
+from tests.conftest import drain_inline_queue
 
 
 @pytest.fixture(autouse=True)
@@ -90,117 +92,79 @@ def test_get_cached_or_none_handles_missing():
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: /collect/aws
+# End-to-end: /collect/aws (async: 202 + job id; replay must not re-enqueue)
 # ---------------------------------------------------------------------------
 
 
 def test_collect_aws_same_idempotency_key_returns_cached_response(
-    client: TestClient,
+    client: TestClient, session
 ) -> None:
     """Two POSTs with the same Idempotency-Key return identical bodies
-    and the second one does NOT trigger a fresh scan."""
+    and the second one does NOT create a second job or re-enqueue."""
+    from constat_api.orm import CollectJobORM
+
     body = {
         "targets": [{"aws_account_id": "111111111111", "regions": ["eu-west-1"]}],
     }
+    # First call: job created, item enqueued
+    r1 = client.post(
+        "/collect/aws",
+        json=body,
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert r1.status_code == 202
+    assert r1.json()["items_enqueued"] == 1
+
+    # Second call with same key: cached response, no fresh enqueue
+    r2 = client.post(
+        "/collect/aws",
+        json=body,
+        headers={"Idempotency-Key": "k1"},
+    )
+    assert r2.status_code == 202
+    assert r2.json() == r1.json()
+
+    # Exactly one job row and one queued item: the replay did nothing.
+    assert session.query(CollectJobORM).count() == 1
     with (
-        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
         patch(
             "constat_api.collectors.aws._assume_role",
             side_effect=lambda base, target: base,
         ),
         patch(
             "constat_api.collectors.aws.collect_db_instances",
-            return_value=iter(
-                [
-                    {
-                        "_region": "eu-west-1",
-                        "DBInstanceArn": "arn:aws:rds:eu-west-1:111111111111:db:t",
-                        "DBInstanceIdentifier": "t",
-                        "Engine": "postgres",
-                        "EngineVersion": "14.7",
-                        "DBInstanceClass": "db.m5.large",
-                        "DBInstanceStatus": "available",
-                        "AllocatedStorage": 100,
-                        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-                        "MultiAZ": True,
-                        "StorageEncrypted": True,
-                        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-                        "Endpoint": {"Address": "t.x.rds.amazonaws.com"},
-                    }
-                ]
-            ),
-        ) as mock_scan,
+            return_value=iter([]),
+        ),
     ):
-        mock_session.return_value = MagicMock()
-
-        # First call: real scan, 1 resource
-        r1 = client.post(
-            "/collect/aws",
-            json=body,
-            headers={"Idempotency-Key": "k1"},
-        )
-        assert r1.status_code == 200
-        assert r1.json()["results"][0]["resources_written"] == 1
-        scan_call_count_after_first = mock_scan.call_count
-
-        # Second call with same key: cached response, no fresh scan
-        r2 = client.post(
-            "/collect/aws",
-            json=body,
-            headers={"Idempotency-Key": "k1"},
-        )
-        assert r2.status_code == 200
-        assert r2.json() == r1.json()
-        assert mock_scan.call_count == scan_call_count_after_first  # not called again
+        outcomes = drain_inline_queue(session)
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "success"
 
 
 def test_collect_aws_different_idempotency_keys_trigger_fresh_runs(
-    client: TestClient,
+    client: TestClient, session
 ) -> None:
     body = {
         "targets": [{"aws_account_id": "111111111111", "regions": ["eu-west-1"]}],
     }
-    with (
-        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
-        patch(
-            "constat_api.collectors.aws._assume_role",
-            side_effect=lambda base, target: base,
-        ),
-        patch(
-            "constat_api.collectors.aws.collect_db_instances",
-            return_value=iter([]),
-        ),
-    ):
-        mock_session.return_value = MagicMock()
-        r1 = client.post("/collect/aws", json=body, headers={"Idempotency-Key": "k1"})
-        r2 = client.post("/collect/aws", json=body, headers={"Idempotency-Key": "k2"})
-        # Both succeed; no cached response, no shared state.
-        assert r1.status_code == 200
-        assert r2.status_code == 200
+    r1 = client.post("/collect/aws", json=body, headers={"Idempotency-Key": "k1"})
+    r2 = client.post("/collect/aws", json=body, headers={"Idempotency-Key": "k2"})
+    # Both accepted; distinct jobs, no shared cache entry.
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    assert r1.json()["job_id"] != r2.json()["job_id"]
 
 
 def test_collect_aws_no_idempotency_key_does_not_cache(client: TestClient) -> None:
-    """Without the header, every request runs fresh."""
+    """Without the header, every request enqueues fresh."""
     body = {
         "targets": [{"aws_account_id": "111111111111", "regions": ["eu-west-1"]}],
     }
-    with (
-        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
-        patch(
-            "constat_api.collectors.aws._assume_role",
-            side_effect=lambda base, target: base,
-        ),
-        patch(
-            "constat_api.collectors.aws.collect_db_instances",
-            return_value=iter([]),
-        ),
-    ):
-        mock_session.return_value = MagicMock()
-        for _ in range(3):
-            r = client.post("/collect/aws", json=body)
-            assert r.status_code == 200
-        # No key = no cache entries
-        assert idempotency_cache.size() == 0
+    for _ in range(3):
+        r = client.post("/collect/aws", json=body)
+        assert r.status_code == 202
+    # No key = no cache entries
+    assert idempotency_cache.size() == 0
 
 
 # ---------------------------------------------------------------------------

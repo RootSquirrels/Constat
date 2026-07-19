@@ -11,7 +11,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from constat_api.audit import (
@@ -43,7 +43,7 @@ from constat_api.settings import DEFAULT_TENANT_ID
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from tests.conftest import make_rds_db_dict
+from tests.conftest import drain_inline_queue, make_rds_db_dict
 
 # ---------------------------------------------------------------------------
 # Audit
@@ -399,7 +399,6 @@ def test_aws_scan_writes_audit_and_pii_rows(client: TestClient, session: Session
         "dry_run": False,
     }
     with (
-        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
         patch(
             "constat_api.collectors.aws._assume_role",
             side_effect=lambda base, target: base,
@@ -411,9 +410,11 @@ def test_aws_scan_writes_audit_and_pii_rows(client: TestClient, session: Session
             ),
         ),
     ):
-        mock_session.return_value = MagicMock()
+        # Async flow: POST enqueues (202), the worker drain runs the scan.
         response = client.post("/collect/aws", json=body)
-    assert response.status_code == 200
+        assert response.status_code == 202
+        outcomes = drain_inline_queue(session)
+    assert [o.status for o in outcomes] == ["success"]
 
     # Audit: the scan was logged
     audit = session.query(AuditEventORM).filter(AuditEventORM.action == "aws_scan_completed").all()

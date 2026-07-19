@@ -7,8 +7,6 @@ requests without the matching header get 401.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 from constat_api.auth import _get_settings, verify_api_key
 from constat_api.main import app
@@ -96,48 +94,16 @@ def test_collect_aws_returns_401_without_header(auth_settings: str, client: Test
     assert response.status_code == 401
 
 
-def test_collect_aws_returns_200_with_correct_header(
+def test_collect_aws_returns_202_with_correct_header(
     auth_settings: str, client: TestClient
 ) -> None:
-    """POST /collect/aws with the right header -> 200."""
-    from datetime import UTC, datetime
-
+    """POST /collect/aws with the right header -> 202 Accepted (async)."""
     body = {
         "targets": [{"aws_account_id": "111111111111", "regions": ["eu-west-1"]}],
     }
-    with (
-        patch("constat_api.routers.aws.get_base_aws_session") as mock_session,
-        patch(
-            "constat_api.collectors.aws._assume_role",
-            side_effect=lambda base, target: base,
-        ),
-        patch(
-            "constat_api.collectors.aws.collect_db_instances",
-            return_value=iter(
-                [
-                    {
-                        "_region": "eu-west-1",
-                        "DBInstanceArn": "arn:aws:rds:eu-west-1:111111111111:db:t",
-                        "DBInstanceIdentifier": "t",
-                        "Engine": "postgres",
-                        "EngineVersion": "14.7",
-                        "DBInstanceClass": "db.m5.large",
-                        "DBInstanceStatus": "available",
-                        "AllocatedStorage": 100,
-                        "InstanceCreateTime": datetime(2024, 1, 1, tzinfo=UTC),
-                        "MultiAZ": True,
-                        "StorageEncrypted": True,
-                        "DBSubnetGroup": {"DBSubnetGroupName": "default"},
-                        "Endpoint": {"Address": "t.x.rds.amazonaws.com"},
-                    }
-                ]
-            ),
-        ),
-    ):
-        mock_session.return_value = MagicMock()
-        response = client.post("/collect/aws", json=body, headers={"X-API-Key": auth_settings})
-    assert response.status_code == 200, response.text
-    assert response.json()["results"][0]["resources_written"] == 1
+    response = client.post("/collect/aws", json=body, headers={"X-API-Key": auth_settings})
+    assert response.status_code == 202, response.text
+    assert response.json()["items_enqueued"] == 1
 
 
 def test_insights_run_returns_401_without_header(auth_settings: str, client: TestClient) -> None:

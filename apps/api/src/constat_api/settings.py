@@ -111,6 +111,47 @@ class Settings:
     # network) and a warning is logged at startup. Set this before
     # exposing /metrics beyond the private network.
     metrics_key: str | None = os.getenv("CONSTAT_METRICS_KEY") or None
+    # --- Async collection (roadmap 1.1 / 1.2) ---
+    # `inline` (default): the API process enqueues into an in-process
+    #   bounded queue and drains it from a background worker pool started
+    #   in the FastAPI lifespan. Right for dev and the single-replica
+    #   pilot; a restart loses pending items (they are re-requested by
+    #   re-POSTing — collection is idempotent via the source_runs partial
+    #   unique index).
+    # `sqs`: the API enqueues into SQS and an external worker service
+    #   (`python -m constat_api.worker`) drains it. The queue is durable,
+    #   so API restarts don't lose work. Requires CONSTAT_COLLECT_QUEUE_URL.
+    collect_mode: str = os.getenv("CONSTAT_COLLECT_MODE", "inline")
+    collect_queue_url: str | None = os.getenv("CONSTAT_COLLECT_QUEUE_URL") or None
+    # Backpressure (1.2): when the in-process queue holds this many items
+    # (pending + in-flight), POST /collect/aws answers 503 + Retry-After
+    # instead of growing memory unboundedly at ICP scale (35 accounts x
+    # ~16 regions = ~560 items, so 1000 leaves headroom for one full
+    # ICP sweep plus retries, but not an unbounded backlog).
+    collect_queue_maxsize: int = int(os.getenv("CONSTAT_COLLECT_QUEUE_MAXSIZE", "1000"))
+    # Worker pool: total drain threads (CONSTAT_WORKER_CONCURRENCY) and the
+    # per-account cap (CONSTAT_WORKER_PER_ACCOUNT). AWS API quotas are
+    # per-account, so the per-account bound matters more than the global
+    # one: 2 concurrent region scans per account stays well under
+    # Describe* throttling limits while still parallelizing an account's
+    # regions.
+    worker_concurrency: int = int(os.getenv("CONSTAT_WORKER_CONCURRENCY", "4"))
+    worker_per_account: int = int(os.getenv("CONSTAT_WORKER_PER_ACCOUNT", "2"))
+    # Whether the API process runs the inline drain pool in its lifespan.
+    # Tests set CONSTAT_WORKER_INLINE=0 (conftest) so drains stay
+    # deterministic via worker.drain_once; an SQS-mode API never starts
+    # the pool regardless (external worker service drains).
+    worker_inline: bool = os.getenv("CONSTAT_WORKER_INLINE", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # SQS visibility timeout for collect messages. One work item = one
+    # account x one region, and a region scan must fit inside this window
+    # or the message becomes visible mid-scan and a second worker
+    # double-scans (the source_runs partial unique index dedupes, but the
+    # loser has wasted a scan). 15 min is generous for a single region.
+    sqs_visibility_timeout_seconds: int = int(os.getenv("CONSTAT_SQS_VISIBILITY_TIMEOUT", "900"))
 
     def all_api_key_entries(self) -> tuple[ApiKeyEntry, ...]:
         """Every (name, role, key) the auth layer must accept.
