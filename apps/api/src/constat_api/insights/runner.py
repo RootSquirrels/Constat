@@ -456,13 +456,19 @@ def run_resource_rule(
     never accumulate duplicates. The pre-delete state is snapshotted
     first (roadmap 2.4): the post-run fingerprint diff writes
     appeared/resolved rows to insight_events, so history survives the
-    replace. Fresh ESTIMATED amounts are then contextualized against
-    FOCUS: the resource's FOCUS cost for the same period is attached
-    to the payload as informational context (focus_confirmed,
-    focus_resource_monthly_usd, focus_period, focus_billing_currency).
-    The basis never flips to ACTUAL — that label is reserved for V2
-    when a per-charge-type matcher can link a rule's amount to a
-    specific FOCUS component.
+    replace. The operator's ack (ack_status / ack_at / ack_by) is
+    also snapshotted, keyed by **stable_id** (the gap identity, not
+    the title — see insights_repo.stable_id_of), and re-applied to
+    the fresh rows after the insert. The title can change every day
+    (EOL countdown, phase transition, drift amount) and the operator's
+    decision still survives, because the gap is the same; the
+    fingerprint churn is a separate problem. Fresh ESTIMATED amounts
+    are then contextualized against FOCUS: the resource's FOCUS cost
+    for the same period is attached to the payload as informational
+    context (focus_confirmed, focus_resource_monthly_usd, focus_period,
+    focus_billing_currency). The basis never flips to ACTUAL — that
+    label is reserved for V2 when a per-charge-type matcher can link
+    a rule's amount to a specific FOCUS component.
 
     Args:
         rule_name: key in RESOURCE_RULES (rds_eol, mysql_eol, aurora_eol).
@@ -493,6 +499,14 @@ def run_resource_rule(
     # the delete-and-replace below would otherwise destroy the history we
     # need for the appeared/resolved diff after the fresh inserts.
     previous_state = insight_events_repo.snapshot_rule(session, rule_name)
+
+    # Ack carry-over: snapshot the rule's acked rows keyed by stable_id
+    # (gap identity, not title) so the operator's decision survives the
+    # delete-and-replace even when the title changes (EOL countdown,
+    # pricing-tier transition, amount refresh). The lifecycle fingerprint
+    # is the wrong key here — it hashes the title, which embeds the
+    # dynamic `days_to_eol` and changes every re-run.
+    ack_snapshot = insights_repo.snapshot_acks(session, rule_name)
 
     # F-03: clear the rule's previous output before writing fresh results.
     insights_repo.delete_insights_for_rule(session, rule_name)
@@ -535,6 +549,14 @@ def run_resource_rule(
     # ESTIMATED amounts (in-place payload merge; the basis never
     # flips to ACTUAL — see apps/api/insights/reconcile.py).
     reconcile_with_focus(session, rule_name)
+
+    # Ack carry-over (after the fresh inserts, before the diff): apply
+    # the snapshotted acks to the rule's new insights by stable_id. The
+    # fresh rows have ack_status=NULL at this point, so the apply is
+    # unconditional — every match gets the carried ack. A row that
+    # doesn't match (genuinely new gap, or genuinely closed) is left
+    # alone.
+    insights_repo.apply_acks_to_rule(session, rule_name, ack_snapshot)
 
     # Roadmap 2.4: diff old vs fresh fingerprints -> appeared/resolved
     # events, in the same transaction as the fresh insights.
@@ -669,6 +691,12 @@ def run_chargeback(
     # fingerprint diff as the resource rules.
     previous_state = insight_events_repo.snapshot_rule(session, "chargeback")
 
+    # Ack carry-over: same as run_resource_rule — snapshot the rule's
+    # acked rows keyed by stable_id (account_id + service + period +
+    # tag) so the operator's decision survives the daily FOCUS re-ingest
+    # even when the drift amount in the title changes.
+    ack_snapshot = insights_repo.snapshot_acks(session, "chargeback")
+
     # F-03: clear the rule's previous output before writing fresh results.
     insights_repo.delete_insights_for_rule(session, "chargeback")
 
@@ -726,6 +754,11 @@ def run_chargeback(
     run.status = "success" if not errors else "partial"
     run.resources_scanned = len(account_ids)
     run.insights_emitted = insights_emitted
+
+    # Ack carry-over: apply the snapshotted acks to the fresh
+    # chargeback insights by stable_id. Done in the same transaction
+    # as the rest of the run — a failed run leaves no half-acked rows.
+    insights_repo.apply_acks_to_rule(session, "chargeback", ack_snapshot)
 
     # Roadmap 2.4: diff old vs fresh fingerprints -> appeared/resolved
     # events, same transaction as the fresh insights + the audit row.
