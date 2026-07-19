@@ -222,7 +222,10 @@ def test_export_insights_csv(client: TestClient, session) -> None:
     assert chargeback[6] == "37.17"
     assert chargeback[7] == "0.874508"
     assert chargeback[8] == "2026-07-17"
-    assert chargeback[9] == "ACTUAL"  # FOCUS-confirmed drift
+    # V1: chargeback basis is ESTIMATED. The drift is a derived signal
+    # (amortized minus billed), not a FOCUS line. V2 will add a
+    # per-charge-type matcher for ACTUAL promotion.
+    assert chargeback[9] == "ESTIMATED"
     assert rds[0] == "rds_eol"
     assert rds[2] == "RDS PostgreSQL 11 is in Extended Support"
     assert rds[5] == "584.00"

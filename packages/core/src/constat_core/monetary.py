@@ -25,6 +25,18 @@ money the customer saves by acting. It must NEVER be summed with
 AVOIDABLE_SAVING amounts in a total presented as savings. The
 restitution reads `kind` to keep the two columns separate.
 
+ValueBasis in V1: every rule is ESTIMATED. The audit committee
+(FinOps re-audit) flagged the prior ESTIMATED -> ACTUAL flip as
+unsound: an RDS EOL estimate cannot be "confirmed" by the resource's
+total FOCUS cost (the total is the whole DB bill, not the Extended
+Support supplement). Same shape for EBS gp2->gp3 (the FOCUS line is
+the volume cost, not the migration savings). chargeback is built
+FROM FOCUS but its drift amount is still a derived signal
+(amortized minus billed, not a FOCUS line itself), so it is also
+ESTIMATED. ACTUAL will be reserved for V2 when a per-charge-type
+matcher (e.g. line description contains "Extended Support") can
+link a rule's amount to a specific FOCUS component.
+
 Decision record: docs/adr/ADR-13-monetary-extraction-registry.md.
 """
 
@@ -36,10 +48,21 @@ from typing import Any
 
 
 class ValueBasis(StrEnum):
-    """What the amount is derived from."""
+    """What the amount is derived from.
+
+    V1: every rule is ESTIMATED. ACTUAL is reserved for V2 — when a
+    per-charge-type matcher (e.g. "Extended Support" in the FOCUS
+    line description) can link a rule's amount to one specific FOCUS
+    component, that component's billed cost carries the ACTUAL label.
+    Until then, the label "ACTUAL" is structurally unsound: the
+    audit committee's deal-breaker was "any amount presented as
+    ACTUAL, 'confirmed by invoice' or 'avoidable' without a
+    traceable link to the FOCUS line, the currency, and the exact
+    cost component".
+    """
 
     ESTIMATED = "ESTIMATED"  # catalog-priced (EOL calendars, public rates)
-    ACTUAL = "ACTUAL"  # read from FOCUS billing rows
+    ACTUAL = "ACTUAL"  # V2: read from a single, line-matched FOCUS component
 
 
 class MonetaryKind(StrEnum):
@@ -57,7 +80,8 @@ class MonetaryExtraction:
 
 
 # One entry per money-emitting rule. Keys are rule_names as registered
-# in apps/api insights runner RUNNERS.
+# in apps/api insights runner RUNNERS. V1: every value_basis is ESTIMATED
+# (the audit committee fix; see module docstring for the rationale).
 MONETARY: dict[str, MonetaryExtraction] = {
     "rds_eol": MonetaryExtraction(
         payload_key="extended_support_monthly_usd",
@@ -95,8 +119,13 @@ MONETARY: dict[str, MonetaryExtraction] = {
         kind=MonetaryKind.AVOIDABLE_SAVING,
     ),
     "chargeback": MonetaryExtraction(
+        # V1: chargeback is ESTIMATED — it is a derived signal
+        # (amortized minus billed over a FOCUS period), not a
+        # FOCUS line itself. V2: a per-charge-type matcher (line
+        # description contains "Extended Support" or similar) can
+        # promote the matching slice to ACTUAL.
         payload_key="drift_amortized_minus_billed_usd",
-        value_basis=ValueBasis.ACTUAL,
+        value_basis=ValueBasis.ESTIMATED,
         kind=MonetaryKind.ACCOUNTING_DELTA,
     ),
 }
@@ -117,21 +146,17 @@ def monthly_cost_and_basis(
     the registered key is absent or non-numeric (bool excluded: it IS
     an int in Python, and True must not become $1.00).
 
-    Reconciliation (roadmap 2.3, ADR-13 note): once the API's reconcile
-    pass confirms an estimate against FOCUS billing lines, the payload
-    carries its own truth (`focus_confirmed` + `focus_actual_monthly_usd`)
-    and that invoice-backed amount wins over the catalog estimate — the
-    basis becomes per-insight ACTUAL. The MonetaryKind NEVER changes: a
-    confirmed amount keeps its kind (an AVOIDABLE_SAVING stays a saving,
-    it is merely better evidenced).
+    V1: this function never returns ACTUAL. The reconciliation pass
+    that used to flip value_basis to ACTUAL is now a no-op for the
+    label (see apps/api/insights/reconcile.py). The basis reflects
+    the rule's registered value_basis, which is ESTIMATED for every
+    V1 rule. V2 will add a per-charge-type matcher that returns
+    ACTUAL when a specific FOCUS component can be linked to the
+    rule's amount.
     """
     entry = MONETARY.get(rule_name)
     if entry is None:
         return None, None
-    if payload.get("focus_confirmed") is True:
-        actual = payload.get("focus_actual_monthly_usd")
-        if not isinstance(actual, bool) and isinstance(actual, int | float):
-            return float(actual), ValueBasis.ACTUAL.value
     raw = payload.get(entry.payload_key)
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         return None, entry.value_basis.value

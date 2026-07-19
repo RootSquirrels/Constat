@@ -87,10 +87,15 @@ def test_ebs_savings_are_extracted() -> None:
     assert monetary_kind("ebs_gp2_to_gp3") == MonetaryKind.AVOIDABLE_SAVING
 
 
-def test_chargeback_is_actual_and_accounting_delta() -> None:
+def test_chargeback_is_estimated_and_accounting_delta() -> None:
+    """V1: chargeback is ESTIMATED. The drift is a derived signal
+    (amortized minus billed over a FOCUS period), not a FOCUS line
+    itself. V2: a per-charge-type matcher can promote the matching
+    slice to ACTUAL. Until then, the basis is ESTIMATED for every
+    V1 rule (audit committee fix)."""
     cost, basis = monthly_cost_and_basis("chargeback", {"drift_amortized_minus_billed_usd": -42.0})
     assert cost == -42.0
-    assert basis == ValueBasis.ACTUAL.value
+    assert basis == ValueBasis.ESTIMATED.value
     # The kind that must keep drift OUT of any "savings" total.
     assert monetary_kind("chargeback") == MonetaryKind.ACCOUNTING_DELTA
 

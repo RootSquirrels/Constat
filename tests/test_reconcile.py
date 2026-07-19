@@ -1,9 +1,17 @@
-"""Tests for ESTIMATED -> ACTUAL reconciliation against FOCUS (roadmap 2.3).
+"""Tests for the FOCUS-context attachment pass (audit committee fix).
 
-An estimate is invoice-confirmed when FOCUS has cost lines for the SAME
-resource (insights.resource_id -> resources.native_id == focus_charges.resource_id)
-from the rule's own service, over the latest available period. The insight's
-payload then flips to value_basis ACTUAL with the invoice-backed amount.
+V1: the reconciler attaches the resource's FOCUS cost to the insight
+payload as informational context (focus_confirmed, focus_resource_monthly_usd,
+focus_period, focus_billing_currency). The value_basis never flips:
+the audit committee flagged the prior ESTIMATED -> ACTUAL flip as
+unsound (the FOCUS line is the resource's total cost, not the rule's
+specific cost component). The estimate is what the restitution displays;
+the FOCUS line is alongside. V2 will add a per-charge-type matcher
+that can promote the matching slice to ACTUAL.
+
+The match chain is unchanged: insights.resource_id -> resources.native_id
+== focus_charges.resource_id. A rule only trusts cost lines from its
+own FOCUS ServiceName (see apps/api/insights/reconcile.py).
 """
 
 from __future__ import annotations
@@ -125,7 +133,12 @@ def _run(session: Session) -> InsightORM:
 
 
 def test_focus_line_confirms_estimate(session: Session) -> None:
-    """FOCUS line for the resource (June, $300 over 30 days) -> ACTUAL $300."""
+    """FOCUS line for the resource (June, $300 over 30 days) is attached
+    as context. The audit committee fix: the basis stays ESTIMATED, the
+    FOCUS total is the resource's total cost (not the rule's specific
+    cost component). The `focus_resource_monthly_usd` field is the
+    FOCUS line cost — informational, not a confirmation of the rule's
+    amount."""
     acc, _resource = _bootstrap_pg11(session)
     _add_focus(session, acc.id, amortized="300.00")
 
@@ -133,8 +146,9 @@ def test_focus_line_confirms_estimate(session: Session) -> None:
 
     payload = insight.payload
     assert payload["focus_confirmed"] is True
-    assert payload["value_basis"] == "ACTUAL"
-    assert payload["focus_actual_monthly_usd"] == pytest.approx(300.0)
+    # The basis never flips: stays ESTIMATED for every V1 rule.
+    assert payload.get("value_basis", ValueBasis.ESTIMATED.value) == ValueBasis.ESTIMATED.value
+    assert payload["focus_resource_monthly_usd"] == pytest.approx(300.0)
     assert payload["focus_period"] == "2026-06-01..2026-06-30"
     # The catalog estimate is kept in the payload (evidence trail).
     assert payload["extended_support_monthly_usd"] == ESTIMATE
@@ -167,7 +181,7 @@ def test_other_resource_does_not_confirm(session: Session) -> None:
 
 
 def test_latest_period_wins(session: Session) -> None:
-    """Two periods: the latest one (June $300) is the actual, May is ignored."""
+    """Two periods: the latest one (June $300) is the contextual one."""
     acc, _resource = _bootstrap_pg11(session)
     _add_focus(
         session,
@@ -179,7 +193,7 @@ def test_latest_period_wins(session: Session) -> None:
     _add_focus(session, acc.id, amortized="300.00")
 
     insight = _run(session)
-    assert insight.payload["focus_actual_monthly_usd"] == pytest.approx(300.0)
+    assert insight.payload["focus_resource_monthly_usd"] == pytest.approx(300.0)
     assert insight.payload["focus_period"] == "2026-06-01..2026-06-30"
 
 
@@ -195,7 +209,7 @@ def test_monthly_normalization_prorates_short_periods(session: Session) -> None:
     )
 
     insight = _run(session)
-    assert insight.payload["focus_actual_monthly_usd"] == pytest.approx(300.0)
+    assert insight.payload["focus_resource_monthly_usd"] == pytest.approx(300.0)
 
 
 def test_lines_in_same_period_are_summed(session: Session) -> None:
@@ -221,22 +235,25 @@ def test_lines_in_same_period_are_summed(session: Session) -> None:
 
     insight = _run(session)
     # Sum $300 over the full window 06-01..06-30 (30 days) -> $300/month.
-    assert insight.payload["focus_actual_monthly_usd"] == pytest.approx(300.0)
+    assert insight.payload["focus_resource_monthly_usd"] == pytest.approx(300.0)
 
 
 # ---- Extraction semantics (monetary registry) --------------------------------
 
 
-def test_extraction_prefers_actual_and_kind_never_changes(session: Session) -> None:
-    """ADR-13 note: basis becomes per-insight ACTUAL; kind stays AVOIDABLE_SAVING."""
+def test_extraction_uses_estimate_even_when_focus_attached(session: Session) -> None:
+    """Audit committee fix: the basis is ESTIMATED for every V1 rule.
+    The FOCUS context is informational (the resource's total cost over
+    the period, not the rule's specific cost component). The estimate
+    is what the restitution displays; the FOCUS line is alongside."""
     payload = {
         "extended_support_monthly_usd": ESTIMATE,
         "focus_confirmed": True,
-        "focus_actual_monthly_usd": 300.0,
+        "focus_resource_monthly_usd": 300.0,
     }
     cost, basis = monthly_cost_and_basis("rds_eol", payload)
-    assert cost == 300.0
-    assert basis == ValueBasis.ACTUAL.value
+    assert cost == ESTIMATE
+    assert basis == ValueBasis.ESTIMATED.value
     assert monetary_kind("rds_eol") == MonetaryKind.AVOIDABLE_SAVING
 
 
@@ -245,7 +262,7 @@ def test_confirmed_flag_without_numeric_amount_falls_back() -> None:
     payload = {
         "extended_support_monthly_usd": ESTIMATE,
         "focus_confirmed": True,
-        "focus_actual_monthly_usd": "300",
+        "focus_resource_monthly_usd": "300",
     }
     cost, basis = monthly_cost_and_basis("rds_eol", payload)
     assert cost == ESTIMATE

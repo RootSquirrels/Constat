@@ -456,8 +456,13 @@ def run_resource_rule(
     never accumulate duplicates. The pre-delete state is snapshotted
     first (roadmap 2.4): the post-run fingerprint diff writes
     appeared/resolved rows to insight_events, so history survives the
-    replace. Fresh ESTIMATED amounts are then reconciled against FOCUS
-    (roadmap 2.3): matched insights flip to value_basis ACTUAL.
+    replace. Fresh ESTIMATED amounts are then contextualized against
+    FOCUS: the resource's FOCUS cost for the same period is attached
+    to the payload as informational context (focus_confirmed,
+    focus_resource_monthly_usd, focus_period, focus_billing_currency).
+    The basis never flips to ACTUAL — that label is reserved for V2
+    when a per-charge-type matcher can link a rule's amount to a
+    specific FOCUS component.
 
     Args:
         rule_name: key in RESOURCE_RULES (rds_eol, mysql_eol, aurora_eol).
@@ -526,8 +531,9 @@ def run_resource_rule(
             errors.append(f"{resource.id}: {exc}")
             logger.exception("Resource %s failed", resource.id)
 
-    # Roadmap 2.3: confirm the fresh ESTIMATED amounts against FOCUS billing
-    # lines (in-place payload merge -> value_basis ACTUAL where matched).
+    # Roadmap 2.3 (audit fix): attach FOCUS context to the fresh
+    # ESTIMATED amounts (in-place payload merge; the basis never
+    # flips to ACTUAL — see apps/api/insights/reconcile.py).
     reconcile_with_focus(session, rule_name)
 
     # Roadmap 2.4: diff old vs fresh fingerprints -> appeared/resolved

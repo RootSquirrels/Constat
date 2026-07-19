@@ -243,8 +243,13 @@ const RULE_MONETARY: Record<
     kind: "AVOIDABLE_SAVING",
   },
   chargeback: {
+    // V1: chargeback is ESTIMATED. The drift is a derived signal
+    // (amortized minus billed over a FOCUS period), not a FOCUS
+    // line itself. V2: a per-charge-type matcher (e.g. line
+    // description contains "Extended Support") will be able to
+    // promote the matching slice to ACTUAL.
     payloadKey: "drift_amortized_minus_billed_usd",
-    valueBasis: "ACTUAL",
+    valueBasis: "ESTIMATED",
     kind: "ACCOUNTING_DELTA",
   },
 };
