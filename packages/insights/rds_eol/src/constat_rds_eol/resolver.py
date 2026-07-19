@@ -5,6 +5,14 @@ Returns MATCH (gap found, emits Insight), NO_MATCH (no gap), or INCONCLUSIVE
 the GTM promise is "we tell you what you don't know about your fleet" —
 disappearing silently when facts are missing is exactly the failure mode
 the product must avoid (criterion n°15).
+
+Region honesty: Extended Support pricing is not region-uniform, so the
+aws.rds.region fact is mandatory — missing/UNKNOWN region = INCONCLUSIVE,
+never a silently mis-gridded amount. Facts written before the collector
+emitted the region fact lack it; the next daily scan heals them. A region
+the catalog doesn't cover still matches, on the us-east-1 fallback grid,
+with `price_region_exact: false` — the payload says which grid priced it
+(`pricing_region`). Amounts are USD (`source_currency`).
 """
 
 from __future__ import annotations
@@ -17,9 +25,9 @@ from uuid import UUID
 from constat_core.catalog.aws import (
     CATALOG_VERSION,
     PostgresEOLInfo,
+    es_price_per_vcpu_hour,
     extended_support_tier,
     postgres_eol_info,
-    price_per_vcpu_hour,
 )
 from constat_core.models import Fact, Insight, Severity, ValueState
 
@@ -80,6 +88,7 @@ def evaluate(
     engine = _get(idx, "aws.rds.engine")
     version = _get(idx, "aws.rds.engine_version")
     vcpu = _get(idx, "aws.rds.vcpu")
+    region = _get(idx, "aws.rds.region")
 
     inconclusive: list[str] = []
 
@@ -97,6 +106,13 @@ def evaluate(
     # Gate 3: vcpu must be KNOWN (we can't price without it).
     if vcpu is None or vcpu.value_state != ValueState.KNOWN:
         inconclusive.append("aws.rds.vcpu")
+
+    # Gate 4: region must be KNOWN — Extended Support pricing is not
+    # region-uniform, so we can't price honestly without knowing the
+    # region. Facts written before the collector emitted this fact are
+    # healed by the next daily scan.
+    if region is None or region.value_state != ValueState.KNOWN:
+        inconclusive.append("aws.rds.region")
 
     if inconclusive:
         # We don't have enough to conclude. Don't emit a false negative — emit
@@ -137,6 +153,7 @@ def evaluate(
                     eol_info=eol_info,
                     current=current,
                     vcpu_count=vcpu_count,
+                    region=str(region.value),  # type: ignore[union-attr]
                     days_to_event=days_to_force,
                     severity=Severity.CRITICAL,
                     title=f"RDS PostgreSQL {major} will be force-upgraded in {days_to_force} days",
@@ -176,6 +193,7 @@ def evaluate(
                 eol_info=eol_info,
                 current=current,
                 vcpu_count=vcpu_count,
+                region=str(region.value),  # type: ignore[union-attr]
                 days_to_event=days_to_eol,
                 severity=severity,
                 title=title,
@@ -194,13 +212,14 @@ def _make_insight(
     eol_info: PostgresEOLInfo,
     current: date,
     vcpu_count: int,
+    region: str,
     days_to_event: int,
     severity: Severity,
     title: str,
     recommendation: str,
 ) -> Insight:
     tier = extended_support_tier(eol_info.eol_date, current)
-    rate = price_per_vcpu_hour(eol_info, current)
+    rate, pricing_region, region_exact = es_price_per_vcpu_hour(tier, region)
     # The number the whole product exists to produce. Regression note:
     # the tiering refactor dropped this multiplication (vcpu was gated
     # but never consumed) and no test caught it — the committee did.
@@ -223,6 +242,9 @@ def _make_insight(
             "pricing_tier": tier,
             "pricing_usd_per_vcpu_hour": rate,
             "pricing_tier_label": "year_1_2" if tier == "year_1_2" else "year_3_plus",
+            "pricing_region": pricing_region,
+            "price_region_exact": region_exact,
+            "source_currency": "USD",
             "vcpu": vcpu_count,
             # Canonical monetary key — registered in constat_core.monetary
             # (same key as mysql_eol / aurora_eol).

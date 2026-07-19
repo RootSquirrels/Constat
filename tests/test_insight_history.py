@@ -70,6 +70,7 @@ def _set_engine_version(session: Session, resource: ResourceORM, version: str, r
                 ("engine_version", version),
                 ("instance_class", "db.m5.xlarge"),
                 ("vcpu", 2),
+                ("region", "us-east-1"),
             ]
         ],
         source_run_id=run_id,

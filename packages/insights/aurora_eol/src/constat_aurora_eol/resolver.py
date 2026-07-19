@@ -16,6 +16,14 @@ The payload carries an explicit monthly Extended Support cost
 (`extended_support_monthly_usd` = vCPU x tier rate x 730h) stamped
 `value_basis=ESTIMATED`: the figure is catalog-derived until a FOCUS
 line confirms the actual charge (per roadmap vague 1).
+
+Region honesty (same as rds_eol): Extended Support pricing is not
+region-uniform, so the aws.rds.region fact is mandatory — missing/UNKNOWN
+region = INCONCLUSIVE. Facts written before the collector emitted the
+region fact lack it; the next daily scan heals them. An uncatalogued
+region still matches on the us-east-1 fallback grid with
+`price_region_exact: false` (`pricing_region` says which grid priced it).
+Amounts are USD (`source_currency`).
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ from constat_core.catalog.aws import (
     aurora_mysql_eol_info,
     aurora_postgres_eol_info,
     engine_extended_support_tier,
-    engine_price_per_vcpu_hour,
+    es_price_per_vcpu_hour,
 )
 from constat_core.models import Fact, Insight, Severity, ValueState
 
@@ -127,6 +135,7 @@ def evaluate(
     engine = _get(idx, "aws.rds.engine")
     version = _get(idx, "aws.rds.engine_version")
     vcpu = _get(idx, "aws.rds.vcpu")
+    region = _get(idx, "aws.rds.region")
 
     inconclusive: list[str] = []
 
@@ -144,6 +153,13 @@ def evaluate(
     # Gate 3: vcpu must be KNOWN (we can't price without it).
     if vcpu is None or vcpu.value_state != ValueState.KNOWN:
         inconclusive.append("aws.rds.vcpu")
+
+    # Gate 4: region must be KNOWN — Extended Support pricing is not
+    # region-uniform, so we can't price honestly without knowing the
+    # region. Facts written before the collector emitted this fact are
+    # healed by the next daily scan.
+    if region is None or region.value_state != ValueState.KNOWN:
+        inconclusive.append("aws.rds.region")
 
     if inconclusive:
         # We don't have enough to conclude. Don't emit a false negative — emit
@@ -181,6 +197,7 @@ def evaluate(
                     major=major,
                     version_value=version.value,  # type: ignore[arg-type]
                     vcpu_count=int(vcpu.value),  # type: ignore[arg-type]
+                    region=str(region.value),  # type: ignore[union-attr]
                     eol_info=eol_info,
                     current=current,
                     days_to_event=days_to_force,
@@ -220,6 +237,7 @@ def evaluate(
                 major=major,
                 version_value=version.value,  # type: ignore[arg-type]
                 vcpu_count=int(vcpu.value),  # type: ignore[arg-type]
+                region=str(region.value),  # type: ignore[union-attr]
                 eol_info=eol_info,
                 current=current,
                 days_to_event=days_to_eol,
@@ -240,6 +258,7 @@ def _make_insight(
     major: int,
     version_value: str,
     vcpu_count: int,
+    region: str,
     eol_info: EngineEOLInfo,
     current: date,
     days_to_event: int,
@@ -248,7 +267,7 @@ def _make_insight(
     recommendation: str,
 ) -> Insight:
     tier = engine_extended_support_tier(eol_info, current)
-    rate = engine_price_per_vcpu_hour(eol_info, current)
+    rate, pricing_region, region_exact = es_price_per_vcpu_hour(tier, region)
     monthly_usd = round(vcpu_count * rate * HOURS_PER_MONTH, 2)
 
     return Insight(
@@ -268,6 +287,9 @@ def _make_insight(
             "pricing_tier": tier,
             "pricing_usd_per_vcpu_hour": rate,
             "pricing_tier_label": "year_1_2" if tier == "year_1_2" else "year_3_plus",
+            "pricing_region": pricing_region,
+            "price_region_exact": region_exact,
+            "source_currency": "USD",
             "vcpu_count": vcpu_count,
             "extended_support_monthly_usd": monthly_usd,
             # Catalog-derived estimate until a FOCUS line confirms the actual

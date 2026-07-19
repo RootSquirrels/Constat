@@ -49,7 +49,7 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
     )
 
     assert result.resources_written == 1
-    assert result.facts_written == 4  # engine, engine_version, instance_class, vcpu
+    assert result.facts_written == 5  # engine, engine_version, instance_class, vcpu, region
     assert result.observations_written == 1
     assert result.errors == []
 
@@ -60,7 +60,7 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
 
     facts = session.query(FactORM).all()
     keys = {f.key for f in facts}
-    assert keys == {"engine", "engine_version", "instance_class", "vcpu"}
+    assert keys == {"engine", "engine_version", "instance_class", "vcpu", "region"}
     assert any(f.value == "postgres" for f in facts)
     assert any(f.value == 4 for f in facts)  # m5.xlarge vCPU
 

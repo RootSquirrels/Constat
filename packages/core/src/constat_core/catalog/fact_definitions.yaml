@@ -33,7 +33,7 @@
 #   since                    — date this entry was added (audit trail)
 
 schema_version: 1
-last_reviewed: "2026-07-18"
+last_reviewed: "2026-07-19"
 
 facts:
   - namespace: aws.rds
@@ -107,6 +107,24 @@ facts:
       - mysql_eol
       - aurora_eol
     since: "2026-07-18"
+
+  - namespace: aws.rds
+    key: region
+    value_type: string
+    description: |
+      AWS region of the DB instance (collector-injected `_region`).
+      RDS Extended Support pricing is not region-uniform, so the three
+      EOL rules gate on this fact: missing/UNKNOWN = INCONCLUSIVE,
+      never a silently mis-gridded amount. A region the catalog doesn't
+      cover falls back to the us-east-1 grid with
+      price_region_exact=false.
+    pattern: "^[a-z]{2}(-[a-z]+)+-[0-9]+$"
+    producer: aws_rds
+    consumers:
+      - rds_eol
+      - mysql_eol
+      - aurora_eol
+    since: "2026-07-19"
 
   # ------------------------------------------------------------------
   # aws.ec2.volume.* — produced by the aws_ec2 connector
@@ -220,6 +238,22 @@ facts:
     consumers: []
     since: "2026-07-18"
 
+  - namespace: aws.ec2.volume
+    key: region
+    value_type: string
+    description: |
+      AWS region of the volume (collector-injected `_region`). EBS
+      pricing is not region-uniform, so the pricing rules gate on this
+      fact: missing/UNKNOWN region = INCONCLUSIVE, never a silently
+      mis-gridded amount. A region the catalog doesn't cover falls
+      back to the us-east-1 grid with price_region_exact=false.
+    pattern: "^[a-z]{2}(-[a-z]+)+-[0-9]+$"
+    producer: aws_ec2
+    consumers:
+      - ebs_unattached
+      - ebs_gp2_to_gp3
+    since: "2026-07-19"
+
   # ------------------------------------------------------------------
   # aws.ec2.snapshot.* — snapshot_to_facts + the correlation post-pass
   # (volume_exists spans two jobs' scans; written per region after
@@ -311,6 +345,19 @@ facts:
       - snapshot_orphan
     since: "2026-07-18"
 
+  - namespace: aws.ec2.snapshot
+    key: region
+    value_type: string
+    description: |
+      AWS region of the snapshot (collector-injected `_region`).
+      Snapshot pricing is not region-uniform; snapshot_orphan gates on
+      this fact (missing/UNKNOWN = INCONCLUSIVE).
+    pattern: "^[a-z]{2}(-[a-z]+)+-[0-9]+$"
+    producer: aws_ec2
+    consumers:
+      - snapshot_orphan
+    since: "2026-07-19"
+
   # ------------------------------------------------------------------
   # aws.ec2.instance.* — instance_to_facts + the correlation post-pass.
   # ------------------------------------------------------------------
@@ -373,3 +420,17 @@ facts:
     consumers:
       - ec2_stopped_with_storage
     since: "2026-07-18"
+
+  - namespace: aws.ec2.instance
+    key: region
+    value_type: string
+    description: |
+      AWS region of the instance (collector-injected `_region`).
+      ec2_stopped_with_storage prices the attached volumes on this
+      grid — attached EBS volumes are always in the instance's region
+      (attachment is within an AZ), so one fact covers the breakdown.
+    pattern: "^[a-z]{2}(-[a-z]+)+-[0-9]+$"
+    producer: aws_ec2
+    consumers:
+      - ec2_stopped_with_storage
+    since: "2026-07-19"

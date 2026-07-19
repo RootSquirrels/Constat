@@ -77,6 +77,7 @@ def _bootstrap_pg11(session: Session) -> tuple[AccountORM, ResourceORM]:
                 ("engine_version", "11.22"),
                 ("instance_class", "db.m5.xlarge"),
                 ("vcpu", 2),
+                ("region", "us-east-1"),
             ]
         ],
         source_run_id=run.id,

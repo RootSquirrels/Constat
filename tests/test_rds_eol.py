@@ -37,11 +37,12 @@ def _fact(
     )
 
 
-def _pg_facts(major_version: int, vcpu: int = 4) -> list[Fact]:
+def _pg_facts(major_version: int, vcpu: int = 4, region: str = "us-east-1") -> list[Fact]:
     return [
         _fact("aws.rds", "engine", "postgres"),
         _fact("aws.rds", "engine_version", f"{major_version}.7"),
         _fact("aws.rds", "vcpu", vcpu),
+        _fact("aws.rds", "region", region),
     ]
 
 
@@ -195,6 +196,7 @@ def test_multiple_missing_facts_all_listed():
         _fact("aws.rds", "engine", None, value_state=ValueState.UNKNOWN),
         _fact("aws.rds", "engine_version", None, value_state=ValueState.UNKNOWN),
         _fact("aws.rds", "vcpu", None, value_state=ValueState.UNKNOWN),
+        _fact("aws.rds", "region", None, value_state=ValueState.UNKNOWN),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert not result.is_conclusive
@@ -202,6 +204,7 @@ def test_multiple_missing_facts_all_listed():
         "aws.rds.engine",
         "aws.rds.engine_version",
         "aws.rds.vcpu",
+        "aws.rds.region",
     }
 
 
@@ -210,6 +213,7 @@ def test_malformed_version_emits_inconclusive():
         _fact("aws.rds", "engine", "postgres"),
         _fact("aws.rds", "engine_version", "banana"),
         _fact("aws.rds", "vcpu", 4),
+        _fact("aws.rds", "region", "us-east-1"),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert not result.is_conclusive
@@ -219,7 +223,85 @@ def test_malformed_version_emits_inconclusive():
 def test_empty_facts_emits_inconclusive():
     result = evaluate(uuid4(), [], today=date(2026, 7, 18))
     assert not result.is_conclusive
-    assert len(result.inconclusive_reasons) == 3
+    assert len(result.inconclusive_reasons) == 4
+
+
+# ---- Region-aware pricing (ES grids are not region-uniform) ----------------
+
+
+def test_missing_region_emits_inconclusive():
+    """Facts written before the collector emitted aws.rds.region lack it —
+    INCONCLUSIVE until the next daily scan heals them."""
+    facts = [
+        _fact("aws.rds", "engine", "postgres"),
+        _fact("aws.rds", "engine_version", "11.22"),
+        _fact("aws.rds", "vcpu", 4),
+    ]
+    result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
+    assert not result.is_conclusive
+    assert result.insights == []
+    assert "aws.rds.region" in result.inconclusive_reasons
+
+
+def test_unknown_region_emits_inconclusive():
+    facts = [
+        _fact("aws.rds", "engine", "postgres"),
+        _fact("aws.rds", "engine_version", "11.22"),
+        _fact("aws.rds", "vcpu", 4),
+        _fact("aws.rds", "region", None, value_state=ValueState.UNKNOWN),
+    ]
+    result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
+    assert not result.is_conclusive
+    assert "aws.rds.region" in result.inconclusive_reasons
+
+
+def test_eu_west_1_prices_on_its_own_grid():
+    # PG11, 4 vCPU, year-3 tier: 4 * $0.224 * 730h = $654.08/month.
+    result = evaluate(uuid4(), _pg_facts(11, vcpu=4, region="eu-west-1"), today=date(2026, 7, 18))
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    assert payload["pricing_tier"] == "year_3_plus"
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.224
+    assert payload["extended_support_monthly_usd"] == 654.08
+    assert payload["pricing_region"] == "eu-west-1"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+
+def test_eu_west_3_prices_on_its_own_grid():
+    # PG11, 4 vCPU, year-3 tier: 4 * $0.235 * 730h = $686.20/month.
+    result = evaluate(uuid4(), _pg_facts(11, vcpu=4, region="eu-west-3"), today=date(2026, 7, 18))
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.235
+    assert payload["extended_support_monthly_usd"] == 686.20
+    assert payload["pricing_region"] == "eu-west-3"
+    assert payload["price_region_exact"] is True
+
+
+def test_uncatalogued_region_falls_back_to_default_grid():
+    # eu-central-1 isn't catalogued: MATCH on the us-east-1 grid, flagged.
+    result = evaluate(
+        uuid4(), _pg_facts(11, vcpu=4, region="eu-central-1"), today=date(2026, 7, 18)
+    )
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    # 4 vCPU * $0.20 * 730h = $584/month on the fallback grid.
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.20
+    assert payload["extended_support_monthly_usd"] == 584.0
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
+
+
+def test_es_price_per_vcpu_hour_region_semantics():
+    """Catalog contract: None -> default grid (exact), catalogued region ->
+    its own grid (exact), uncatalogued region -> default grid (not exact)."""
+    from constat_core.catalog.aws import es_price_per_vcpu_hour
+
+    assert es_price_per_vcpu_hour("year_1_2") == (0.10, "us-east-1", True)
+    assert es_price_per_vcpu_hour("year_3_plus", "eu-west-1") == (0.224, "eu-west-1", True)
+    assert es_price_per_vcpu_hour("year_1_2", "eu-west-3") == (0.118, "eu-west-3", True)
+    assert es_price_per_vcpu_hour("year_3_plus", "ap-southeast-2") == (0.20, "us-east-1", False)
 
 
 # ---- Graviton -------------------------------------------------------------
@@ -241,6 +323,7 @@ def test_graviton_pg11_emits_critical_with_year_3_rate():
         _fact("aws.rds", "engine", "postgres"),
         _fact("aws.rds", "engine_version", "11.22"),
         _fact("aws.rds", "vcpu", 8),  # db.m6g.2xlarge vCPU
+        _fact("aws.rds", "region", "us-east-1"),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert result.is_conclusive

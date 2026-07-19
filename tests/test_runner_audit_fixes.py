@@ -83,6 +83,7 @@ def _pg14_facts(session: Session, resource: ResourceORM, account_id, run_id) -> 
                 ("engine_version", "14.7"),
                 ("instance_class", "db.m5.xlarge"),
                 ("vcpu", 4),
+                ("region", "eu-west-1"),
             ]
         ],
         source_run_id=run_id,

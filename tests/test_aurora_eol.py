@@ -50,11 +50,14 @@ def _fact(
     )
 
 
-def _aurora_facts(engine: str, engine_version: str, vcpu: int = 4) -> list[Fact]:
+def _aurora_facts(
+    engine: str, engine_version: str, vcpu: int = 4, region: str = "us-east-1"
+) -> list[Fact]:
     return [
         _fact("aws.rds", "engine", engine),
         _fact("aws.rds", "engine_version", engine_version),
         _fact("aws.rds", "vcpu", vcpu),
+        _fact("aws.rds", "region", region),
     ]
 
 
@@ -272,6 +275,7 @@ def test_multiple_missing_facts_all_listed():
         _fact("aws.rds", "engine", None, value_state=ValueState.UNKNOWN),
         _fact("aws.rds", "engine_version", None, value_state=ValueState.UNKNOWN),
         _fact("aws.rds", "vcpu", None, value_state=ValueState.UNKNOWN),
+        _fact("aws.rds", "region", None, value_state=ValueState.UNKNOWN),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert not result.is_conclusive
@@ -279,6 +283,7 @@ def test_multiple_missing_facts_all_listed():
         "aws.rds.engine",
         "aws.rds.engine_version",
         "aws.rds.vcpu",
+        "aws.rds.region",
     }
 
 
@@ -287,6 +292,7 @@ def test_malformed_version_emits_inconclusive():
         _fact("aws.rds", "engine", "aurora-mysql"),
         _fact("aws.rds", "engine_version", "banana"),
         _fact("aws.rds", "vcpu", 4),
+        _fact("aws.rds", "region", "us-east-1"),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert not result.is_conclusive
@@ -296,7 +302,84 @@ def test_malformed_version_emits_inconclusive():
 def test_empty_facts_emits_inconclusive():
     result = evaluate(uuid4(), [], today=date(2026, 7, 18))
     assert not result.is_conclusive
-    assert len(result.inconclusive_reasons) == 3
+    assert len(result.inconclusive_reasons) == 4
+
+
+# ---- Region-aware pricing (ES grids are not region-uniform) ----------------
+
+
+def test_missing_region_emits_inconclusive():
+    """Facts written before the collector emitted aws.rds.region lack it —
+    INCONCLUSIVE until the next daily scan heals them."""
+    facts = [
+        _fact("aws.rds", "engine", "aurora-mysql"),
+        _fact("aws.rds", "engine_version", "2.12.4"),
+        _fact("aws.rds", "vcpu", 4),
+    ]
+    result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
+    assert not result.is_conclusive
+    assert result.insights == []
+    assert "aws.rds.region" in result.inconclusive_reasons
+
+
+def test_unknown_region_emits_inconclusive():
+    facts = [
+        _fact("aws.rds", "engine", "aurora-postgresql"),
+        _fact("aws.rds", "engine_version", "13.9"),
+        _fact("aws.rds", "vcpu", 2),
+        _fact("aws.rds", "region", None, value_state=ValueState.UNKNOWN),
+    ]
+    result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
+    assert not result.is_conclusive
+    assert "aws.rds.region" in result.inconclusive_reasons
+
+
+def test_eu_west_1_prices_on_its_own_grid():
+    # Aurora MySQL 2, 4 vCPU, single year-1-2 tier: 4 * $0.112 * 730h = $327.04/month.
+    result = evaluate(
+        uuid4(),
+        _aurora_facts("aurora-mysql", "2.12.4", vcpu=4, region="eu-west-1"),
+        today=date(2026, 7, 18),
+    )
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    assert payload["pricing_tier"] == "year_1_2"
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.112
+    assert payload["extended_support_monthly_usd"] == 327.04
+    assert payload["pricing_region"] == "eu-west-1"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+
+def test_eu_west_3_prices_on_its_own_grid():
+    # Aurora PG 13, 2 vCPU, year-1-2 tier: 2 * $0.118 * 730h = $172.28/month.
+    result = evaluate(
+        uuid4(),
+        _aurora_facts("aurora-postgresql", "13.9", vcpu=2, region="eu-west-3"),
+        today=date(2026, 7, 18),
+    )
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.118
+    assert payload["extended_support_monthly_usd"] == 172.28
+    assert payload["pricing_region"] == "eu-west-3"
+    assert payload["price_region_exact"] is True
+
+
+def test_uncatalogued_region_falls_back_to_default_grid():
+    # eu-central-1 isn't catalogued: MATCH on the us-east-1 grid, flagged.
+    result = evaluate(
+        uuid4(),
+        _aurora_facts("aurora-mysql", "2.12.4", vcpu=4, region="eu-central-1"),
+        today=date(2026, 7, 18),
+    )
+    assert len(result.insights) == 1
+    payload = result.insights[0].payload
+    # 4 vCPU * $0.10 * 730h = $292/month on the fallback grid.
+    assert payload["pricing_usd_per_vcpu_hour"] == 0.10
+    assert payload["extended_support_monthly_usd"] == 292.0
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
 
 
 # ---- Runner level (generic runner, delete-and-replace) ---------------------
@@ -343,6 +426,7 @@ def _bootstrap_aurora_mysql_2(session: Session) -> ResourceORM:
                 ("engine_version", "2.12.4"),
                 ("instance_class", "db.r6g.large"),
                 ("vcpu", 2),
+                ("region", "us-east-1"),
             ]
         ],
         source_run_id=run.id,

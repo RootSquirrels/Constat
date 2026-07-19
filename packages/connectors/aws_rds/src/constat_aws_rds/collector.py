@@ -89,6 +89,10 @@ def db_to_facts(
     engine = db.get("Engine")
     engine_version = db.get("EngineVersion")
     vcpu = vcpu_for_instance_class(instance_class)
+    # Injected by collect_db_instances; absent only for hand-built rows
+    # (replay tooling always sets it). The EOL rules gate on this fact:
+    # Extended Support pricing is not region-uniform.
+    region = db.get("_region")
 
     def _fact(key: str, value: Any, state: ValueState) -> Fact:
         return Fact(
@@ -118,6 +122,11 @@ def db_to_facts(
             "vcpu",
             vcpu,
             ValueState.KNOWN if vcpu is not None else ValueState.UNKNOWN,
+        ),
+        _fact(
+            "region",
+            region,
+            ValueState.KNOWN if region else ValueState.UNKNOWN,
         ),
     ]
     return facts

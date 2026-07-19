@@ -144,6 +144,7 @@ def test_rds_eol_emits_registered_monthly_amount() -> None:
         _fact("engine", "postgres"),
         _fact("engine_version", "11.22"),
         _fact("vcpu", 4),
+        _fact("region", "us-east-1"),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
 
@@ -166,6 +167,7 @@ def test_rds_eol_malformed_vcpu_is_inconclusive_not_silent() -> None:
         _fact("engine", "postgres"),
         _fact("engine_version", "11.22"),
         _fact("vcpu", "not-a-number"),
+        _fact("region", "us-east-1"),
     ]
     result = evaluate(uuid4(), facts, today=date(2026, 7, 18))
     assert result.insights == []

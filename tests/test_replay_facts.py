@@ -108,7 +108,7 @@ def test_replay_dry_run_does_not_write(session: Session) -> None:
     session.commit()
 
     stats = replay_observations(session, dry_run=True)
-    assert stats["facts_upserted"] == 4  # 4 facts per RDS row
+    assert stats["facts_upserted"] == 5  # 5 facts per RDS row
     assert session.query(FactORM).count() == 0  # nothing written
     _ = original_count  # silence unused
 
@@ -134,11 +134,11 @@ def test_replay_filters_by_account(session: Session) -> None:
 
     # Replay for account 111 only
     stats = replay_observations(session, account_external_id="111")
-    assert stats["facts_upserted"] == 4  # 1 observation * 4 facts
+    assert stats["facts_upserted"] == 5  # 1 observation * 5 facts
 
     # Replay for account 222
     stats2 = replay_observations(session, account_external_id="222")
-    assert stats2["facts_upserted"] == 4
+    assert stats2["facts_upserted"] == 5
 
 
 def test_replay_filters_by_source(session: Session) -> None:

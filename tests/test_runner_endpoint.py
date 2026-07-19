@@ -78,6 +78,16 @@ def _bootstrap_pg14(session, *, with_facts: bool = True) -> ResourceORM:
                     source="aws_rds",
                     observed_at=datetime(2026, 7, 18, tzinfo=UTC),
                 ),
+                Fact(
+                    resource_id=resource.id,
+                    account_id=str(acc.id),
+                    namespace="aws.rds",
+                    key="region",
+                    value="eu-west-1",
+                    value_state=ValueState.KNOWN,
+                    source="aws_rds",
+                    observed_at=datetime(2026, 7, 18, tzinfo=UTC),
+                ),
             ],
             source_run_id=run.id,
         )

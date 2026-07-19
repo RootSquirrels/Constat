@@ -44,6 +44,7 @@ EXPECTED_PRODUCED: dict[str, list[tuple[str, str]]] = {
         ("aws.rds", "engine_version"),
         ("aws.rds", "instance_class"),
         ("aws.rds", "vcpu"),
+        ("aws.rds", "region"),
     ],
     "aws_ec2": [
         # from packages/connectors/aws_ec2/src/constat_aws_ec2/collector.py
@@ -58,6 +59,7 @@ EXPECTED_PRODUCED: dict[str, list[tuple[str, str]]] = {
         ("aws.ec2.volume", "attached_instance_id"),
         ("aws.ec2.volume", "attached_device"),
         ("aws.ec2.volume", "create_time"),
+        ("aws.ec2.volume", "region"),
         ("aws.ec2.snapshot", "state"),
         ("aws.ec2.snapshot", "size_gb"),
         ("aws.ec2.snapshot", "storage_tier"),
@@ -65,11 +67,13 @@ EXPECTED_PRODUCED: dict[str, list[tuple[str, str]]] = {
         ("aws.ec2.snapshot", "start_time"),
         ("aws.ec2.snapshot", "description"),
         ("aws.ec2.snapshot", "volume_exists"),
+        ("aws.ec2.snapshot", "region"),
         ("aws.ec2.instance", "state"),
         ("aws.ec2.instance", "instance_type"),
         ("aws.ec2.instance", "launch_time"),
         ("aws.ec2.instance", "block_device_volume_ids"),
         ("aws.ec2.instance", "attached_volumes"),
+        ("aws.ec2.instance", "region"),
     ],
 }
 
@@ -79,25 +83,30 @@ EXPECTED_CONSUMED: dict[str, list[tuple[str, str]]] = {
         ("aws.rds", "engine"),
         ("aws.rds", "engine_version"),
         ("aws.rds", "vcpu"),
+        ("aws.rds", "region"),
     ],
     "mysql_eol": [
         ("aws.rds", "engine"),
         ("aws.rds", "engine_version"),
         ("aws.rds", "vcpu"),
+        ("aws.rds", "region"),
     ],
     "aurora_eol": [
         ("aws.rds", "engine"),
         ("aws.rds", "engine_version"),
         ("aws.rds", "vcpu"),
+        ("aws.rds", "region"),
     ],
     "ebs_unattached": [
         ("aws.ec2.volume", "state"),
         ("aws.ec2.volume", "size_gb"),
         ("aws.ec2.volume", "volume_type"),
+        ("aws.ec2.volume", "region"),
     ],
     "ebs_gp2_to_gp3": [
         ("aws.ec2.volume", "volume_type"),
         ("aws.ec2.volume", "size_gb"),
+        ("aws.ec2.volume", "region"),
     ],
     "snapshot_orphan": [
         ("aws.ec2.snapshot", "state"),
@@ -106,10 +115,12 @@ EXPECTED_CONSUMED: dict[str, list[tuple[str, str]]] = {
         ("aws.ec2.snapshot", "volume_exists"),
         ("aws.ec2.snapshot", "description"),
         ("aws.ec2.snapshot", "start_time"),
+        ("aws.ec2.snapshot", "region"),
     ],
     "ec2_stopped_with_storage": [
         ("aws.ec2.instance", "state"),
         ("aws.ec2.instance", "attached_volumes"),
+        ("aws.ec2.instance", "region"),
     ],
     # chargeback consumes no facts (FOCUS-ingested data, not connector facts).
 }
@@ -242,9 +253,9 @@ def test_registry_round_trip() -> None:
 
     # by_producer and by_consumer.
     rds_facts = reg.by_producer("aws_rds")
-    assert len(rds_facts) == 4
+    assert len(rds_facts) == 5
     eol_facts = reg.by_consumer("rds_eol")
-    assert len(eol_facts) == 3
+    assert len(eol_facts) == 4
 
 
 def test_registry_yaml_against_real_producer_code() -> None:
@@ -263,13 +274,13 @@ def test_registry_yaml_against_real_producer_code() -> None:
     from uuid import uuid4
 
     src = inspect.getsource(db_to_facts)
-    # The producer should reference the 4 namespace+key combinations
-    # we register. The "namespace" string and the four _fact() keys.
+    # The producer should reference the 5 namespace+key combinations
+    # we register. The "namespace" string and the five _fact() keys.
     assert 'namespace="aws.rds"' in src, "collector no longer uses aws.rds namespace"
-    for key in ("engine", "engine_version", "instance_class", "vcpu"):
+    for key in ("engine", "engine_version", "instance_class", "vcpu", "region"):
         assert f'"{key}"' in src, f"collector no longer produces {key}"
 
-    # Build a fake DB row and confirm the function actually produces the 4 facts.
+    # Build a fake DB row and confirm the function actually produces the 5 facts.
     fake_db = {
         "DBInstanceArn": "arn:aws:rds:eu-west-1:111111111111:db:fake",
         "DBInstanceIdentifier": "fake",
@@ -297,5 +308,6 @@ def test_registry_yaml_against_real_producer_code() -> None:
         ("aws.rds", "engine_version"),
         ("aws.rds", "instance_class"),
         ("aws.rds", "vcpu"),
+        ("aws.rds", "region"),
     }
     assert produced_keys == expected, f"Producer emits {produced_keys}, registry expects {expected}"
