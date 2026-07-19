@@ -142,10 +142,13 @@ resource "aws_ecs_service" "api" {
 }
 
 # --- Scan task definition (one-off, run daily by the scheduler) ---
-# Same image, command overridden: write the targets JSON from the injected
-# secret to a file, run the AWS collect CLI, then both insight rules.
-# Insights run AFTER collect in the same task so they always score fresh
-# facts (the 24h scope-freshness window then never expires between scans).
+# Same image, command overridden to a single enqueue call: the scan task
+# no longer collects directly. It creates the collect job for ALL
+# persisted collect_targets and enqueues account x region WorkItems on
+# the SQS collect queue; the worker service drains them and rule
+# evaluation chains automatically when the job completes. No more
+# in-task run_insights, no more targets JSON file — the queue + worker
+# do the rest, so a re-scan is one path (the queue) instead of two.
 resource "aws_ecs_task_definition" "scan" {
   family                   = "${local.name}-scan"
   requires_compatibilities = ["FARGATE"]
@@ -153,34 +156,29 @@ resource "aws_ecs_task_definition" "scan" {
   cpu                      = 256
   memory                   = 512
   execution_role_arn       = aws_iam_role.task_execution.arn
-  task_role_arn            = aws_iam_role.task.arn # needs sts:AssumeRole into prospect accounts
+  # The scan task now only talks to the DB + SQS (SendMessage). It no
+  # longer assumes prospect roles — the WORKER does the scanning. It
+  # shares the API's task role for sqs:SendMessage (that role still
+  # carries sts:AssumeRole the scan task doesn't use; a dedicated
+  # narrower role is post-pilot hardening, noted in iam.tf).
+  task_role_arn = aws_iam_role.task.arn
 
   container_definitions = jsonencode([{
     name      = "scan"
     image     = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
     essential = true
 
-    command = [
-      "sh", "-c",
-      join(" && ", [
-        "printf '%s' \"$CONSTAT_SCAN_TARGETS_JSON\" > /tmp/targets.json",
-        "python -m constat_api.cli.aws --targets /tmp/targets.json",
-        # --all iterates every rule registered in RUNNERS. Do NOT list
-        # rules here: the previous hardcoded pair silently skipped 4 of
-        # 6 rules (committee finding). tests/test_run_insights_cli.py
-        # pins this file to --all.
-        "python -m constat_api.cli.run_insights --all",
-      ])
-    ]
+    command = ["python", "-m", "constat_api.cli.aws", "--enqueue-all"]
 
     environment = [
       { name = "CONSTAT_ENV", value = "pilot" },
       { name = "CONSTAT_LOG_JSON", value = "1" },
+      { name = "CONSTAT_COLLECT_MODE", value = "sqs" },
+      { name = "CONSTAT_COLLECT_QUEUE_URL", value = aws_sqs_queue.collect.url },
     ]
 
     secrets = [
       { name = "CONSTAT_DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
-      { name = "CONSTAT_SCAN_TARGETS_JSON", valueFrom = aws_secretsmanager_secret.scan_targets.arn },
     ]
 
     logConfiguration = {

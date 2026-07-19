@@ -16,6 +16,10 @@ Description: >
   rotation = stack update with the new parameter value + re-import of
   the targets CSV (upsert).
 
+  Coverage (same as the single-account template, matching the pilot
+  SLA's resource types): RDS DB instances/clusters, EBS volumes, EBS
+  snapshots, EC2 instances — all read-only Describe calls.
+
   Recommended: SERVICE-MANAGED permissions (the StackSet assumes
   AWSCloudFormationStackSetAdministrationRole / ExecutionRole). That
   avoids hand-managing self-managed execution roles in every member
@@ -126,6 +130,27 @@ Resources:
                   - rds:DescribeDBEngineVersions
                 Resource: "*"
 
+              # ---- EC2/EBS: volumes, snapshots, instances ----
+              # The SaaS also scans the EBS estate (gp2→gp3 savings,
+              # unattached volumes, orphan snapshots) and EC2 instance
+              # states (stopped instances still billing storage). These
+              # are exactly the calls the collector makes — paginated
+              # DescribeVolumes / DescribeSnapshots (OwnerIds=self) /
+              # DescribeInstances, see
+              # packages/connectors/aws_ec2/.../collector.py. All
+              # read-only; Describe* cannot be resource-scoped, hence "*".
+              # ec2:DescribeAddresses is deliberately NOT granted: Elastic
+              # IP cost is out of scope in V1 (stated in the
+              # ec2_stopped_with_storage resolver), so the SaaS never
+              # calls it and the permission would be dead grant.
+              - Sid: Ec2Read
+                Effect: Allow
+                Action:
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeInstances
+                Resource: "*"
+
               # ---- IAM self-read ----
               # Lets the SaaS verify its own role definition. NO
               # iam:PassRole (confused-deputy mitigation).
@@ -163,4 +188,5 @@ Outputs:
 
   StackVersion:
     Description: Version of this template. Bump on material changes.
-    Value: "1.0.0"
+    # 1.1.0 (2026-07-19): added Ec2Read (DescribeVolumes/Snapshots/Instances).
+    Value: "1.1.0"

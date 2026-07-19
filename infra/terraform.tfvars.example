@@ -13,8 +13,11 @@ db_password     = "CHANGE-ME-long-random"
 db_app_password = "CHANGE-ME-long-random"
 api_key         = "CHANGE-ME-long-random"
 
-# JSON array of prospect accounts to scan daily (see variables.tf).
-scan_targets_json = "[{\"aws_account_id\":\"123456789012\",\"role_arn\":\"arn:aws:iam::123456789012:role/constat-collector\",\"external_id\":\"CHANGE-ME\",\"name\":\"prospect\",\"regions\":[\"eu-west-3\"]}]"
+# DEPRECATED (2026-07-19): no consumer left — the daily scan enqueues
+# the persisted collect_targets (--enqueue-all) instead of reading a
+# targets JSON. Still required as a variable until the deprecated
+# scan_targets secret is removed (see secrets.tf); any JSON value works.
+scan_targets_json = "[]"
 
 # Empty = DLQ alarm exists but emails nobody (see variables.tf / sqs.tf).
 # ops_alert_email = "ops@example.com"

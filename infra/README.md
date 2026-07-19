@@ -1,6 +1,6 @@
 # infra/ — pilot environment (Terraform)
 
-> **STATUS (2026-07-18): UNAPPLIED and UNVALIDATED.**
+> **STATUS (2026-07-19): UNAPPLIED and UNVALIDATED.**
 > No `terraform`/`tofu` binary and no AWS account exist on the dev machine
 > this was written on, so none of this configuration has been through
 > `terraform validate`, `plan`, or `apply`. The same applies to the
@@ -26,9 +26,12 @@ state, no multi-env ceremony — deliberately. V1 deployment philosophy
   - a **worker service** (1 task, same image, command override
     `python -m constat_api.worker`) consuming the collect queue
     (`sqs.tf`),
-  - a **scan task definition** (same image, command overridden) run
-    **daily at 05:00 UTC** by **EventBridge Scheduler**: AWS collect CLI
-    then `run_insights --all` (all 8 insight rules).
+  - a **scan task definition** (same image, command overridden to
+    `python -m constat_api.cli.aws --enqueue-all`) run **daily at 05:00
+    UTC** by **EventBridge Scheduler**: it creates the collect job for all
+    persisted collect_targets and enqueues account x region WorkItems on
+    the SQS queue; the worker drains them and rule evaluation (all 8
+    insight rules) chains automatically when the job completes.
 - **SQS** (chantier 1.1): `constat-pilot-collect` queue (visibility
   timeout 900s, long polling, SSE-SQS encryption) + DLQ (redrive after
   3 receives). See "Collect modes" below.
@@ -36,8 +39,11 @@ state, no multi-env ceremony — deliberately. V1 deployment philosophy
   > 0 for 5 min → `constat-pilot-ops-alerts` topic. Email subscription
   via `var.ops_alert_email` (empty default = alarm exists but emails
   nobody).
-- **Secrets Manager**: `CONSTAT_API_KEY`, `CONSTAT_DATABASE_URL`, and the
-  scan-targets JSON — injected into containers as env vars.
+- **Secrets Manager**: `CONSTAT_API_KEY` and `CONSTAT_DATABASE_URL` —
+  injected into containers as env vars. The `scan-targets` secret is
+  **deprecated (2026-07-19, no consumer left)** but kept so the next
+  `apply` doesn't destroy it (Secrets Manager deletion has a 7–30 day
+  recovery window); see `secrets.tf`.
 - **IAM**: execution role (ECR/secrets/logs), API task role
   (`sts:AssumeRole` into prospect `constat-collector*` roles — ExternalId
   is enforced by the prospect's trust policy, F-06 — plus
@@ -149,8 +155,9 @@ aws ecs update-service --cluster constat-pilot --service constat-pilot-api --for
 - **New image**: build/push as above, then `update-service
   --force-new-deployment`.
 - **Manual scan**: `aws ecs run-task` with the scan task definition (see
-  `docs/operations/deployment.md`), or `POST /collect/aws` +
-  `POST /insights/run` on the API.
+  `docs/operations/deployment.md`), or `POST /collect/aws` on the API —
+  both go through the queue; rule evaluation chains automatically when
+  the collect job completes (no separate `POST /insights/run` needed).
 - **Find the API endpoint**: `terraform output api_endpoint` — stable
   (`https://<alb-dns>`), no ephemeral-IP lookup after redeploys.
 

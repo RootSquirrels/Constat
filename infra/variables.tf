@@ -61,12 +61,13 @@ variable "public_domain" {
 
 variable "scan_targets_json" {
   description = <<-EOT
-    JSON array of AWS collection targets consumed by
-    `python -m constat_api.cli.aws --targets`, e.g.
-    [{"aws_account_id":"...","role_arn":"arn:aws:iam::<acct>:role/constat-collector","external_id":"...","name":"prospect","regions":["eu-west-3"]}]
-    Stored as a Secrets Manager secret because it contains the ExternalId
-    shared secret (F-06). The scheduled scan task writes it to a file and
-    runs the collect CLI against it.
+    DEPRECATED (2026-07-19): no consumer left. The scheduled scan task now
+    runs `python -m constat_api.cli.aws --enqueue-all`, which builds
+    WorkItems from the persisted collect_targets (managed via
+    POST /collect/targets/import or the onboard CLI) instead of a targets
+    JSON file. The variable is still wired to the deprecated
+    `scan_targets` secret (kept so the first apply doesn't destroy it —
+    see secrets.tf); remove both in a follow-up.
   EOT
   type        = string
   sensitive   = true

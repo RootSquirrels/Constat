@@ -31,6 +31,15 @@ resource "aws_secretsmanager_secret_version" "database_url" {
   secret_string = "postgresql://constat_app:${var.db_app_password}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/constat"
 }
 
+# DEPRECATED (2026-07-19): nothing reads this secret anymore. The
+# scheduled scan task now runs `cli.aws --enqueue-all`, which builds
+# WorkItems from the persisted collect_targets (whose ExternalIds live
+# write-only in the DB) instead of a targets JSON file. The resource is
+# KEPT, not removed, on purpose: destroying a Secrets Manager secret
+# starts a 7-30 day recovery window during which the name cannot be
+# reused, and any still-running old task revision that references it
+# would fail at launch. Delete this resource (and var.scan_targets_json)
+# in a follow-up once the queue-based scan has run in the pilot.
 resource "aws_secretsmanager_secret" "scan_targets" {
   name = "${local.name}/scan-targets"
   # Contains the per-prospect ExternalId (a shared secret, F-06) — that is

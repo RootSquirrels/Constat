@@ -2,10 +2,13 @@
 #
 # Mechanism: EventBridge Scheduler -> ECS RunTask (one-off Fargate task).
 # Chosen over a CloudWatch Events rule+target because Scheduler is the
-# current API (native retry policy, no separate rule/target wiring), and
-# over Step Functions/SQS because those are explicitly out of V1 scope
-# (AGENTS.md): one connector, one cadence — a cron that starts a task is
-# the whole orchestration.
+# current API (native retry policy, no separate rule/target wiring).
+# The task it starts does NOT scan: it enqueues account x region
+# WorkItems on the SQS collect queue (`cli.aws --enqueue-all`, see
+# ecs.tf), and the worker service drains the queue — one orchestration
+# path (the queue, shipped in chantier 1.1) for both scheduled and
+# API-triggered collection. Rule evaluation chains automatically when
+# the collect job completes.
 #
 # Cadence: DAILY at 05:00 UTC. The product's scope-freshness window is
 # 24 h (a successful run older than that makes the scope INCONCLUSIVE),

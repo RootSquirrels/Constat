@@ -5,7 +5,12 @@
 #   - task role: the API's identity. Business permissions: sts:AssumeRole
 #     into prospect accounts (the SaaS cross-account pattern, see
 #     apps/api/src/constat_api/collectors/aws.py) and sqs:SendMessage on
-#     the collect queue (async collection, see sqs.tf).
+#     the collect queue (async collection, see sqs.tf). The scheduled
+#     scan task shares this role but uses only sqs:SendMessage — it
+#     enqueues WorkItems (--enqueue-all) and never scans, so its
+#     sts:AssumeRole grant is now unused by that task. A dedicated,
+#     narrower scan-task role is post-pilot hardening (it would also
+#     need the scheduler's iam:PassRole updated).
 #   - worker task role: the queue consumer's identity. SQS consume on the
 #     collect queue (+ read on the DLQ) and the same sts:AssumeRole —
 #     the worker is the process that actually scans.
@@ -44,7 +49,8 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
       Resource = [
         aws_secretsmanager_secret.api_key.arn,
         aws_secretsmanager_secret.database_url.arn,
-        aws_secretsmanager_secret.scan_targets.arn,
+        # scan_targets is deliberately NOT here anymore: the secret is
+        # deprecated (see secrets.tf) and no container injects it.
       ]
     }]
   })
@@ -101,8 +107,8 @@ resource "aws_iam_role" "task_worker" {
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
-# The worker runs the actual region scans, so it needs the same
-# cross-account AssumeRole as the scan task.
+# The worker runs the actual region scans, so it needs the cross-account
+# AssumeRole into prospect accounts (the scan task only enqueues now).
 resource "aws_iam_role_policy" "task_worker_assume_prospect_roles" {
   name = "assume-prospect-collector-roles"
   role = aws_iam_role.task_worker.id
