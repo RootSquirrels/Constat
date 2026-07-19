@@ -10,8 +10,8 @@
 ┌────────────────────────┐    ┌────────────────────────────────────────┐
 │  Sources               │    │  Product                               │
 │  ───────               │    │  ───────                               │
-│  AWS APIs (RDS)        │    │  apps/api (FastAPI, 6 routers)         │
-│  FOCUS 1.0 CSV         │    │  apps/web (Next.js, 5 pages)           │
+│  AWS APIs (RDS + EC2)  │    │  apps/api (FastAPI, 11 routers)        │
+│  FOCUS 1.0 CSV         │    │  apps/web (Next.js, 10 pages)           │
 │  Catalog (EOL, vCPU)   │    │                                        │
 └──────────┬─────────────┘    └────────────────▲───────────────────────┘
            │                                  │
@@ -28,9 +28,10 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Core (Aurora PostgreSQL — V1 is local docker, prod is RDS)         │
 │  ───────                                                             │
-│  7 tables: accounts, resources, observations, facts,                │
-│           focus_charges, insights, inconclusive, source_runs        │
-│  + insight_runs (audit)                                             │
+│  13 tables: accounts, resources, observations, facts,               │
+│           focus_charges, focus_charge_tags, insights,               │
+│           inconclusive, source_runs, insight_runs (audit),          │
+│           audit_events, retention_policies, pii_classifications     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -136,11 +137,12 @@ V1 is single-tenant. Every row has a `tenant_id` column (migration
 `00000000-0000-0000-0000-000000000001`. RLS policies and the
 per-session GUC binding are in place since commit `dc1bb7e
 feat(api+db): multi-tenant RLS scaffolding` (migration 0007 +
-`apps/api/src/constat_api/tenant.py`). V1 still uses the default
-tenant for every connection; V2 will source the tenant from a
-request header / service-account context. See
-[`development/known-issues.md`](./development/known-issues.md) for
-the BYPASSRLS follow-up that must be resolved before V2.
+`apps/api/src/constat_api/tenant.py`), and migration 0012 adds
+`constat_app`, the non-owner, non-superuser, no-BYPASSRLS runtime
+role the API/collector/CLI connect as in deployed environments
+(DML-only; it cannot weaken the RLS policies). V1 still uses the
+default tenant for every connection; V2 will source the tenant from a
+request header / service-account context.
 
 ## Acceptance criteria (V1)
 
@@ -218,20 +220,23 @@ justification in the PR description.
 - **Step Functions / SQS / Fargate workers.** V1 is a single
   synchronous API. We add a queue when a second connector needs a
   different cadence.
-- **Multi-tenant RLS follow-up (BYPASSRLS discipline + per-request
-  tenant context).** Policies and GUC binding are in (commit
-  `dc1bb7e`); the API role is still the migration owner. Promote
-  to a non-owner, non-superuser, no-BYPASSRLS role before V2.
-- **Full `FactDefinitionRegistry` ceremony.** V1 uses a `namespace.key`
-  string + `CHECK` constraint. The registry is V2.
+- **Multi-tenant RLS follow-up (per-request tenant context).**
+  Policies, GUC binding, and the non-owner `constat_app` runtime role
+  are in (0007/0011/0012). Remaining for V2: source the tenant from
+  the request context instead of the single default tenant.
+- **Full `FactDefinitionRegistry` ceremony.** V1 has a YAML registry
+  (`packages/core/src/constat_core/catalog/fact_definitions.yaml`)
+  guarded by a pytest cross-check against producers/consumers. The
+  full registry (DB table, runtime validation) is V2.
 - **Azure, ServiceNow, Prisma, EDR connectors.** V2+.
 - **Streaming, Neo4j, Iceberg, EKS.** Seuil-triggered, not V1.
 - **Remediation / `SendCommand` / write role.** V3.
-- **Tag-based chargeback grouping (Application, CostCenter).** V1:
-  `chargeback` rule accepts `tag_key`. Cost is split evenly (1/N)
-  across matching tag values; full cost goes to `__untagged__` when
-  no tag for the key is present. V2 will move to per-row tag
-  storage.
+- **Tag-based chargeback grouping beyond the shipped `tag_key`.**
+  V1 ships it: the `chargeback` rule accepts `tag_key` and attributes
+  cost **proportionally to per-row tag counts** stored in
+  `focus_charge_tags` (migration 0009); full cost goes to
+  `__untagged__` when no tag for the key is present. What remains V2:
+  multi-key grouping and saved allocation policies.
 
 ## Where to read next
 

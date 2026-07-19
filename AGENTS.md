@@ -8,8 +8,10 @@ Inventory-first cloud observability. The product is the **écart chiffré** (pro
 between what a cloud account *should* look like and what it *actually* looks like,
 across inventory × lifecycle × cost × operational coverage.
 
-The first V1 deliverable is one demoable insight (RDS PostgreSQL Extended Support) over
-real AWS data, plus a chargeback view backed by FOCUS. The GTM promise is
+The V1 deliverable is **insights-first** (ADR-12 in `docs/adr/`): 8 rules in
+`RUNNERS` — `rds_eol`, `mysql_eol`, `aurora_eol`, `ebs_gp2_to_gp3`,
+`ebs_unattached`, `snapshot_orphan`, `ec2_stopped_with_storage`, `chargeback` —
+over real AWS data, plus a chargeback view backed by FOCUS. The GTM promise is
 "in 2h of connection, we prove what you don't know about your fleet — and what it costs."
 
 ## Repo layout (monorepo, multi-engineer friendly)
@@ -113,8 +115,8 @@ Trusted Advisor / Cost Explorer, which silently omit.
 ## Explicitly NOT in V1 (backlog, not "soon")
 
 - Step Functions, SQS, Fargate orchestration — V1 is a Fargate task + cron. We add SFN when we have >1 connector producing on different cadences.
-- Multi-tenant RLS — V1 is 1 prospect, 1 tenant. Add RLS when we onboard tenant #2.
-- Full `FactDefinitionRegistry` ceremony — V1 uses a `namespace.key` enum + a CHECK constraint. Registry is V2.
+- Multi-tenant RLS beyond the pilot shape — RLS **is** shipped and CI-enforced on all tenant tables (see the invariants above); V1 remains 1 prospect, 1 tenant operationally. Revisit when we onboard tenant #2.
+- Full `FactDefinitionRegistry` ceremony — V1 has a YAML registry (`packages/core/src/constat_core/catalog/fact_definitions.yaml`) guarded by a pytest cross-check against producers/consumers. The full registry (DB table, runtime validation, backfill tooling) is V2.
 - Azure, Prisma, ServiceNow, EDR connectors — V2/V3.
 - Streaming / Neo4j / Iceberg — only if quantitative thresholds are met (see ADR-04 in the arch doc).
 
@@ -163,7 +165,7 @@ cd apps/web && npm install && npm run dev   # web on http://localhost:3000
 
 ## Where things will get decided later
 
-- Alembic vs raw SQL (we're on raw SQL until we have >1 migration).
+- Alembic vs raw SQL (13 migrations in, still raw SQL — switch when Alembic is justified, not before).
 - ORM (we use SQLAlchemy Core, not ORM, until we have complex relations).
-- Auth on the API (none in V1, internal only).
-- Secrets management (V1 = .env; V2 = AWS Secrets Manager).
+- Auth on the API (API-key auth shipped: `X-API-Key` with reader/operator roles via `CONSTAT_API_KEYS`; OIDC/OAuth is V2).
+- Secrets management (AWS Secrets Manager shipped in `infra/secrets.tf`; `.env` remains the local-dev path).

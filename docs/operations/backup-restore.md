@@ -40,7 +40,7 @@ daily once the pilot is live.
 ### Pre-restore checklist
 
 1. **The dump matches the migration chain.** The app expects all
-   migrations in `db/migrations/` (0001 through 0011 today) to have
+   migrations in `db/migrations/` (0001 through 0014 today) to have
    applied cleanly. CI proves the chain applies from scratch on every
    push; if you restore a dump taken at migration N onto a fresh DB,
    re-apply migrations N+1..latest afterwards.
@@ -101,7 +101,10 @@ in-place restore.
    SELECT count(*) FROM resources;  -- must not error, must be tenant-scoped
    ```
 3. **App smoke test** — restart the API, hit `/health`, then
-   `GET /insights` and `GET /chargeback` and eyeball non-empty results.
+   `GET /insights` and `GET /insights?rule_name=chargeback` and eyeball
+   non-empty results. (There is no `GET /chargeback` API route —
+   `/chargeback` is a web page; the chargeback restitution is the
+   `rule_name=chargeback` filter on `/insights`.)
 4. Record the execution in the table at the top of this file.
 
 ## AWS RDS (pilot deployment)

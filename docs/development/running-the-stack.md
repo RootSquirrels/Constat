@@ -33,8 +33,8 @@ cd apps/web && npm run dev            # Web on :3000
 # → http://localhost:3000
 ```
 
-The 5 commands map to the 4 verbs in
-[`../concepts.md`](../concepts.md#the-four-flow-verbs):
+The 5 commands map to the flow verbs in
+[`../concepts.md`](../concepts.md#the-flow-verbs):
 
 | Verb | Command |
 |---|---|
@@ -58,13 +58,13 @@ The pytest suite uses an in-memory sqlite (see
 `tests/conftest.py::engine`). It does **not** require a running
 Postgres.
 
-If the docker-compose `up` re-applies the 6 migrations on an existing
+If the docker-compose `up` re-applies the migrations on an existing
 volume, you can re-check with:
 
 ```powershell
 psql -h localhost -U constat -d constat -c "SELECT version FROM _migrations ORDER BY version;"
-# (Note: V1 has no _migrations table. The 6 SQL files in
-# db/migrations/ are the truth. The 6 numbers are 0001..0006.)
+# (Note: V1 has no _migrations table. The SQL files in
+# db/migrations/ are the truth — 0001..0014 today.)
 ```
 
 ### 1. Ingest a FOCUS CSV
@@ -138,7 +138,8 @@ function is exposed as `POST /collect/aws` for API-based triggering.
 
 ### 3. Run the insight rules
 
-Two rules in V1, both synchronous:
+Eight rules in V1, all synchronous. Two examples (`--all` runs every
+rule in one shot — this is what the daily scheduled task does):
 
 ```powershell
 # rds_eol: per-resource, scope-gated. Reads facts, emits Insights
@@ -215,5 +216,5 @@ in `tests/test_runner.py` show the minimum setup.
 ## See also
 
 - [`../api/endpoints.md`](../api/endpoints.md) — the API surface
-- [`../concepts.md`](../concepts.md) — the 9 concepts and the 4 verbs
+- [`../concepts.md`](../concepts.md) — the 9 concepts and the flow verbs
 - [`known-issues.md`](./known-issues.md) — drift between ORM and SQL

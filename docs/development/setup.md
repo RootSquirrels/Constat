@@ -30,14 +30,14 @@ required — use PowerShell.
 From the repo root:
 
 ```powershell
-# 1. Sync the workspace. This creates a .venv and installs all 6
+# 1. Sync the workspace. This creates a .venv and installs all 13
 # workspace members + dev deps.
 uv sync --all-extras
 
 # 2. Start Postgres (port 5432) and MinIO (ports 9000/9001).
 docker compose up -d
 
-# 3. Apply the 6 SQL migrations. The docker-compose mounts
+# 3. Apply ALL the SQL migrations (0001–0014 today). The docker-compose mounts
 # ./db/migrations into the container's initdb path, so the first
 # `docker compose up` runs them automatically. If you need to
 # re-apply on a fresh DB, drop the volume:
@@ -74,7 +74,7 @@ uv run ruff format --check .
 # Type-check the core package
 uv run mypy packages/core/src
 
-# API on http://localhost:8000
+# API on http://localhost:8000 (uvicorn constat_api.main:app works too)
 uv run python -m constat_api
 
 # Web on http://localhost:3000
@@ -113,16 +113,23 @@ packages/
   core/                  # models, namespaces, catalog (the stable contract)
   connectors/
     aws_rds/             # boto3 RDS scan
+    aws_ec2/             # boto3 EC2/EBS scan (volumes, snapshots, instances)
     focus/               # FOCUS 1.0 CSV → focus_charges
   insights/
     rds_eol/             # the V1 hero rule
-    chargeback/          # the V1 second rule
+    mysql_eol/           # MySQL Extended Support
+    aurora_eol/          # Aurora Extended Support
+    ebs_gp2_to_gp3/      # gp2 → gp3 savings
+    ebs_unattached/      # unattached-volume waste
+    snapshot_orphan/     # orphan-snapshot waste
+    ec2_stopped_with_storage/  # stopped-instance storage
+    chargeback/          # the FOCUS drift rule
 
 apps/
   api/                   # FastAPI
   web/                   # Next.js
 
-db/migrations/           # 6 raw-SQL migrations, applied in order
+db/migrations/           # 14 raw-SQL migrations, applied in order
 tests/                   # cross-package pytest
 ```
 
@@ -134,7 +141,8 @@ dependencies. `uv sync` resolves them all in one lockfile.
 ### Next.js (apps/web)
 
 - App Router (`apps/web/app/`). Pages: `/`, `/insights`, `/insights/[id]`,
-  `/inconclusives`, `/chargeback`.
+  `/insights/inbox`, `/inconclusives`, `/chargeback`, `/status`,
+  `/accounts`, `/insight-runs`, `/restitution`.
 - API client: `apps/web/lib/api.ts`. Read at build time via
   `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`).
 - Component library: none. Inline styles for now. V2: pick a
@@ -144,7 +152,7 @@ dependencies. `uv sync` resolves them all in one lockfile.
 
 - `postgres:16-alpine`. User/db `constat`, password `constat`.
 - Mounts `db/migrations/` into `/docker-entrypoint-initdb.d/`. First
-  startup applies all 6 migrations.
+  startup applies all migrations (0001–0014 today).
 - Healthcheck: `pg_isready -U constat -d constat` every 5s, 5 retries.
 
 If you need to inspect data:

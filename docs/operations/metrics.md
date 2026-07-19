@@ -7,9 +7,11 @@
 
 The `/metrics` endpoint serves the standard Prometheus exposition
 format. The scraper is on the trusted network (a k8s sidecar, a
-dedicated VPC, an internal LB). Same trust model as `/health`:
-open in V1, gate behind a `CONSTAT_METRICS_KEY` in V2 if we
-expose beyond the trusted boundary.
+dedicated VPC, an internal LB). Same trust model as `/health` —
+plus an optional key gate: when `CONSTAT_METRICS_KEY` is set, the
+scraper must send it in the `X-Metrics-Key` header (constant-time
+comparison; missing and wrong keys get the same 401 body). When
+unset, `/metrics` is open and a warning is logged at startup.
 
 ## Quick start
 
@@ -27,11 +29,16 @@ scrape_configs:
 ```
 
 The endpoint is **not** behind `verify_api_key`. Prometheus
-scrapers don't carry a JWT; the network is the perimeter.
+scrapers don't carry a JWT; the network is the perimeter, and
+`X-Metrics-Key` is the optional second factor above.
 
 ## What is exposed
 
-### Insights (`rule_name` ∈ `{rds_eol, chargeback}`)
+### Insights
+
+`rule_name` takes the 8 `RUNNERS` keys: `rds_eol`, `mysql_eol`,
+`aurora_eol`, `ebs_gp2_to_gp3`, `ebs_unattached`, `snapshot_orphan`,
+`ec2_stopped_with_storage`, `chargeback`.
 
 | Metric | Type | Labels | When it moves |
 |---|---|---|---|
@@ -110,7 +117,8 @@ sum(rate(constat_focus_rows_total[24h]))
 
 The labels are bounded by intent:
 
-- `rule` ∈ 2 values (rds_eol, chargeback)
+- `rule` ∈ 8 values (rds_eol, mysql_eol, aurora_eol, ebs_gp2_to_gp3,
+  ebs_unattached, snapshot_orphan, ec2_stopped_with_storage, chargeback)
 - `severity` ∈ 3 values (info, warning, critical)
 - `reason` ∈ ~4 values (scope_not_proven, missing_facts, etc.)
 - `status` (HTTP) ∈ ~10 values (200, 201, 204, 400, 401, 404, 409, 422, 500, ...)
@@ -118,7 +126,7 @@ The labels are bounded by intent:
 - `region` ≈ 20 AWS regions
 - `method` ∈ 2-3 values (GET, POST, DELETE)
 
-Worst case: 2 * 3 * 4 * 10 * 20 * 3 = 14,400 series. Well within
+Worst case: 8 * 3 * 4 * 10 * 20 * 3 = 57,600 series. Within
 Prometheus's recommended ceiling (10k series per metric family,
 100k per job).
 
@@ -172,8 +180,6 @@ the library. That's the whole point of the V1 choice.
   /metrics until a customer asks for the alert.
 - **Traces.** ADR-09 says V2. The `request_id` (already in
   every log line) is the seed for trace correlation.
-- **Authentication for the scraper.** V1 trusts the network.
-  V2: `CONSTAT_METRICS_KEY` header check on `/metrics`.
 - **Per-tenant labels.** V1 is single-tenant. When we go
   multi-tenant in V2, the metric labels gain `tenant_id`. The
   cardinality cost is real (one series per tenant per existing

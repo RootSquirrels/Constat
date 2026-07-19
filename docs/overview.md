@@ -19,8 +19,9 @@ and cost.
 The proof is the demo. A read-only cross-account role, a FOCUS CSV
 export, and the V1 view shows:
 
-1. Which RDS instances are in PostgreSQL Extended Support, with the
-   monthly cost in dollars (`rds_eol` insight).
+1. Which databases pay Extended Support surcharges and which EBS/EC2
+   assets silently waste money, with the monthly cost in dollars (the
+   7 resource rules).
 2. Per-account × service cost with the amortized-vs-billed drift
    (`chargeback` insight).
 3. What the system *could not* conclude, and which fact was missing
@@ -47,11 +48,17 @@ We don't.
 
 ## V1 deliverable
 
-Two demoable insights over real AWS data:
+Eight insight rules over real AWS data and FOCUS exports:
 
 | Insight | Source | What it proves |
 |---|---|---|
 | `rds_eol` | `aws_rds` collector | RDS PostgreSQL in Extended Support: the engine, the vCPU count, the pricing tier, the monthly licence cost |
+| `mysql_eol` | `aws_rds` collector | Same, for MySQL 5.7/8.0 |
+| `aurora_eol` | `aws_rds` collector | Same, engine-aware for Aurora MySQL/PG |
+| `ebs_gp2_to_gp3` | `aws_ec2` collector | gp2 volumes paying more for less performance |
+| `ebs_unattached` | `aws_ec2` collector | Available volumes billed for nothing |
+| `snapshot_orphan` | `aws_ec2` collector | Snapshots whose volume is gone |
+| `ec2_stopped_with_storage` | `aws_ec2` collector | Stopped instances still burning EBS budget |
 | `chargeback` | FOCUS 1.0 CSV | Per-account × service amortized-vs-billed cost drift |
 
 Plus the **INCONCLUSIVE** surface: a record for every resource the rule
@@ -61,9 +68,8 @@ visible proof of the inventory-first promise.
 ## V1 is not
 
 - Not a CNAPP — no vulnerability scanning, no exposure analysis.
-- Not a FinOps showback — no chargeback across teams without tag
-  data; per-tag aggregation via `tag_key` is supported but uses a
-  1/N cost split. No RI/SP
+- Not a FinOps showback — per-tag aggregation via `tag_key` is
+  supported (proportional per-row attribution), but there are no RI/SP
   optimization recommendations.
 - Not a CMDB — no ServiceNow-style configuration items, no
   reconciliation workflow.
@@ -76,18 +82,25 @@ visible proof of the inventory-first promise.
 ```
 Constat/
 ├── packages/
-│   ├── core/                    # models, namespaces, catalog (AWS PG EOL, vCPU)
+│   ├── core/                    # models, namespaces, catalogs (EOL, vCPU, EBS pricing)
 │   ├── connectors/
 │   │   ├── aws_rds/             # boto3 RDS scan
+│   │   ├── aws_ec2/             # boto3 EC2/EBS scan (volumes, snapshots, instances)
 │   │   └── focus/               # FOCUS 1.0 CSV → focus_charges
 │   └── insights/
 │       ├── rds_eol/             # PG Extended Support rule
+│       ├── mysql_eol/           # MySQL Extended Support rule
+│       ├── aurora_eol/          # Aurora Extended Support rule
+│       ├── ebs_gp2_to_gp3/      # gp2 → gp3 savings rule
+│       ├── ebs_unattached/      # unattached-volume waste rule
+│       ├── snapshot_orphan/     # orphan-snapshot waste rule
+│       ├── ec2_stopped_with_storage/  # stopped-instance storage rule
 │       └── chargeback/          # FOCUS drift rule
 ├── apps/
-│   ├── api/                     # FastAPI, 6 routers
-│   └── web/                     # Next.js 15, 5 pages
-├── db/migrations/               # 6 raw-SQL migrations
-└── tests/                       # 19 pytest files
+│   ├── api/                     # FastAPI, 11 routers
+│   └── web/                     # Next.js 15, 10 pages
+├── db/migrations/               # 13 raw-SQL migrations
+└── tests/                       # 50 pytest files
 ```
 
 ## Where to read next

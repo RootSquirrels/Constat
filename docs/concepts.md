@@ -141,9 +141,16 @@ Code:
 
 An Insight is what the user pays for. It is produced by a rule
 (`rule_name`) against a target (resource or account) and carries a
-`payload` with enough evidence to be proven wrong by the user. In V1:
+`payload` with enough evidence to be proven wrong by the user. In V1,
+8 rules (`RUNNERS` in the runner):
 
-- `rds_eol` — resource-scoped, RDS in PostgreSQL Extended Support
+- `rds_eol` — resource-scoped, RDS PostgreSQL Extended Support
+- `mysql_eol` — resource-scoped, RDS MySQL Extended Support
+- `aurora_eol` — resource-scoped, Aurora MySQL/PG Extended Support
+- `ebs_gp2_to_gp3` — resource-scoped, gp2 volume → gp3 savings
+- `ebs_unattached` — resource-scoped, available-volume waste
+- `snapshot_orphan` — resource-scoped, snapshot whose volume is gone
+- `ec2_stopped_with_storage` — resource-scoped, stopped-instance storage
 - `chargeback` — account-scoped, FOCUS-derived amortized-vs-billed drift
 
 An Insight is *only* emitted when the rule *proves* a gap. The runner
@@ -199,9 +206,12 @@ understands the product's epistemic discipline. The next step is
 "let's add the catalog entry" — not "your tool says 5 things are fine
 when actually 12 are broken".
 
-V1 emits Inconclusive only for `rds_eol` (resource-based, scope-gated).
-The `chargeback` rule treats FOCUS data as user-provided truth, so it
-has no Inconclusive branch in V1.
+V1 emits Inconclusive for all 7 resource rules — they share the
+generic scope-gated runner (`run_resource_rule` dispatched through
+`RESOURCE_RULES`), so every resource rule gets the same
+`scope_not_proven` / `missing_facts` discipline. The `chargeback`
+rule treats FOCUS data as user-provided truth, so it has no
+Inconclusive branch in V1.
 
 Code:
 - Pydantic: `packages/core/src/constat_core/models.py::Inconclusive`
@@ -287,9 +297,9 @@ Code:
 
 ---
 
-## The four flow verbs
+## The flow verbs
 
-Once you have the 9 concepts, the system has four verbs. Every
+Once you have the 9 concepts, the system has ten verbs. Every
 deployment is one of them:
 
 | Verb | What it does | Source | Target table(s) |
@@ -297,7 +307,16 @@ deployment is one of them:
 | `collect.aws` | Scan a target account, write resources + observations + facts + source_run | boto3 | `resources`, `observations`, `facts`, `source_runs` |
 | `ingest.focus` | Load a FOCUS CSV, aggregate, write `focus_charges` | CSV | `focus_charges`, `accounts` |
 | `run.rds_eol` | Read facts per resource, evaluate, emit insights + inconclusive | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.mysql_eol` | Same shape, RDS MySQL Extended Support | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.aurora_eol` | Same shape, Aurora Extended Support | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.ebs_gp2_to_gp3` | Same shape, gp2 → gp3 savings | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.ebs_unattached` | Same shape, unattached-volume waste | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.snapshot_orphan` | Same shape, orphan-snapshot waste | facts | `insights`, `inconclusive`, `insight_runs` |
+| `run.ec2_stopped_with_storage` | Same shape, stopped-instance storage | facts | `insights`, `inconclusive`, `insight_runs` |
 | `run.chargeback` | Read `focus_charges`, aggregate per period, emit insights | focus_charges | `insights`, `insight_runs` |
+
+The 7 resource `run.*` verbs share the generic resource runner
+(`run_resource_rule`); only the resolver differs.
 
 Plus three read verbs (the API):
 
@@ -311,7 +330,7 @@ The verbiage is consistent in the code, the CLI, the API, and the UI.
 
 ## See also
 
-- [`data-model.md`](./data-model.md) — the 7 tables and the FK chains
+- [`data-model.md`](./data-model.md) — the 13 tables and the FK chains
 - [`api/endpoints.md`](./api/endpoints.md) — the routers
 - [`insights/rds-extended-support.md`](./insights/rds-extended-support.md) — the
   full spec of the hero insight

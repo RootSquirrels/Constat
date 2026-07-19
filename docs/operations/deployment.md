@@ -13,10 +13,9 @@ runbook); this doc is the operator's mental model.
 your machine
 ├── docker compose up: postgres:16 (migrations auto-applied from
 │   db/migrations via docker-entrypoint-initdb.d) + minio (FOCUS files)
-├── uv run uvicorn constat_api.main:app → API on :8000, auth OPEN if
-│                                         CONSTAT_API_KEY unset (dev only)
-│   (note: there is no __main__.py or console script yet — uvicorn is
-│    the invocation; the CLIs below DO run as python -m)
+├── uv run python -m constat_api → API on :8000, auth OPEN if
+│                                  CONSTAT_API_KEY unset (dev only)
+│   (uvicorn constat_api.main:app works too; the CLIs below run as python -m)
 ├── uv run python -m constat_api.cli.aws --targets targets.json
 ├── uv run python -m constat_api.cli.run_insights --all   (or --rule <name> to target one)
 └── cd apps/web && npm run dev          → web on :3000
@@ -31,10 +30,12 @@ collects uses `CONSTAT_AWS_PROFILE` → `~/.aws/credentials`.
 AWS account (single region, default VPC)
 ├── RDS PostgreSQL 16 — db.t4g.micro, single-AZ, private, 7-day backups
 ├── ECS Fargate cluster "constat-pilot"
-│   ├── service constat-pilot-api (1 task, public IP, SG: port 8000 from
-│   │   allowed_cidr only, NO ALB — plain HTTP, see below)
+│   ├── ALB + ACM certificate — HTTPS :443 only, HTTP→HTTPS redirect
+│   │   (infra/alb.tf); api_endpoint = https://<alb-dns>
+│   ├── service constat-pilot-api (1 task, behind the ALB, SG: port
+│   │   8000 from the ALB only)
 │   └── scan task def — same image, command overridden:
-│       collect CLI → run_insights rds_eol → run_insights chargeback
+│       collect CLI → run_insights --all  (all 8 rules)
 ├── EventBridge Scheduler — fires the scan task daily at 05:00 UTC
 ├── Secrets Manager — api-key, database-url, scan-targets
 ├── ECR — the one constat-api image
@@ -47,16 +48,15 @@ stateless. The API service and the scan task share one image
 There is no worker fleet, no queue — one daily one-off task is the whole
 orchestration (Step Functions/SQS are explicitly out of V1, AGENTS.md).
 
-### The no-ALB decision
+### TLS termination (ALB + ACM)
 
-The API service gets a public IP with security-group ingress restricted
-to `allowed_cidr`. An ALB costs ~$16+/month and only earns it with TLS
-(ACM + DNS) — ceremony the pilot doesn't need for a few operator callers.
-Accepted trade-offs: traffic is plain HTTP (the `X-API-Key` crosses the
-internet unencrypted), and the service IP is **ephemeral** — look it up
-after each deploy (`terraform output api_endpoint` prints the how). The
-CIDR restriction + API key are the compensating controls. ALB + TLS is
-the first hardening item below.
+The API is served **HTTPS-only** behind an Application Load Balancer
+(`infra/alb.tf`): an ACM certificate terminates TLS on :443, and the
+:80 listener only redirects HTTP→HTTPS. The `X-API-Key` therefore never
+crosses the internet unencrypted. Public ingress on 80/443 is still
+restricted to `allowed_cidr`; the API tasks sit behind the ALB with no
+direct public exposure. `terraform output api_endpoint` prints
+`https://<alb-dns>` — stable across redeploys, no ephemeral-IP lookup.
 
 ## How secrets flow
 
@@ -85,7 +85,8 @@ Cadence rationale: the product's scope-freshness window is **24 h** — a
 successful run older than that flips the scope to `scope_stale`
 (INCONCLUSIVE). Daily is therefore the slowest cadence that keeps scopes
 perpetually fresh; 05:00 UTC is off-peak and precedes the FR working day.
-Because collect and both insight rules run in the same task, insights are
+Because collect and all 8 insight rules (`run_insights --all`) run in the
+same task, insights are
 always computed from facts that are minutes old. Failures show up in the
 `scan` CloudWatch log stream and in `source_runs` / the API status
 endpoints (see `docs/operations/alerting.md`).
@@ -113,7 +114,6 @@ snapshot on destroy. Procedure: see `docs/operations/backup-restore.md`.
 
 ## Post-pilot hardening list (explicitly NOT done in V1)
 
-- ALB + ACM + TLS (replaces public-IP + plain HTTP).
 - Private subnets + NAT gateway or VPC endpoints (replaces public-IP tasks).
 - WAF in front of the ALB.
 - Remote terraform state (S3 + locking) once a second human applies.

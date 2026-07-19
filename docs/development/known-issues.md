@@ -98,9 +98,10 @@ the `focus_charges` table becomes a view or a rollup.
 
 **Tag-based chargeback (item 1 of the user request)** landed in V1
 via `chargeback --tag-key Application` (HTTP body field `tag_key`).
-The cost split is even (1/N across matching tag values); a
-`__untagged__` bucket catches charges with no tag for the key. See
-`docs/insights/chargeback.md` and migration 0008.
+Attribution is proportional to per-row tag counts stored in
+`focus_charge_tags` (migration 0009; the V1 even-split approximation
+is gone); a `__untagged__` bucket catches charges with no tag for the
+key. See `docs/insights/chargeback.md` and migration 0008.
 
 ## 5. The web app's `chargeback` page is a stub
 
@@ -173,15 +174,15 @@ background task queue.
 
 ## 10. PII classifier records the region as PII
 
-**Where:** `apps/api/src/constat_api/collectors/aws.py` (the
-`pii.record(field_name="region", ...)` loop after each scan).
+**Status:** FIXED. The collector no longer classifies regions. It now
+records only `aws_account_id` and the target `role_arn` (`arn`) —
+see `apps/api/src/constat_api/collectors/aws.py` (the `pii.record(...)`
+calls after each scan).
 
-**Symptom:** AWS region names (e.g. `eu-west-1`) are classified and
-hashed as if they were customer PII. Harmless but noisy — it inflates
-`pii_classifications` with rows that answer a question nobody asked.
-
-**Status:** cosmetic, not fixed. Revisit when the privacy
-questionnaire defines what actually counts as PII.
+**Original report:** AWS region names (e.g. `eu-west-1`) were
+classified and hashed as if they were customer PII. Harmless but
+noisy — it inflated `pii_classifications` with rows that answered a
+question nobody asked.
 
 ## 11. `accounts.external_id` was globally unique
 

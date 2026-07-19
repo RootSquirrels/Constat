@@ -11,6 +11,10 @@ In French, a *constat* is a certified statement of fact — the document a baili
 | RDS PostgreSQL Extended Support | Which databases run EOL engines and pay the surcharge? | $0.10–0.20 per vCPU-hour, ~$580/month for a single `db.m5.xlarge` in year 3 |
 | RDS MySQL Extended Support | Same, for the largest EOL population on the market (MySQL 5.7) | Year-3 pricing doubled in March 2026 |
 | Aurora Extended Support | Same, engine-aware (Aurora MySQL has no year-3 tier — we know) | Per-vCPU surcharge, often invisible in invoices |
+| EBS gp2 → gp3 | Which volumes pay more for less performance? | ~20% cheaper per GB, better baseline IOPS |
+| EBS unattached volumes | Which volumes are attached to nothing? | Pure waste, billed monthly |
+| Orphan EBS snapshots | Whose snapshots outlived their volume? | $0.05/GB-month, compounding silently |
+| EC2 stopped with storage | Which stopped instances still burn EBS budget? | Storage billed while compute is off |
 | FOCUS chargeback | What does each account and service really cost, billed vs. amortized? | Cost allocation your finance team can trust |
 
 Each result is either a **quantified finding** (with the formula and facts behind it), a proven **"no issue"**, or an explicit **"inconclusive"** telling you exactly which data was missing — because a resource that silently disappears from a report is the failure mode this product exists to eliminate.
@@ -44,8 +48,9 @@ Deployment: see [`infra/`](infra/) (Terraform: ECS Fargate, RDS, Secrets Manager
 
 ```
 packages/core/           # stable contract: models, namespaces, reference catalog
-packages/connectors/     # aws_rds, focus (FOCUS 1.0)
-packages/insights/       # rds_eol, mysql_eol, aurora_eol, chargeback
+packages/connectors/     # aws_rds, aws_ec2 (volumes, snapshots, instances), focus (FOCUS 1.0)
+packages/insights/       # rds_eol, mysql_eol, aurora_eol, ebs_gp2_to_gp3, ebs_unattached,
+                         # snapshot_orphan, ec2_stopped_with_storage, chargeback
 apps/api/                # FastAPI: collectors, rule runner, REST API
 apps/web/                # Next.js: insights, chargeback, POC report, run health
 db/migrations/           # plain SQL, applied and verified in CI
@@ -58,7 +63,7 @@ Engineering conventions and module ownership: [`AGENTS.md`](AGENTS.md). Product 
 
 ## Status
 
-V1 — pilot-ready. Four insight rules, scheduled daily collection, multi-tenant isolation tested against live Postgres in CI, benchmarked at 10k resources. Roadmap and thresholds for what comes next: [`docs/`](docs/).
+V1 — pilot-ready. Eight insight rules, three connectors (RDS, EC2/EBS, FOCUS), scheduled daily collection, multi-tenant isolation tested against live Postgres in CI, benchmarked at 10k resources. Roadmap and thresholds for what comes next: [`docs/`](docs/).
 
 ## License
 

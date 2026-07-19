@@ -16,7 +16,7 @@ marked as such.
 - **[concept-registry.md](./concepts/fact-registry.md)** — the V1
   fact registry (YAML + CI guard). The data contract: every fact
   is declared before it ships.
-- **[data-model.md](./data-model.md)** — the 7 tables, FK chains, and the
+- **[data-model.md](./data-model.md)** — the 13 tables, FK chains, and the
   invariants you must respect when touching the schema.
 
 ## Topic docs
@@ -28,7 +28,7 @@ marked as such.
     insight. Conceptual model and data flow. The aggregation contract is
     still being iterated; see the source.
 - **API**
-  - **[endpoints.md](./api/endpoints.md)** — the 9 routers, request/response
+  - **[endpoints.md](./api/endpoints.md)** — the 11 routers, request/response
     shapes, error semantics, auth, request_id.
 - **Operations**
   - **[logging.md](./operations/logging.md)** — structlog + request_id
@@ -58,10 +58,8 @@ marked as such.
 ## What this docs set is NOT
 
 - **Not a V2/V3 roadmap.** The V1 ship is the priority. The big strategic
-  architecture document from the 2nd LLM is preserved in
-  `docs/_strategic/` (not added yet — the V2/V3 parts don't need to be
-  inside the V1 surface). When we move to V2, we promote the relevant
-  sections here.
+  architecture document from the 2nd LLM is deliberately kept out of the
+  V1 surface. When we move to V2, we promote the relevant sections here.
 - **Not a tutorial.** Read the code. Read the tests. The tests document the
   contract.
 - **Not auto-generated.** Each doc has an owner (see commit history).
@@ -73,6 +71,6 @@ marked as such.
 - `criterion n°X` refers to the V1 acceptance criteria (see AGENTS.md and
   `architecture.md`).
 - ADRs (Architecture Decision Records) are a separate file each, under
-  `docs/adr/`. We don't have any in V1 yet — the V1 decisions are inline
-  in `architecture.md`. We split when a decision needs a defense of its
-  own.
+  `docs/adr/` (e.g. ADR-12 insights-first, ADR-13 monetary-extraction
+  registry). Most V1 decisions remain inline in `architecture.md`; we
+  split when a decision needs a defense of its own.
