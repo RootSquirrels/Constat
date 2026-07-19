@@ -2,6 +2,38 @@ import { api, ApiError, type Insight } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// FOCUS coverage diagnostics (GET /focus/coverage). Fetched inline here —
+// not via lib/api.ts — so the banner stays local to this page.
+interface FocusCoverageAccount {
+  account_id: string;
+  periods: [string, string][];
+  covered_months: number;
+  missing_months: string[];
+  stale: boolean;
+  first_period: string | null;
+  last_period: string | null;
+}
+
+interface FocusCoverage {
+  accounts: FocusCoverageAccount[];
+  has_gaps: boolean;
+  has_stale: boolean;
+}
+
+// Coverage is best-effort: if the fetch fails we render no banner rather
+// than taking the chargeback page down with it.
+async function fetchFocusCoverage(): Promise<FocusCoverage | null> {
+  try {
+    const res = await fetch(`${API_URL}/focus/coverage`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as FocusCoverage;
+  } catch {
+    return null;
+  }
+}
+
 function groupByAccount(insights: Insight[]): Record<string, Insight[]> {
   const groups: Record<string, Insight[]> = {};
   for (const i of insights) {
@@ -37,6 +69,13 @@ export default async function ChargebackPage() {
     error = e instanceof ApiError ? `API ${e.status}: ${e.body}` : String(e);
   }
 
+  const coverage = await fetchFocusCoverage();
+  const gapAccounts =
+    coverage?.accounts.filter((a) => a.missing_months.length > 0) ?? [];
+  const staleAccounts = coverage?.accounts.filter((a) => a.stale) ?? [];
+  const showCoverageBanner =
+    coverage !== null && (coverage.has_gaps || coverage.has_stale);
+
   const groups = groupByAccount(insights);
   const total = insights.length;
   const accountIds = Object.keys(groups).sort();
@@ -61,6 +100,37 @@ export default async function ChargebackPage() {
           }}
         >
           <strong>API error.</strong> {error}
+        </div>
+      )}
+
+      {showCoverageBanner && (
+        <div
+          style={{
+            padding: "1rem",
+            border: "1px solid #fcd34d",
+            backgroundColor: "#fffbeb",
+            color: "#92400e",
+            borderRadius: 8,
+            marginBottom: "1rem",
+          }}
+        >
+          <strong>
+            FOCUS coverage incomplete — chargeback may be understated.
+          </strong>
+          <ul style={{ margin: "0.5rem 0 0", paddingLeft: "1.25rem" }}>
+            {gapAccounts.map((a) => (
+              <li key={`gap-${a.account_id}`}>
+                account <code>{a.account_id}</code> is missing{" "}
+                {a.missing_months.join(", ")}
+              </li>
+            ))}
+            {staleAccounts.map((a) => (
+              <li key={`stale-${a.account_id}`}>
+                account <code>{a.account_id}</code>: data older than 45 days
+                (last period ended {a.last_period})
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

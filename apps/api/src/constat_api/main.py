@@ -35,6 +35,7 @@ from constat_api.routers import (
     focus,
     health,
     inconclusive,
+    insight_history,
     insight_runs,
     insights,
     runner,
@@ -112,10 +113,14 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+# insight_history BEFORE insights: its "/history" route must win over the
+# insights router's "/{insight_id}" path parameter (first match wins).
+app.include_router(insight_history.router)
 app.include_router(insights.router)
 app.include_router(inconclusive.router)
 app.include_router(insight_runs.router)
 app.include_router(focus.router)
+app.include_router(focus.read_router)  # GET /focus/coverage
 app.include_router(aws.router)
 app.include_router(collect_targets.router)
 app.include_router(runner.router)
