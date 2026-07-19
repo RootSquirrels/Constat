@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from constat_focus.loader import (
+    BillingCurrencyError,
     load_focus,
     load_focus_csv,
     load_focus_parquet,
@@ -30,6 +31,7 @@ def _csv_fieldnames() -> list[str]:
         "Region",
         "ResourceId",  # FOCUS 1.0
         "SubAccountId",  # FOCUS 1.0
+        "BillingCurrency",  # FOCUS 1.0 spec §2.10 — required
         "Tags",  # FOCUS 1.0 (optional)
     ]
 
@@ -75,6 +77,7 @@ def test_loads_valid_focus_1_0_row(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:myapp",
                 "SubAccountId": "222222222222",
+                "BillingCurrency": "USD",
             }
         ],
     )
@@ -89,6 +92,7 @@ def test_loads_valid_focus_1_0_row(tmp_path: Path) -> None:
     assert r.amortized_cost == Decimal("120.00")
     assert r.resource_id == "arn:aws:rds:eu-west-1:111111111111:db:myapp"
     assert r.sub_account_id == "222222222222"
+    assert r.billing_currency == "USD"
     # Tags column is optional; missing -> empty list.
     assert r.tags == []
 
@@ -144,6 +148,7 @@ def test_malformed_row_is_skipped(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
             },
             {
                 "BillingAccountId": "222",
@@ -157,6 +162,7 @@ def test_malformed_row_is_skipped(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:ec2:1",
                 "SubAccountId": "222",
+                "BillingCurrency": "USD",
             },
         ],
     )
@@ -182,6 +188,7 @@ def test_csv_parses_tags_column(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
                 "Tags": '{"Application": "web", "CostCenter": "42"}',
             }
         ],
@@ -210,6 +217,7 @@ def test_csv_treats_blank_tags_as_empty_list(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
                 "Tags": " ",  # FOCUS 1.0 NULL sentinel
             }
         ],
@@ -236,6 +244,7 @@ def test_csv_handles_invalid_tags_json(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
                 "Tags": "not json",
             }
         ],
@@ -267,6 +276,7 @@ def test_loads_valid_focus_1_0_parquet_row(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:myapp",
                 "SubAccountId": "222222222222",
+                "BillingCurrency": "USD",
                 "Tags": '{"Application": "web"}',
             }
         ],
@@ -303,6 +313,7 @@ def test_parquet_missing_tags_column_yields_empty_list(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
             }
         ],
         include_tags=False,
@@ -349,6 +360,7 @@ def test_load_focus_dispatches_by_extension(tmp_path: Path) -> None:
                 "Region": "eu-west-1",
                 "ResourceId": "arn:rds:1",
                 "SubAccountId": "111",
+                "BillingCurrency": "USD",
             }
         ],
     )
@@ -367,6 +379,7 @@ def test_load_focus_dispatches_by_extension(tmp_path: Path) -> None:
                 "Region": "us-east-1",
                 "ResourceId": "arn:ec2:1",
                 "SubAccountId": "222",
+                "BillingCurrency": "USD",
             }
         ],
     )
@@ -385,3 +398,244 @@ def test_load_focus_rejects_unknown_extension(tmp_path: Path) -> None:
     p.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="Unsupported FOCUS file extension"):
         list(load_focus(p))
+
+
+# ---------------------------------------------------------------------------
+# BillingCurrency (FOCUS 1.0 spec §2.10) — required, preserved as-written.
+# The audit committee (FinOps re-audit) flagged the product for treating
+# all amounts as USD regardless of source currency; an EUR-billed export
+# was labeled USD and then "converted" to EUR — a 10-20% silent error.
+# ---------------------------------------------------------------------------
+
+
+def test_billing_currency_usd_preserved(tmp_path: Path) -> None:
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "100.00",
+                "EffectiveCost": "100.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "USD",
+            }
+        ],
+    )
+    rows = list(load_focus_csv(p))
+    assert len(rows) == 1
+    assert rows[0].billing_currency == "USD"
+
+
+def test_billing_currency_eur_preserved(tmp_path: Path) -> None:
+    """The committee's headline case: a French export billed in EUR.
+    The currency must round-trip to the loader output unchanged."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "92.50",  # raw EUR amount, NOT converted
+                "EffectiveCost": "100.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "EUR",
+            }
+        ],
+    )
+    rows = list(load_focus_csv(p))
+    assert len(rows) == 1
+    assert rows[0].billing_currency == "EUR"
+    # The BilledCost is the raw 92.50 EUR — we never convert at ingest.
+    assert rows[0].billed_cost == Decimal("92.50")
+
+
+def test_billing_currency_lowercase_rejected(tmp_path: Path) -> None:
+    """FOCUS 1.0 §2.10 mandates uppercase ISO 4217 codes. Lowercase or
+    mixed-case must be rejected at ingest — silently accepting "eur"
+    and storing it downstream would let the EUR/USD confusion recur.
+
+    Bad cells are caught by the per-row try/except and skipped (one
+    bad row doesn't fail the whole load) — the on_skip callback
+    records the BillingCurrencyError for the operator's
+    rows_skipped counter."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "92.50",
+                "EffectiveCost": "100.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "eur",  # wrong case
+            }
+        ],
+    )
+    skipped: list[tuple[int, Exception]] = []
+
+    def _on_skip(line_no: int, exc: Exception) -> None:
+        skipped.append((line_no, exc))
+
+    rows = list(load_focus_csv(p, on_skip=_on_skip))
+    assert rows == []
+    assert len(skipped) == 1
+    assert isinstance(skipped[0][1], BillingCurrencyError)
+    assert "must be 3 uppercase" in str(skipped[0][1])
+
+
+def test_billing_currency_empty_rejected(tmp_path: Path) -> None:
+    """Empty BillingCurrency = the FOCUS NULL sentinel. The audit
+    committee's deal-breaker: a missing currency on an EUR export
+    was being labeled USD. We fail loud at ingest instead."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "92.50",
+                "EffectiveCost": "100.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": " ",  # FOCUS null sentinel
+            }
+        ],
+    )
+    skipped: list[tuple[int, Exception]] = []
+
+    def _on_skip(line_no: int, exc: Exception) -> None:
+        skipped.append((line_no, exc))
+
+    rows = list(load_focus_csv(p, on_skip=_on_skip))
+    assert rows == []
+    assert len(skipped) == 1
+    assert isinstance(skipped[0][1], BillingCurrencyError)
+    assert "empty BillingCurrency" in str(skipped[0][1])
+
+
+def test_billing_currency_unknown_code_rejected(tmp_path: Path) -> None:
+    """4-letter code, digit codes, and unknown ISO 4217 codes are all
+    rejected. Better to fail one row than silently mis-classify."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "92.50",
+                "EffectiveCost": "100.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "USDD",  # 4 letters
+            }
+        ],
+    )
+    skipped: list[tuple[int, Exception]] = []
+
+    def _on_skip(line_no: int, exc: Exception) -> None:
+        skipped.append((line_no, exc))
+
+    rows = list(load_focus_csv(p, on_skip=_on_skip))
+    assert rows == []
+    assert len(skipped) == 1
+    assert isinstance(skipped[0][1], BillingCurrencyError)
+    assert "invalid BillingCurrency" in str(skipped[0][1])
+
+
+def test_billing_currency_missing_column_fails_load(tmp_path: Path) -> None:
+    """A column MISSING from the header (vs a cell empty) fails the
+    whole load via _validate_columns. Non-conformant export."""
+    p = tmp_path / "bad.csv"
+    p.write_text(
+        "BillingAccountId,ServiceName,BilledCost,EffectiveCost\n111,AmazonRDS,10,10\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="missing required columns"):
+        list(load_focus_csv(p))
+
+
+def test_billing_currency_gbp_preserved(tmp_path: Path) -> None:
+    """GBP is in the accepted set. A London prospect's export round-trips."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "80.00",
+                "EffectiveCost": "80.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "GBP",
+            }
+        ],
+    )
+    rows = list(load_focus_csv(p))
+    assert rows[0].billing_currency == "GBP"
+
+
+def test_billing_currency_one_bad_row_skipped_others_kept(tmp_path: Path) -> None:
+    """A row with a bad BillingCurrency is skipped (one bad row doesn't
+    fail the whole load), and the on_skip callback records it for
+    the operator's rows_skipped counter."""
+    p = _write_csv(
+        tmp_path,
+        [
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonRDS",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "10.00",
+                "EffectiveCost": "10.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:rds:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "USD",
+            },
+            {
+                "BillingAccountId": "111",
+                "ServiceName": "AmazonEC2",
+                "ChargePeriodStart": "2026-07-01",
+                "ChargePeriodEnd": "2026-07-31",
+                "BilledCost": "5.00",
+                "EffectiveCost": "5.00",
+                "PricingCategory": "On-Demand",
+                "ResourceId": "arn:ec2:1",
+                "SubAccountId": "111",
+                "BillingCurrency": "eur",  # bad: lowercase
+            },
+        ],
+    )
+    skipped: list[tuple[int, Exception]] = []
+
+    def _on_skip(line_no: int, exc: Exception) -> None:
+        skipped.append((line_no, exc))
+
+    rows = list(load_focus_csv(p, on_skip=_on_skip))
+    assert len(rows) == 1
+    assert rows[0].service == "AmazonRDS"
+    assert len(skipped) == 1
+    assert isinstance(skipped[0][1], BillingCurrencyError)

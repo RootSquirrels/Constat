@@ -53,6 +53,7 @@ def upsert_aggregated(
             existing.resource_id = agg.resource_id
             existing.sub_account_id = agg.sub_account_id
             existing.tags = list(agg.tags)
+            existing.billing_currency = agg.billing_currency
             _write_per_row_tags(session, existing.id, agg.per_row_tag_dicts)
             updated += 1
         else:
@@ -69,6 +70,7 @@ def upsert_aggregated(
                 sub_account_id=agg.sub_account_id,
                 tags=list(agg.tags),
                 charge_count=agg.charge_count,
+                billing_currency=agg.billing_currency,
             )
             session.add(new_row)
             session.flush()  # get new_row.id

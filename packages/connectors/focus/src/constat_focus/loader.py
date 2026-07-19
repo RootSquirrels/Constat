@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 # `RegionId` (spec §2.32/2.33, https://focus.finops.org/focus-specification/v1-0/).
 # Requiring `Region` would reject every spec-conformant export. The region
 # check is done separately in _validate_columns (either name accepted).
+#
+# BillingCurrency is required (FOCUS 1.0 spec §2.10): the audit committee
+# (FinOps re-audit) flagged the product for treating all amounts as USD
+# regardless of source currency. An EUR-billed export was labeled USD and
+# then "converted" to EUR in the restitution — a double-translation error
+# of ~10-20% on every line. Now the loader refuses any row with a missing
+# or unparseable BillingCurrency, and the value is stored as-written
+# (USD, EUR, GBP, ...). Conversion to a display currency happens at
+# restitution time only, so the displayed amount is always traceable
+# back to a single FOCUS line with a single currency.
 FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
     {
         "BillingAccountId",
@@ -43,7 +53,15 @@ FOCUS_REQUIRED_COLUMNS: frozenset[str] = frozenset(
         "PricingCategory",
         "ResourceId",  # FOCUS 1.0: for cost-to-resource attribution
         "SubAccountId",  # FOCUS 1.0: AWS Organizations account ID
+        "BillingCurrency",  # FOCUS 1.0 spec §2.10 — required, preserved as-written
     }
+)
+
+# ISO 4217 3-letter currency codes we accept. Empty, " ", or anything
+# not in this set is rejected by the loader. "EUR", "USD", "GBP" are
+# the FOCUS 1.0 examples; other ISO codes (JPY, AUD, etc.) work too.
+FOCUS_VALID_CURRENCIES: frozenset[str] = frozenset(
+    {"USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNY", "INR", "BRL", "SGD", "NZD"}
 )
 
 # Accepted region columns, in preference order: the FOCUS 1.0 name first,
@@ -67,6 +85,7 @@ class FocusCharge:
     - billed_cost    ← FOCUS BilledCost (what you pay)
     - amortized_cost ← FOCUS EffectiveCost (amortized over the period)
     - tags           ← FOCUS Tags (list of unique tag dicts seen)
+    - billing_currency ← FOCUS BillingCurrency (ISO 4217, preserved as-written)
 
     `tags` is always a list. A raw FOCUS row carries exactly one tag dict, so
     the loader wraps it in a single-element list. After aggregation by
@@ -88,6 +107,7 @@ class FocusCharge:
     resource_id: str | None
     sub_account_id: str | None
     tags: list[dict[str, str]]
+    billing_currency: str
 
 
 def _parse_date(s: str) -> date:
@@ -115,6 +135,50 @@ def _opt_str(s: str | None) -> str | None:
     if s == "" or s == FOCUS_NULL_SENTINEL:
         return None
     return s
+
+
+class BillingCurrencyError(ValueError):
+    """Raised when a FOCUS row has a missing or invalid BillingCurrency.
+
+    The audit committee flagged this as a deal-breaker: an EUR-billed
+    export labeled USD then "converted" to EUR was a 10-20% silent
+    error on every line. The fix is fail-loud at ingest: the FOCUS 1.0
+    spec REQUIRES BillingCurrency (§2.10); if the column is missing or
+    the value is not a valid ISO 4217 code, the row is rejected.
+
+    The catch is in `load_focus_csv` / `load_focus_parquet` (the
+    per-row skip loop), so one bad row doesn't fail the whole load —
+    it logs and skips, then the upstream count of rows_skipped
+    surfaces the issue to the operator. A column MISSING from the
+    header (vs a cell empty) fails the whole load via
+    `_validate_columns`; that's a non-conformant export.
+    """
+
+
+def _parse_billing_currency(raw: str | None) -> str:
+    """Return the ISO 4217 code, or raise BillingCurrencyError.
+
+    Accepts only the canonical 3-letter form (uppercase). "eur" / "Eur"
+    are rejected — FOCUS 1.0 §2.10 mandates uppercase. The list of
+    accepted codes is FOCUS_VALID_CURRENCIES (kept as a sanity check;
+    ISO 4217 has ~180 codes, we accept a common subset to catch
+    typos like "USDD" without making the check exhaustive).
+    """
+    if raw is None:
+        raise BillingCurrencyError("missing BillingCurrency column (FOCUS 1.0 §2.10 requires it)")
+    code = raw.strip()
+    if code == "" or code == FOCUS_NULL_SENTINEL:
+        raise BillingCurrencyError("empty BillingCurrency (FOCUS 1.0 §2.10 requires it)")
+    if len(code) != 3 or not code.isalpha() or not code.isupper():
+        raise BillingCurrencyError(
+            f"invalid BillingCurrency {raw!r}: must be 3 uppercase letters (ISO 4217)"
+        )
+    if code not in FOCUS_VALID_CURRENCIES:
+        raise BillingCurrencyError(
+            f"unsupported BillingCurrency {code!r}: accepted codes are "
+            f"{sorted(FOCUS_VALID_CURRENCIES)}"
+        )
+    return code
 
 
 def _parse_tags(raw: str | None) -> dict[str, str]:
@@ -145,6 +209,7 @@ def _parse_tags(raw: str | None) -> dict[str, str]:
 def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
     """Build a FocusCharge from a dict row (CSV) or from a pyarrow Row mapping."""
     raw_tags = _parse_tags(row.get("Tags"))
+    currency = _parse_billing_currency(row.get("BillingCurrency"))
     return FocusCharge(
         account_id=str(row.get("BillingAccountId", "")).strip(),
         account_name=str(row.get("BillingAccountName", "")).strip(),
@@ -158,6 +223,7 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
         resource_id=_opt_str(row.get("ResourceId")),
         sub_account_id=_opt_str(row.get("SubAccountId")),
         tags=[raw_tags] if raw_tags else [],
+        billing_currency=currency,
     )
 
 

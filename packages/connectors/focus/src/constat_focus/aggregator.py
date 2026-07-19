@@ -24,6 +24,13 @@ class AggregatedFocusCharge:
     `per_row_tag_dicts` so the upsert can write one focus_charge_tags
     row per (input row, key, value). This enables proportional cost
     attribution in the chargeback runner instead of V1's even split.
+
+    Migration 0019: `billing_currency` is preserved as-written across
+    the aggregation. The aggregator doesn't convert — same input
+    currency on all rows of the bucket means same output currency; if
+    a bucket somehow has mixed currencies (it shouldn't, the loader
+    fails on the first row of a non-conformant file), the mode is
+    used as a best-effort, but the loader is the real defense.
     """
 
     service: str
@@ -44,9 +51,13 @@ class AggregatedFocusCharge:
     # one input row's tag dict (the loader wraps a single dict in a
     # list per row). Length == number of input rows that contributed
     # to this aggregate. Used by the upsert to write focus_charge_tags
-    # rows. Cross-row duplicates are preserved (the runner uses the
-    # count to attribute cost proportionally).
+    # rows. Cross-row duplicates are preserved (intentional: the runner
+    # uses the count to attribute cost proportionally).
     per_row_tag_dicts: list[dict[str, str]] = field(default_factory=list)
+    # ISO 4217 currency code, preserved as-written (USD, EUR, GBP, ...).
+    # Same for all rows in the bucket (the loader refuses mixed-currency
+    # input via BillingCurrencyError before the aggregator sees it).
+    billing_currency: str = "USD"
 
 
 def _mode(values: list[str]) -> str | None:
@@ -109,6 +120,12 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
             for t in r.tags:
                 flat_tag_dicts.append(t)
 
+        # Currency: the loader has already rejected mixed/empty
+        # BillingCurrency per row, so all rows in a bucket share the
+        # same currency. We still use mode() defensively in case a
+        # future refactor breaks that invariant — better to preserve
+        # the majority than crash on a one-off outlier.
+        currencies = [r.billing_currency for r in rows]
         results.append(
             AggregatedFocusCharge(
                 service=service,
@@ -123,6 +140,7 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 sub_account_id=_mode([r.sub_account_id for r in rows]),
                 tags=_unique_dicts([r.tags for r in rows]),
                 per_row_tag_dicts=flat_tag_dicts,
+                billing_currency=_mode(currencies) or "USD",
             )
         )
     return results

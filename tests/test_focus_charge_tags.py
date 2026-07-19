@@ -170,6 +170,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             billed_cost=Decimal("10"),
             amortized_cost=Decimal("10"),
             tags=[{"Application": "web"}],
+            billing_currency="USD",
         ),
         FocusCharge(
             account_id="111",
@@ -184,6 +185,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             billed_cost=Decimal("20"),
             amortized_cost=Decimal("20"),
             tags=[{"Application": "web"}],
+            billing_currency="USD",
         ),
         FocusCharge(
             account_id="111",
@@ -198,6 +200,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             billed_cost=Decimal("30"),
             amortized_cost=Decimal("30"),
             tags=[{"Application": "api"}],
+            billing_currency="USD",
         ),
     ]
     agg_list = aggregate_for_storage(rows)
@@ -320,6 +323,7 @@ def _write_focus_csv(path: Path, rows: list[dict]) -> Path:
         "Region",
         "ResourceId",
         "SubAccountId",
+        "BillingCurrency",
         "Tags",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -349,6 +353,7 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
             "Region": "eu-west-1",
             "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:web1",
             "SubAccountId": "222222222222",
+            "BillingCurrency": "USD",
             "Tags": '{"Application": "web"}',
         },
         {
@@ -363,6 +368,7 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
             "Region": "eu-west-1",
             "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:web2",
             "SubAccountId": "222222222222",
+            "BillingCurrency": "USD",
             "Tags": '{"Application": "web"}',
         },
         {
@@ -377,6 +383,7 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
             "Region": "eu-west-1",
             "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:web3",
             "SubAccountId": "222222222222",
+            "BillingCurrency": "USD",
             "Tags": '{"Application": "web"}',
         },
         # 1 api row
@@ -392,6 +399,7 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
             "Region": "eu-west-1",
             "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:api1",
             "SubAccountId": "222222222222",
+            "BillingCurrency": "USD",
             "Tags": '{"Application": "api"}',
         },
     ]

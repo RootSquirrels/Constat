@@ -23,6 +23,7 @@ def _csv_fieldnames() -> list[str]:
         "Region",
         "ResourceId",
         "SubAccountId",
+        "BillingCurrency",
     ]
 
 
@@ -56,6 +57,7 @@ def _rds_row() -> dict:
         "Region": "eu-west-1",
         "ResourceId": "arn:aws:rds:eu-west-1:111111111111:db:myapp",
         "SubAccountId": "222222222222",
+        "BillingCurrency": "USD",
     }
 
 

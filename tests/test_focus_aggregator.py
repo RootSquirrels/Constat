@@ -34,6 +34,7 @@ def _charge(
         resource_id=resource_id,
         sub_account_id=sub_account_id,
         tags=tags if tags is not None else [],
+        billing_currency="USD",
     )
 
 
@@ -107,6 +108,7 @@ def test_aggregator_handles_null_resource_id():
             resource_id=None,
             sub_account_id=None,
             tags=[],
+            billing_currency="USD",
         )
     ]
     agg = aggregate_for_storage(rows)

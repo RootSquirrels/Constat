@@ -227,6 +227,12 @@ class FocusChargeORM(Base):
     # attribute cost proportionally (no more even-split approximation).
     tags: Mapped[list[dict[str, str]]] = mapped_column(JSONBType(), nullable=False, default=list)
     charge_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # ISO 4217 currency code from FOCUS BillingCurrency, preserved as-written
+    # (migration 0019). CHAR(3) on Postgres — the database enforces the
+    # shape; the loader enforces the value (rejects empty / lowercase / unknown).
+    # sqlite is permissive by default; the application layer is the source of
+    # truth on the test path.
+    billing_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

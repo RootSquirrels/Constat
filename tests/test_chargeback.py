@@ -18,6 +18,7 @@ def _charge(
     pricing: str = "On-Demand",
     region: str = "eu-west-1",
     tags: list[dict[str, str]] | None = None,
+    billing_currency: str = "USD",
 ) -> FocusCharge:
     return FocusCharge(
         account_id=account,
@@ -32,6 +33,7 @@ def _charge(
         resource_id=None,
         sub_account_id=None,
         tags=tags if tags is not None else [],
+        billing_currency=billing_currency,
     )
 
 

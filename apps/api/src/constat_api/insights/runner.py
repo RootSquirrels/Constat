@@ -329,6 +329,7 @@ def _focus_charge_to_pydantic(
         resource_id=orm.resource_id,
         sub_account_id=orm.sub_account_id,
         tags=per_row_tag_dicts,
+        billing_currency=orm.billing_currency,
     )
 
 

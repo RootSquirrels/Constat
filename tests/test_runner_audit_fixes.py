@@ -258,6 +258,7 @@ def test_build_insights_title_falls_back_to_account_id() -> None:
         resource_id=None,
         sub_account_id=None,
         tags=[],
+        billing_currency="USD",
     )
     insights = build_insights(aggregate([charge]))
     assert "on 111111111111" in insights[0].title
@@ -277,6 +278,7 @@ def test_build_insights_title_prefers_account_name() -> None:
         resource_id=None,
         sub_account_id=None,
         tags=[],
+        billing_currency="USD",
     )
     insights = build_insights(aggregate([charge]))
     assert "on Production" in insights[0].title
@@ -299,6 +301,7 @@ def test_build_insights_drift_severity_always_info() -> None:
             resource_id=None,
             sub_account_id=None,
             tags=[],
+            billing_currency="USD",
         )
         insights = build_insights(aggregate([charge]))
         assert insights[0].severity == Severity.INFO
