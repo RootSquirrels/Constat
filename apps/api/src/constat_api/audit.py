@@ -20,13 +20,15 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Iterator, Mapping
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from constat_api.auth import Principal, optional_principal
 from constat_api.db import SessionLocal
 from constat_api.orm import AuditEventORM
-from constat_api.settings import DEFAULT_TENANT_ID, settings
+from constat_api.settings import DEFAULT_TENANT_ID
 from constat_api.tenant import bind_tenant
 
 logger = logging.getLogger(__name__)
@@ -102,8 +104,12 @@ class AuditLogger:
     here (caller decides the commit boundary).
     """
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, tenant_id: Any = None):
         self.session = session
+        # Events land in the caller's tenant (3.1: resolved from the
+        # authenticated principal). Default keeps CLI/system callers
+        # working without plumbing.
+        self.tenant_id = tenant_id or DEFAULT_TENANT_ID
 
     def record(
         self,
@@ -132,7 +138,7 @@ class AuditLogger:
         _validate_metadata(metadata)
 
         event = AuditEventORM(
-            tenant_id=DEFAULT_TENANT_ID,
+            tenant_id=self.tenant_id,
             actor=actor or ACTOR_SYSTEM,
             action=action,
             target_type=target_type,
@@ -156,10 +162,11 @@ def record_event(
     target_type: str | None = None,
     target_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    tenant_id: Any = None,
 ) -> AuditEventORM:
     """One-shot audit record. Convenience for callers that don't
     want to instantiate AuditLogger. The caller owns the commit."""
-    return AuditLogger(session).record(
+    return AuditLogger(session, tenant_id=tenant_id).record(
         action=action,
         actor=actor,
         target_type=target_type,
@@ -173,16 +180,21 @@ def record_event(
 # ---------------------------------------------------------------------------
 
 
-def get_audit_db() -> Iterator[Session]:
+def get_audit_db(
+    principal: Annotated[Principal, Depends(optional_principal)],
+) -> Iterator[Session]:
     """FastAPI dependency: a short, INDEPENDENT session for audit writes.
 
     Read-attribution writes must NEVER share the request's read session:
     an audit write failure (lock, RLS violation, connection drop) must
     not be able to corrupt or roll back the read it describes. This
     session is opened around the single INSERT and closed immediately.
+
+    The tenant is the request principal's (3.1): attribution rows land
+    in the tenant of who acted, not in a global default.
     """
     session = SessionLocal()
-    bind_tenant(session, settings.default_tenant_id)
+    bind_tenant(session, principal.tenant_id)
     try:
         yield session
     finally:
@@ -197,6 +209,7 @@ def record_read(
     route: str,
     filters: Mapping[str, bool] | None = None,
     row_count: int,
+    tenant_id: Any = None,
 ) -> None:
     """Attribute one sensitive READ to its principal.
 
@@ -224,6 +237,7 @@ def record_read(
             actor=actor,
             target_type=target_type,
             metadata=metadata,
+            tenant_id=tenant_id,
         )
         session.commit()
     except Exception:

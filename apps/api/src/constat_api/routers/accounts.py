@@ -44,7 +44,8 @@ def list_accounts_endpoint(
     # identifying inventory — who enumerated it must be on record.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="accounts",
         route="/accounts",
         row_count=len(rows),

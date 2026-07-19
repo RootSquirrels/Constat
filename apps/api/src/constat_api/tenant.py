@@ -1,8 +1,9 @@
 """Multi-tenant session context.
 
-V1: single-tenant. The default tenant id is set on every session by
-`set_session_tenant`. When V2 lands, this is where the tenant id is
-read from the request (JWT claim or `X-Tenant-Id` header).
+The tenant id is resolved from the authenticated principal (roadmap 3.1:
+the API key's configured tenant) and set on every session by `get_db`
+via `bind_tenant`. The default tenant remains the fallback for
+anonymous/open requests.
 
 How it works:
 - The application sets `session.info["tenant_id"]` on each session.
@@ -17,9 +18,6 @@ How it works:
 
 The handler is a no-op on non-Postgres dialects (sqlite tests). It only
 sets the GUC on Postgres, where RLS exists.
-
-V2: replace `bind_tenant(session, tenant_id)` calls in HTTP deps with
-a dep that reads the tenant from the request.
 """
 
 from __future__ import annotations
@@ -44,8 +42,8 @@ def bind_tenant(session: Session, tenant_id: UUID | str | None) -> None:
     The `after_begin` event picks it up on the next transaction and
     installs it into the Postgres GUC. No SQL runs at bind time.
 
-    For V1 single-tenant, pass the default tenant. For V2, pass the
-    tenant resolved from the request (JWT claim, header, etc.).
+    The tenant id always comes from the authenticated identity (the API
+    key's configured tenant), never from the request.
     """
     if tenant_id is None:
         session.info.pop("tenant_id", None)

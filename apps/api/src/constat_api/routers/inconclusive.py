@@ -80,7 +80,8 @@ def list_inconclusive_endpoint(
     # sensitive as the insights themselves.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="inconclusives",
         route="/inconclusives",
         filters={
@@ -106,7 +107,8 @@ def get_inconclusive_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="inconclusive not found")
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="inconclusive",
         route="/inconclusives/{inconclusive_id}",
         row_count=1,
@@ -174,7 +176,8 @@ def patch_inconclusive_endpoint(
     record_event(
         session,
         action="inconclusive_workflow",
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="inconclusive",
         target_id=str(inconclusive_id),
         metadata={"fields_updated": sorted(fields)},

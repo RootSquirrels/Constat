@@ -51,7 +51,7 @@ def test_insights_list_read_is_attributed(
     events = _read_events(session)
     assert len(events) == 1
     event = events[0]
-    assert event.actor == "alice"
+    assert event.actor == "machine:alice"
     assert event.action == "api.read"
     assert event.target_type == "insights"
     # Metadata: route template + row count + filter booleans, no PII.
@@ -69,7 +69,7 @@ def test_insights_export_read_is_attributed(
 
     events = _read_events(session)
     assert len(events) == 1
-    assert events[0].actor == "bob"  # readers may read; their reads are attributed
+    assert events[0].actor == "machine:bob"  # readers may read; their reads are attributed
     assert events[0].metadata_json["route"] == "/insights/export.csv"
 
 
@@ -80,7 +80,7 @@ def test_open_auth_read_records_anonymous(client: TestClient, session: Session) 
 
     events = _read_events(session)
     assert len(events) == 1
-    assert events[0].actor == "anonymous"
+    assert events[0].actor == "machine:anonymous"
 
 
 def test_failed_read_is_not_attributed(
@@ -100,11 +100,11 @@ def test_audit_events_endpoint_answers_who_saw_what(
     client.get("/insights", headers={"X-API-Key": ALICE_KEY})
     response = client.get(
         "/compliance/audit-events",
-        params={"actor": "alice", "action": "api.read"},
+        params={"actor": "machine:alice", "action": "api.read"},
         headers={"X-API-Key": ALICE_KEY},
     )
     assert response.status_code == 200
     rows = response.json()
     assert len(rows) == 1
-    assert rows[0]["actor"] == "alice"
+    assert rows[0]["actor"] == "machine:alice"
     assert rows[0]["metadata"]["route"] == "/insights"

@@ -109,7 +109,8 @@ def get_focus_coverage(
     # billing footprint — who looked must be on record.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="focus_coverage",
         route="/focus/coverage",
         row_count=len(coverages),

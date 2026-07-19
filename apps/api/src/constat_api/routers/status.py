@@ -140,7 +140,8 @@ def get_status(
     # data source — fleet-wide counts in one payload.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="status",
         route="/status",
         row_count=1,

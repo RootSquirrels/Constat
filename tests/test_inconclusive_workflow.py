@@ -64,7 +64,7 @@ def test_patch_sets_owner_due_status_and_audits(client: TestClient, session: Ses
         session.query(AuditEventORM).filter(AuditEventORM.action == "inconclusive_workflow").all()
     )
     assert len(rows) == 1
-    assert rows[0].actor == "anonymous"  # auth open in tests
+    assert rows[0].actor == "machine:anonymous"  # auth open in tests
     assert rows[0].target_id == inc_id
     assert rows[0].metadata_json["fields_updated"] == ["due_date", "owner", "status"]
 

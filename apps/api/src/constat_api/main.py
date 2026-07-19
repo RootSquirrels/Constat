@@ -25,7 +25,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from constat_api.auth import verify_metrics_key
 from constat_api.logging import configure_logging
 from constat_api.metrics import render_metrics
-from constat_api.middleware import HTTPMetricsMiddleware, RequestIDMiddleware
+from constat_api.middleware import (
+    HTTPMetricsMiddleware,
+    RequestIDMiddleware,
+    TenantHeaderGuardMiddleware,
+)
 from constat_api.routers import (
     accounts,
     admin,
@@ -96,9 +100,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# RequestIDMiddleware is the OUTERMOST middleware so it sees every
-# request before auth / business logic, and the request_id is bound
-# to structlog's contextvars for the entire request lifecycle.
+# Starlette executes middleware in REVERSE order of add_middleware()
+# calls (the last one added is outermost). TenantHeaderGuardMiddleware is
+# added first so it executes just before routing, AFTER
+# RequestIDMiddleware — its 400 rejections then carry a request_id in
+# the audit log line and the response header.
+app.add_middleware(TenantHeaderGuardMiddleware)
+# RequestIDMiddleware binds a request_id to structlog's contextvars for
+# the entire request lifecycle and echoes it in the response header.
 app.add_middleware(RequestIDMiddleware)
 # HTTPMetricsMiddleware records the SLO counters/histograms. Inside
 # RequestIDMiddleware so the access log and the metric both fire on

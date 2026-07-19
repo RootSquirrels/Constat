@@ -104,7 +104,8 @@ def insight_history_endpoint(
     summary = repo.summarize_events(session, rule_name=rule_name, since=since, event=event)
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="insight_events",
         route="/insights/history",
         filters={

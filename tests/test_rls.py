@@ -78,7 +78,10 @@ def test_current_tenant_defaults_to_none_on_fresh_session(session: Session) -> N
 
 
 def test_get_db_binds_default_tenant(monkeypatch) -> None:
-    """The FastAPI dep must bind settings.default_tenant_id to every session."""
+    """The FastAPI dep must bind the anonymous (V1 default) tenant when no
+    principal is resolved — the auth-open / open-route fallback."""
+    from constat_api.auth import ANONYMOUS_PRINCIPAL
+
     captured: dict[str, object] = {}
 
     class _StubSession:
@@ -95,7 +98,7 @@ def test_get_db_binds_default_tenant(monkeypatch) -> None:
 
     monkeypatch.setattr(db_module, "SessionLocal", _stub_sessionlocal)
 
-    gen = db_module.get_db()
+    gen = db_module.get_db(ANONYMOUS_PRINCIPAL)
     s = next(gen)
     try:
         # The dep called bind_tenant, which stashed the id in session.info.

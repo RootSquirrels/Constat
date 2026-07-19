@@ -22,20 +22,46 @@ ROLE_READER = "reader"
 ROLE_OPERATOR = "operator"
 ROLES: tuple[str, ...] = (ROLE_READER, ROLE_OPERATOR)
 
+# Principal kinds (roadmap 3.1). `machine` is every key issued today
+# (deploy bots, scripts, the web app's service key). `human` is
+# forward-looking: it anticipates SSO-backed interactive identities and
+# lets the audit trail distinguish a person from an automation with the
+# same privileges. Nothing branches on kind yet — it is attribution only.
+KIND_MACHINE = "machine"
+KIND_HUMAN = "human"
+KINDS: tuple[str, ...] = (KIND_MACHINE, KIND_HUMAN)
+
 
 @dataclass(frozen=True)
 class ApiKeyEntry:
-    """One named API key with its role, parsed from CONSTAT_API_KEYS."""
+    """One named API key with its role, tenant, and kind, parsed from
+    CONSTAT_API_KEYS.
+
+    `tenant_id` is the tenant every session authenticated with this key
+    is bound to (roadmap 3.1: identity -> session -> RLS). Keys without
+    an explicit tenant stay on the V1 default tenant, which keeps
+    existing single-tenant deployments byte-for-byte compatible.
+    """
 
     name: str
     role: str
     key: str
+    tenant_id: UUID = DEFAULT_TENANT_ID
+    kind: str = KIND_MACHINE
 
 
 def parse_api_keys(raw: str) -> tuple[ApiKeyEntry, ...]:
-    """Parse CONSTAT_API_KEYS: comma-separated `name:role:key` entries.
+    """Parse CONSTAT_API_KEYS: comma-separated entries.
 
-    Example: "alice:operator:K1,bob:reader:K2".
+    Format: `name:role:key[:tenant_uuid[:kind]]` — the tenant and kind
+    fields are optional and default to the V1 default tenant and
+    `machine`. Examples: "alice:operator:K1,bob:reader:K2",
+    "deploy:operator:K3:00000000-0000-0000-0000-00000000000a:machine".
+
+    Note on ':' in keys: the legacy 3-field form is the only one where
+    the key may contain ':'. Once a 4th field is present it is parsed as
+    the tenant UUID and a 5th as the kind — an entry that does not match
+    that shape fails loudly rather than being silently reinterpreted.
 
     Fails loudly (ValueError) on any malformed entry — a typo here means
     someone locked out or over-privileged, both of which must surface at
@@ -47,13 +73,13 @@ def parse_api_keys(raw: str) -> tuple[ApiKeyEntry, ...]:
         item = item.strip()
         if not item:
             continue
-        parts = item.split(":", 2)  # the key itself may contain ':'
+        parts = item.split(":")
         name = parts[0].strip() if parts else ""
-        if len(parts) != 3 or not name:
+        if len(parts) < 3 or len(parts) > 5 or not name:
             raise ValueError(
                 f"invalid CONSTAT_API_KEYS entry #{i + 1}"
                 + (f" (name={name!r})" if name else "")
-                + ": expected 'name:role:key'"
+                + ": expected 'name:role:key' with optional trailing ':tenant_uuid[:kind]'"
             )
         role = parts[1].strip()
         key = parts[2]
@@ -64,7 +90,25 @@ def parse_api_keys(raw: str) -> tuple[ApiKeyEntry, ...]:
             )
         if not key:
             raise ValueError(f"invalid CONSTAT_API_KEYS entry #{i + 1} (name={name!r}): empty key")
-        entries.append(ApiKeyEntry(name=name, role=role, key=key))
+        tenant_id = DEFAULT_TENANT_ID
+        if len(parts) >= 4:
+            raw_tenant = parts[3].strip()
+            try:
+                tenant_id = UUID(raw_tenant)
+            except ValueError:
+                raise ValueError(
+                    f"invalid CONSTAT_API_KEYS entry #{i + 1} (name={name!r}): "
+                    f"invalid tenant UUID {raw_tenant!r}"
+                ) from None
+        kind = KIND_MACHINE
+        if len(parts) == 5:
+            kind = parts[4].strip()
+            if kind not in KINDS:
+                raise ValueError(
+                    f"invalid CONSTAT_API_KEYS entry #{i + 1} (name={name!r}): "
+                    f"unknown kind {kind!r} (must be one of {KINDS})"
+                )
+        entries.append(ApiKeyEntry(name=name, role=role, key=key, tenant_id=tenant_id, kind=kind))
     return tuple(entries)
 
 
@@ -91,10 +135,13 @@ class Settings:
     # ("default", "operator") — see all_api_key_entries().
     api_key: str | None = os.getenv("CONSTAT_API_KEY") or None
     # V1 RBAC (CISO review): named keys with roles, comma-separated
-    # `name:role:key` entries (e.g. "alice:operator:K1,bob:reader:K2").
-    # Invalid entries raise ValueError at startup (import of this module)
-    # — misconfigured auth must never boot silently. Both this and the
-    # legacy CONSTAT_API_KEY may be set; they union.
+    # `name:role:key[:tenant_uuid[:kind]]` entries (e.g.
+    # "alice:operator:K1,bob:reader:K2"). The optional tenant field binds
+    # the key's sessions to that tenant (roadmap 3.1); it defaults to
+    # the V1 default tenant. Invalid entries raise ValueError at startup
+    # (import of this module) — misconfigured auth must never boot
+    # silently. Both this and the legacy CONSTAT_API_KEY may be set;
+    # they union.
     api_keys: tuple[ApiKeyEntry, ...] = parse_api_keys(os.getenv("CONSTAT_API_KEYS", ""))
     # F-10: POST /insights lets any caller forge an insight without
     # provenance. It exists for tests and local demos, so it is gated

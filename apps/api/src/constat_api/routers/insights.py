@@ -68,7 +68,8 @@ def list_insights_endpoint(
     # filters present (never their values) and how many rows came back.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="insights",
         route="/insights",
         filters={
@@ -165,7 +166,8 @@ def export_insights_csv_endpoint(
     # leaves the system) — attribution is non-negotiable here.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="insights",
         route="/insights/export.csv",
         filters={
@@ -194,7 +196,8 @@ def get_insight_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="insight not found")
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="insight",
         route="/insights/{insight_id}",
         row_count=1,

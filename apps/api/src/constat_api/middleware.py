@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 import structlog
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from constat_api.metrics import record_http_request
 
@@ -33,6 +34,45 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # and unbounded-cardinality risk from path-templated URLs that aren't
 # yet a registered route).
 _EXCLUDED_PATHS: frozenset[str] = frozenset({"/metrics", "/health"})
+
+
+class TenantHeaderGuardMiddleware(BaseHTTPMiddleware):
+    """Anti-cross-tenant guard (roadmap 3.1): a client may NEVER choose
+    its tenant.
+
+    The tenant is resolved from the authenticated identity (the API
+    key's configured tenant) and installed into the session by `get_db`.
+    Any request carrying an `X-Tenant-ID` header — whatever the value,
+    whatever the route, whatever the role — is rejected with 400. This
+    header has no legitimate use: silently ignoring it would risk a
+    future code path accidentally honoring it, and honoring it would be
+    a cross-tenant escape hatch. Starlette headers are case-insensitive,
+    so `X-Tenant-Id` and other casings are caught by the same check.
+
+    Rejections are audit-logged (structlog warning) with the request_id
+    bound by RequestIDMiddleware — this middleware is registered so it
+    executes after it.
+    """
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if "x-tenant-id" in request.headers:
+            logger.warning(
+                "tenant_header_rejected",
+                method=request.method,
+                path=request.url.path,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "tenant is resolved from the API key, not from the request: "
+                    "the X-Tenant-ID header is not accepted"
+                },
+            )
+        return await call_next(request)
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):

@@ -195,7 +195,8 @@ async def import_targets(
     record_event(
         session,
         action="collect_targets_imported",
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="collect_targets",
         metadata={"imported": imported, "updated": updated, "rejected": len(rejected)},
     )
@@ -220,7 +221,8 @@ def list_targets_endpoint(
     # identifying onboarding inventory — who enumerated it is on record.
     record_read(
         audit_session,
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="collect_targets",
         route="/collect/targets",
         row_count=len(rows),
@@ -256,7 +258,8 @@ def delete_target(
     record_event(
         session,
         action="collect_target_deleted",
-        actor=principal.name,
+        actor=principal.audit_actor,
+        tenant_id=principal.tenant_id,
         target_type="collect_targets",
         # target_id precedent: the AWS collector already logs
         # aws_scan_completed with target_id = the AWS account id.
