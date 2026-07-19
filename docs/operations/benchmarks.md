@@ -1,4 +1,67 @@
-# Benchmarks — insight runner
+# Benchmarks
+
+Two different measurements live here:
+
+- **Insight runner (local approximation)** — `scripts/bench_runner.py`,
+  sqlite in-memory, synthetic dataset. Measures the runner's algorithmic
+  shape, not production latency.
+- **Réel (staging, 35 comptes)** — `scripts/bench_real.py`, the real
+  async collection path (API → SQS → worker → AWS APIs → Postgres) on
+  the staging environment. This is the number that decides whether the
+  worker needs scaling (see the SCALING NOTE in `infra/ecs.tf`).
+
+## Réel (staging, 35 comptes) — chantier 1.5
+
+### Methodology
+
+- Script: `scripts/bench_real.py`. It submits one `POST /collect/aws`
+  job **per target account** (so per-account wall time is visible and a
+  poison account does not hide the others), polls
+  `GET /collect/aws/jobs/{job_id}` until every job is terminal, and
+  prints:
+  - wall time per job (account) and **total** wall time,
+  - **per-region durations** taken from the server-side job detail,
+  - the HTTP status codes seen (a flood of 5xx during the run would
+    invalidate the timing).
+- The run exercises the full deployed path: ALB → API (enqueue) → SQS →
+  worker (`CONSTAT_WORKER_CONCURRENCY=4`) → cross-account AssumeRole →
+  AWS APIs → Postgres writes. Exactly what an ICP-scale scan costs in
+  production shape.
+- What it **cannot** measure: AWS-side throttling detail — which API
+  call was throttled, how long the adaptive retry absorbed before
+  succeeding. That stays in the worker logs / CloudWatch
+  (`constat_source_run_duration_seconds{status=...}`), not in the job
+  detail. If a region is slow, the logs say why; this script says *that*
+  it was slow.
+- Requires an **operator** API key (`POST /collect/aws` is
+  `require_operator`; a reader key gets 403).
+
+### Command
+
+```bash
+export CONSTAT_API_KEY=<operator-key>
+python scripts/bench_real.py \
+  --base-url https://<staging-alb-dns> \
+  --targets staging-targets.json \
+  --poll-interval 5 --timeout 3600
+```
+
+(`staging-targets.json`: same shape as the `scan_targets_json` secret —
+one entry per staged account with its `regions`.)
+
+### Results
+
+> **PENDING EXECUTION — chantier 0 staging gate.**
+> The staging environment does not exist yet (the infra in `infra/` is
+> unapplied as of 2026-07-18), so there are deliberately **no numbers
+> here**. Do not fill this table with estimates; run the command above
+> once staging is live and paste what the script printed.
+
+| Date | Accounts | Regions | Jobs terminal | Total wall time | Slowest region | HTTP statuses |
+|---|---|---|---|---|---|---|
+| _pending_ | 35 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+
+## Insight runner (local approximation)
 
 Roadmap scalability item: *"Bench documenté à 10 k ressources — pas
 d'optimisation avant la mesure."* This page is the measurement. No

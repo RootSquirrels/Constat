@@ -1,3 +1,22 @@
+# Async collection (chantier 1.1) — local dev stays INLINE.
+#
+# CONSTAT_COLLECT_MODE selects how POST /collect/aws executes:
+#   - "inline" (default): the API scans synchronously in-process and
+#     returns 200. This is the mode to use locally — no queue needed.
+#   - "sqs": the API enqueues WorkItems (account x region) and returns
+#     202 + job_id; a worker consumes them. This mode runs against the
+#     deployed staging environment only (see infra/sqs.tf).
+#
+# There is deliberately NO LocalStack service here: a local SQS emulator
+# is out of V1 scope (AGENTS.md — V1 is a Fargate task + cron + one SQS
+# queue in the pilot account). Test the sqs path against staging, not
+# against an emulator whose redrive/visibility semantics we would have
+# to re-verify anyway.
+#
+# To run the API locally in inline mode (the default), just:
+#   uv run python -m constat_api
+# and optionally export CONSTAT_COLLECT_MODE=inline (it is the default).
+
 services:
   postgres:
     image: postgres:16-alpine

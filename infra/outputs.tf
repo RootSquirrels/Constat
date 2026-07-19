@@ -21,6 +21,26 @@ output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
 }
 
+output "collect_queue_url" {
+  description = "URL of the async-collection SQS queue (CONSTAT_COLLECT_QUEUE_URL for API + worker tasks)."
+  value       = aws_sqs_queue.collect.url
+}
+
+output "collect_dlq_url" {
+  description = "URL of the collect dead-letter queue. Non-empty DLQ = a region scan failed 3 times (runbook: docs/operations/alerting.md)."
+  value       = aws_sqs_queue.collect_dlq.url
+}
+
+output "ops_alerts_topic_arn" {
+  description = "SNS topic for ops alerts (DLQ alarm). Subscribe an email via var.ops_alert_email."
+  value       = aws_sns_topic.ops_alerts.arn
+}
+
+output "worker_service_name" {
+  description = "ECS service consuming the collect queue (python -m constat_api.worker)."
+  value       = aws_ecs_service.worker.name
+}
+
 output "scan_task_definition_arn" {
   description = "Use with `aws ecs run-task` to trigger a scan manually."
   value       = aws_ecs_task_definition.scan.arn

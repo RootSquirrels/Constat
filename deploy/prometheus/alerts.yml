@@ -1,11 +1,24 @@
 # Prometheus alert rules for Constat (roadmap scoreboard "Exploitabilité").
 #
-# Exactly 3 alerts, one per operational SLO:
+# Exactly 4 alerts:
 #   1. ConstatSourceRunFailed      — a per-region AWS scan failed.
 #   2. ConstatScopeStaleIncreasing — insights go INCONCLUSIVE (scope_stale)
 #                                    because scans are older than the 24h
 #                                    freshness window.
 #   3. ConstatHTTP5xxRateHigh      — API error rate above 1%.
+#   4. ConstatCollectItemsFailed   — collection WorkItems failing at the
+#                                    worker (async collection, chantier 1).
+#
+# NOTE on alert 4: for the SQS deployment the PRIMARY alerting path is
+# the CloudWatch alarm on the collect DLQ (infra/sqs.tf -> SNS) — SQS
+# redrive semantics are invisible to in-process metrics. This Prometheus
+# rule is the secondary signal there, and the ONLY signal in inline
+# (queue-less) mode, where failed items surface via the worker failure
+# counter. METRIC PENDING (2026-07-18): constat_collect_items_failed_total
+# is emitted by constat_api/worker.py, which is being written in
+# parallel; until apps/api/src/constat_api/metrics.py defines it, this
+# rule simply never fires (Prometheus treats a missing series as no
+# data, not an error).
 #
 # Metric names/labels match apps/api/src/constat_api/metrics.py and
 # docs/operations/metrics.md exactly. The `reason` label on
@@ -75,3 +88,23 @@ groups:
             minutes. Check the API logs (request_id correlates) and
             /health for dependency failures (Postgres).
           runbook_url: "docs/operations/alerting.md#constathttp5xxratehigh"
+
+      - alert: ConstatCollectItemsFailed
+        # Collection WorkItems (account x region) failing at the worker.
+        # In sqs mode the CloudWatch DLQ alarm (infra/sqs.tf) is primary;
+        # this rule is the only signal in inline mode. Metric pending
+        # the worker implementation (see header note).
+        expr: increase(constat_collect_items_failed_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Constat: collection WorkItems failing"
+          description: >-
+            At least one collection WorkItem (account x region scan)
+            failed in the last 15 minutes. In sqs mode, check the collect
+            DLQ (a message there means 3 failed receives); in any mode,
+            re-scan the failed region via POST /collect/aws with
+            regions=[region], force=true (operator key) and follow
+            GET /collect/aws/jobs/{job_id} to green.
+          runbook_url: "docs/operations/alerting.md#constatcollectitemsfailed"

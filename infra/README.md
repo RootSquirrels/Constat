@@ -9,7 +9,9 @@
 
 Minimal IaC for the **single pilot environment**. No modules, no remote
 state, no multi-env ceremony — deliberately. V1 deployment philosophy
-(AGENTS.md): a Fargate task + cron, no Step Functions/SQS.
+(AGENTS.md): a Fargate task + cron, plus — as of chantier 1.1
+(2026-07-18) — one SQS queue for async collection at ICP scale
+(justification inline in `sqs.tf`; still no Step Functions).
 
 ## What it creates
 
@@ -17,18 +19,51 @@ state, no multi-env ceremony — deliberately. V1 deployment philosophy
   backups, private) — replaces local docker-compose Postgres.
 - **ECR** repo for the API image.
 - **ECS Fargate cluster** with:
-  - an **API service** (1 task, 0.25 vCPU/512 MiB, public IP, SG ingress
-    restricted to `allowed_cidr` on port 8000 — no ALB, see the EXPOSURE
-    DECISION comment in `ecs.tf`),
+  - an **ALB + ACM certificate** (`alb.tf`) — HTTPS :443 only, HTTP→HTTPS
+    redirect; `api_endpoint` is `https://<alb-dns>`,
+  - an **API service** (1 task, 0.25 vCPU/512 MiB, behind the ALB — SG
+    ingress from the ALB security group only, no direct public exposure),
+  - a **worker service** (1 task, same image, command override
+    `python -m constat_api.worker`) consuming the collect queue
+    (`sqs.tf`),
   - a **scan task definition** (same image, command overridden) run
     **daily at 05:00 UTC** by **EventBridge Scheduler**: AWS collect CLI
-    then the `rds_eol` and `chargeback` insight rules.
+    then `run_insights --all` (all 8 insight rules).
+- **SQS** (chantier 1.1): `constat-pilot-collect` queue (visibility
+  timeout 900s, long polling, SSE-SQS encryption) + DLQ (redrive after
+  3 receives). See "Collect modes" below.
+- **CloudWatch alarm + SNS**: DLQ `ApproximateNumberOfMessagesVisible`
+  > 0 for 5 min → `constat-pilot-ops-alerts` topic. Email subscription
+  via `var.ops_alert_email` (empty default = alarm exists but emails
+  nobody).
 - **Secrets Manager**: `CONSTAT_API_KEY`, `CONSTAT_DATABASE_URL`, and the
   scan-targets JSON — injected into containers as env vars.
-- **IAM**: execution role (ECR/secrets/logs), task role (`sts:AssumeRole`
-  into prospect `constat-collector*` roles; ExternalId is enforced by the
-  prospect's trust policy, F-06), scheduler role.
+- **IAM**: execution role (ECR/secrets/logs), API task role
+  (`sts:AssumeRole` into prospect `constat-collector*` roles — ExternalId
+  is enforced by the prospect's trust policy, F-06 — plus
+  `sqs:SendMessage` on the collect queue), worker task role (SQS consume
+  + DLQ read + the same `sts:AssumeRole`), scheduler role.
 - **CloudWatch** log group `/ecs/constat-pilot`, 30-day retention.
+
+## Collect modes (inline vs sqs)
+
+`CONSTAT_COLLECT_MODE` selects how `POST /collect/aws` executes:
+
+- **`inline`** (code default; local dev): the request scans
+  synchronously and returns 200 with per-account results. Fine for one
+  account, one region.
+- **`sqs`** (deployed here): the API enqueues one WorkItem per
+  (account, region) on the collect queue and returns **202 + job_id**;
+  the worker service consumes them with `CONSTAT_WORKER_CONCURRENCY=4`
+  in-process concurrency. Job progress: `GET /collect/aws/jobs/{job_id}`.
+
+Queue URLs come from the `collect_queue_url` / `collect_dlq_url`
+outputs. A WorkItem that fails 3 receives lands in the DLQ and trips
+the CloudWatch alarm above — the operator re-scans that one region via
+the API (runbook: `docs/operations/alerting.md`), never via psql.
+Scaling the worker = `desired_count` (see the SCALING NOTE in
+`ecs.tf`); re-evaluate only after the real staging bench (chantier 1.5,
+`scripts/bench_real.py`).
 
 ## Prerequisites
 
@@ -116,8 +151,8 @@ aws ecs update-service --cluster constat-pilot --service constat-pilot-api --for
 - **Manual scan**: `aws ecs run-task` with the scan task definition (see
   `docs/operations/deployment.md`), or `POST /collect/aws` +
   `POST /insights/run` on the API.
-- **Find the API's current public IP**: see the `api_endpoint` output
-  description (`terraform output api_endpoint`).
+- **Find the API endpoint**: `terraform output api_endpoint` — stable
+  (`https://<alb-dns>`), no ephemeral-IP lookup after redeploys.
 
 ## Cost ballpark (estimate — NOT measured)
 
@@ -128,11 +163,16 @@ Pricing Calculator before quoting anyone:
 |---|---|
 | RDS db.t4g.micro single-AZ + 20 GB gp3 | ~15 |
 | Fargate API task 24/7 (0.25 vCPU / 0.5 GB) | ~9 |
+| Fargate worker task 24/7 (0.25 vCPU / 0.5 GB) | ~9 |
+| ALB + ACM (TLS termination) | ~16 |
 | Daily scan task (~15 min/day) | <1 |
+| SQS (standard queue, <1M requests/month) | <1 |
+| SNS + CloudWatch alarm (1 topic, 1 alarm) | <1 |
 | Secrets Manager (3 secrets) | ~1.2 |
 | ECR + CloudWatch logs (<1 GB) | ~1 |
-| **Total** | **~27** |
+| **Total** | **~54** |
 
 Sources: aws.amazon.com/rds/postgresql/pricing, /fargate/pricing,
-/secrets-manager/pricing. The avoided costs are the point: no NAT gateway
-(~$32), no ALB (~$16+) — both are on the post-pilot hardening list.
+/secrets-manager/pricing, /elasticloadbalancing/pricing, /sqs/pricing.
+The avoided cost is the point: no NAT gateway (~$32) — it's on the
+post-pilot hardening list.

@@ -72,6 +72,18 @@ variable "scan_targets_json" {
   sensitive   = true
 }
 
+variable "ops_alert_email" {
+  description = <<-EOT
+    Email address subscribed to the constat-ops-alerts SNS topic (DLQ
+    depth alarm, see sqs.tf). Empty string (default) = no subscription:
+    the topic and alarm are still created and the alarm state is visible
+    in the console, but nobody is emailed. Set it before the staging
+    gate so the DLQ alarm pages someone.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "db_engine_version" {
   description = <<-EOT
     PostgreSQL engine version for RDS. Minor versions rotate as AWS

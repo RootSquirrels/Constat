@@ -64,7 +64,7 @@ resource "aws_ecr_lifecycle_policy" "api" {
   })
 }
 
-# --- Logs: one group for both task families, 30-day retention.
+# --- Logs: one group for all task families, 30-day retention.
 # 30 days matches the pilot's "look back a few weeks when something went
 # wrong" need without paying for open-ended log storage.
 resource "aws_cloudwatch_log_group" "app" {

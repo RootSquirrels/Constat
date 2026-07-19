@@ -1,10 +1,14 @@
-# IAM: three roles with strictly separated concerns.
+# IAM: four roles with strictly separated concerns.
 #
 #   - task execution role: used by the ECS AGENT to pull the image, read
 #     secrets, and write logs. Never seen by the application.
-#   - task role: the APPLICATION's identity. Its only business permission
-#     is sts:AssumeRole into prospect accounts (the SaaS cross-account
-#     pattern, see apps/api/src/constat_api/collectors/aws.py).
+#   - task role: the API's identity. Business permissions: sts:AssumeRole
+#     into prospect accounts (the SaaS cross-account pattern, see
+#     apps/api/src/constat_api/collectors/aws.py) and sqs:SendMessage on
+#     the collect queue (async collection, see sqs.tf).
+#   - worker task role: the queue consumer's identity. SQS consume on the
+#     collect queue (+ read on the DLQ) and the same sts:AssumeRole —
+#     the worker is the process that actually scans.
 #   - scheduler role: lets EventBridge Scheduler run the scan task.
 
 data "aws_iam_policy_document" "ecs_tasks_assume" {
@@ -69,6 +73,80 @@ resource "aws_iam_role_policy" "task_assume_prospect_roles" {
       Action   = ["sts:AssumeRole"]
       Resource = ["arn:aws:iam::*:role/constat-collector*"]
     }]
+  })
+}
+
+# In sqs collect mode the API enqueues WorkItems (POST /collect/aws ->
+# 202 + job_id). It needs SendMessage ONLY: it never consumes.
+resource "aws_iam_role_policy" "task_enqueue_collect" {
+  name = "enqueue-collect-workitems"
+  role = aws_iam_role.task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage"]
+      Resource = [aws_sqs_queue.collect.arn]
+    }]
+  })
+}
+
+# --- Worker task role (queue consumer identity) ---
+# Separate role from the API's: the API enqueues, the worker consumes.
+# Splitting them keeps each side's SQS permissions minimal (least
+# privilege) and makes CloudTrail attribution unambiguous.
+resource "aws_iam_role" "task_worker" {
+  name               = "${local.name}-task-worker"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+}
+
+# The worker runs the actual region scans, so it needs the same
+# cross-account AssumeRole as the scan task.
+resource "aws_iam_role_policy" "task_worker_assume_prospect_roles" {
+  name = "assume-prospect-collector-roles"
+  role = aws_iam_role.task_worker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sts:AssumeRole"]
+      Resource = ["arn:aws:iam::*:role/constat-collector*"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "task_worker_consume_collect" {
+  name = "consume-collect-workitems"
+  role = aws_iam_role.task_worker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # The consume triplet: receive, delete on success, extend
+        # visibility while a slow region scan is in flight.
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:ChangeMessageVisibility",
+        ]
+        Resource = [aws_sqs_queue.collect.arn]
+      },
+      {
+        # DLQ read access so the worker (or an in-image redrive helper)
+        # can inspect failed items. No DeleteMessage here: draining the
+        # DLQ is a deliberate operator action, not a code path.
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:GetQueueAttributes",
+        ]
+        Resource = [aws_sqs_queue.collect_dlq.arn]
+      },
+    ]
   })
 }
 

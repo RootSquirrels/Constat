@@ -1,9 +1,11 @@
 # Alerting
 
-> Roadmap scoreboard "Exploitabilité": 3 alerts wired to the metrics
+> Roadmap scoreboard "Exploitabilité": 4 alerts wired to the metrics
 > described in [`metrics.md`](./metrics.md). The rules live in
 > [`deploy/prometheus/alerts.yml`](../../deploy/prometheus/alerts.yml);
-> this doc is the runbook they link to.
+> this doc is the runbook they link to. A 5th signal — the SQS DLQ
+> CloudWatch alarm (`infra/sqs.tf`) — pages through SNS, not Prometheus,
+> and is covered under [ConstatCollectItemsFailed](#constatcollectitemsfailed).
 
 Load the rules into Prometheus with:
 
@@ -13,7 +15,7 @@ rule_files:
   - /etc/prometheus/alerts.yml   # copy of deploy/prometheus/alerts.yml
 ```
 
-All 3 alerts are `warning` except the 5xx one (`critical`). None of them
+All alerts are `warning` except the 5xx one (`critical`). None of them
 pages during a single blip — every rule has a `for:` duration. If an
 alert flaps, widen the window before lowering the threshold.
 
@@ -31,20 +33,52 @@ already abnormal because the adaptive retry mode absorbs transient
 throttling before the run can fail. `for: 15m` avoids firing on a run
 that is retried and succeeds immediately.
 
-**Operator action.**
+**Operator action — targeted re-scan (chantier 1.4).**
 
-1. Find the failing scope:
-   ```sql
-   SELECT region, error, finished_at FROM source_runs
-   WHERE status = 'failed' ORDER BY finished_at DESC LIMIT 5;
+The remediation is a **single API call**. The operator never opens psql
+for this.
+
+1. Identify the failed region and account from the alert labels /
+   `worker` or `scan` log stream (the region is in the alert summary).
+2. Re-scan exactly that region, forcing past any stuck `running` run:
+
+   ```bash
+   curl -sS -X POST "$CONSTAT_API_BASE/collect/aws" \
+     -H "X-API-Key: $CONSTAT_OPERATOR_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "targets": [{
+         "aws_account_id": "<account>",
+         "role_arn": "arn:aws:iam::<account>:role/constat-collector",
+         "external_id": "<external-id>",
+         "regions": ["<failed-region>"]
+       }],
+       "force": true
+     }'
    ```
-2. Triage by error class (`AccessDenied` → fix the trust policy /
-   ExternalId; `Throttling`/`Timeout` → transient, just re-run).
-3. Re-scan only the failed region — `TargetAccount.regions` accepts a
-   subset, so a targeted re-run does not re-scan healthy regions (see
-   `apps/api/src/constat_api/collectors/aws.py`).
-4. If a run is stuck in `running` (worker died), use `force=True` or let
-   `cleanup_stuck_runs` free the scope.
+
+   `regions` accepts a subset, so healthy regions are not re-scanned.
+   `force: true` frees the scope if the previous run is stuck in
+   `running` (worker died mid-scan); otherwise the re-scan would be
+   rejected as a duplicate.
+3. The call returns **202 + `job_id`** (async sqs mode). Follow the job
+   to green:
+
+   ```bash
+   curl -sS "$CONSTAT_API_BASE/collect/aws/jobs/<job_id>" \
+     -H "X-API-Key: $CONSTAT_OPERATOR_KEY"
+   ```
+
+   Repeat until the job status is terminal and the failed region shows
+   success. (In `inline` mode the POST is synchronous — 200 with the
+   per-region results in the body — and there is no job to poll.)
+4. If the same region fails again, triage by error class from the job
+   detail: `AccessDenied` → fix the prospect's trust policy / ExternalId;
+   `Throttling` / `Timeout` → transient, re-run later.
+
+**RBAC:** `POST /collect/aws` requires an **operator** API key
+(`require_operator`); a reader key gets 403. Use the operator key from
+your secret store, not the dashboard's reader key.
 
 ## ConstatScopeStaleIncreasing
 
@@ -93,6 +127,34 @@ otherwise read as "100% error rate". `for: 10m` filters deploy blips.
 2. Check `/health` — the most common cause is Postgres unreachable.
 3. The `/metrics` and `/health` endpoints are excluded from the counter,
    so scraper noise cannot trigger this alert.
+
+## ConstatCollectItemsFailed
+
+**Expr:** `increase(constat_collect_items_failed_total[15m]) > 0`, for 5m.
+
+**What it means.** A collection WorkItem (account × region) failed at
+the worker level. Two alerting paths cover the same failure, by deploy
+mode:
+
+- **sqs mode (staging/pilot):** the PRIMARY path is the CloudWatch alarm
+  on the DLQ (`infra/sqs.tf`) — a WorkItem that fails 3 receives is
+  parked in `constat-pilot-collect-dlq` and pages via SNS. The
+  Prometheus rule is the secondary signal.
+- **inline mode (local/dev):** there is no queue; failed items surface
+  only through this counter.
+
+**Operator action.**
+
+1. Same targeted re-scan as
+   [ConstatSourceRunFailed](#constatsourcerunfailed): POST `/collect/aws`
+   with the failed account, `regions: ["<failed-region>"]`, `force: true`,
+   then follow `GET /collect/aws/jobs/<job_id>` to green. The operator
+   never opens psql for this.
+2. If the CloudWatch DLQ alarm fired, inspect the DLQ message (console
+   or `aws sqs receive-message --queue-url <dlq-url>`) before
+   re-scanning: the WorkItem payload names the account and region.
+   After a successful re-scan, drain the DLQ entry manually — draining
+   is a deliberate operator action, not a code path.
 
 ## See also
 
