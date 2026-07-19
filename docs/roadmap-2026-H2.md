@@ -43,13 +43,13 @@ la mutualisation attendra un coût d'exploitation qui la justifie).
 
 ## Chantier 1 — Collecte à l'échelle ICP *(semaines 3-8 · abandon assumé du seuil « 5 comptes »)*
 
-| # | Action | Effort | Critère d'acceptation |
-|---|---|---|---|
-| 1.1 | **Collecte asynchrone** : SQS + worker ECS service ; work item = compte×région ; l'idempotence existante (index partiel SourceRun) sert de dédup ; `POST /collect` → 202 + run consultable | L | 35 comptes × 7 régions collectés sans timeout HTTP ; échec d'un item n'affecte pas les autres |
-| 1.2 | Concurrence bornée par compte (quotas AWS) + backpressure | M | Throttling observé < seuil sur l'e2e 35 comptes |
-| 1.3 | **Onboarding par lot** : StackSet / intégration Organizations (`ListAccounts`) + import CSV | M | 35 comptes onboardés en < 2 h, chronométré en staging |
-| 1.4 | Re-scan ciblé en un appel API (région/compte) branché au runbook d'alerte | S | L'opérateur du runbook n'ouvre plus psql |
-| 1.5 | Bench réel publié : durée, coût AWS, appels par run à 35 comptes | S | docs/operations/benchmarks.md § « réel » — remplace le bench sqlite |
+| # | Action | Effort | Critère d'acceptation | Statut 2026-07-19 |
+|---|---|---|---|---|
+| 1.1 | **Collecte asynchrone** : SQS + worker ECS service ; work item = compte×région ; l'idempotence existante (index partiel SourceRun) sert de dédup ; `POST /collect` → 202 + run consultable | L | 35 comptes × 7 régions collectés sans timeout HTTP ; échec d'un item n'affecte pas les autres | **CODE LIVRÉ** : file (inline/SQS), worker, 202 + `GET /collect/aws/jobs/{id}`, migration 0015, terraform `sqs.tf`+service worker, isolation d'échec testée (551→569 tests). Exécution 35 comptes : **attend le staging (chantier 0)** |
+| 1.2 | Concurrence bornée par compte (quotas AWS) + backpressure | M | Throttling observé < seuil sur l'e2e 35 comptes | **CODE LIVRÉ** : `PerAccountLimiter` (`CONSTAT_WORKER_PER_ACCOUNT`), file bornée → 503 + Retry-After, backoff adaptatif boto3. Mesure de throttling : e2e staging |
+| 1.3 | **Onboarding par lot** : StackSet / intégration Organizations (`ListAccounts`) + import CSV | M | 35 comptes onboardés en < 2 h, chronométré en staging | **CODE LIVRÉ** : `collect_targets` persistées (0016, RLS, ExternalId write-only), `POST /collect/targets/import` (CSV), découverte Organizations + `cli.onboard`, `infra/customer/stackset.yaml`. Chrono < 2 h : staging |
+| 1.4 | Re-scan ciblé en un appel API (région/compte) branché au runbook d'alerte | S | L'opérateur du runbook n'ouvre plus psql | **FAIT** : runbook `alerting.md` réécrit (un `POST /collect/aws` région-ciblé + `force`, suivi du job) |
+| 1.5 | Bench réel publié : durée, coût AWS, appels par run à 35 comptes | S | docs/operations/benchmarks.md § « réel » — remplace le bench sqlite | **HARNAIS PRÊT** : `scripts/bench_real.py` + section « réel » PENDING EXECUTION. Aucun chiffre tant que le staging n'existe pas |
 
 Lève la limite contractuelle de l'avenant SLA §1 une fois 1.1-1.3 démontrés.
 

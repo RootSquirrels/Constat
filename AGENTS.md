@@ -93,7 +93,17 @@ If you want to add a new namespace, open an issue first. We don't do EAV.
 - **New tenant-scoped table ⇒ RLS policy in the same migration** (ENABLE + FORCE +
   `app.current_tenant_id` GUC, copy 0007/0011). The CI Postgres job fails otherwise.
 - Cross-account AssumeRole always requires an `ExternalId` (API returns 422,
-  collector raises `ValueError` otherwise).
+  collector raises `ValueError` otherwise). Persisted collect targets store it
+  **write-only** — no GET ever returns it (masked as `external_id_set: true`).
+- Collection is **async**: `POST /collect/aws` enqueues account×region WorkItems
+  and returns 202 + `job_id` (poll `GET /collect/aws/jobs/{id}`). A worker drains
+  the queue — inline thread locally (`CONSTAT_COLLECT_MODE=inline`, default),
+  ECS service on SQS in the pilot. Per-account concurrency is bounded
+  (`CONSTAT_WORKER_PER_ACCOUNT` — AWS quotas are per-account); a full queue
+  answers 503 + Retry-After. Never reintroduce a synchronous collect path.
+- Onboarding is batch: `POST /collect/targets/import` (CSV) or Organizations
+  discovery (`python -m constat_api.cli.onboard`). `POST /collect/aws` with no
+  explicit targets collects all persisted `collect_targets`.
 - New resource-based insight = new package in `packages/insights/` (clone the
   `rds_eol` shape) + one entry in `RESOURCE_RULES` in
   `apps/api/src/constat_api/insights/runner.py`. Catalog pricing needs a source
@@ -114,7 +124,10 @@ Trusted Advisor / Cost Explorer, which silently omit.
 
 ## Explicitly NOT in V1 (backlog, not "soon")
 
-- Step Functions, SQS, Fargate orchestration — V1 is a Fargate task + cron. We add SFN when we have >1 connector producing on different cadences.
+- Step Functions orchestration — collection is async via a plain SQS queue +
+  worker service (roadmap H2 chantier 1, shipped 2026-07-19: `collect_queue.py`,
+  `worker.py`, mode `inline` locally / `sqs` in the pilot). SFN only if we get
+  >1 connector producing on different cadences.
 - Multi-tenant RLS beyond the pilot shape — RLS **is** shipped and CI-enforced on all tenant tables (see the invariants above); V1 remains 1 prospect, 1 tenant operationally. Revisit when we onboard tenant #2.
 - Full `FactDefinitionRegistry` ceremony — V1 has a YAML registry (`packages/core/src/constat_core/catalog/fact_definitions.yaml`) guarded by a pytest cross-check against producers/consumers. The full registry (DB table, runtime validation, backfill tooling) is V2.
 - Azure, Prisma, ServiceNow, EDR connectors — V2/V3.
