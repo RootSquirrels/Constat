@@ -29,7 +29,7 @@ from constat_api.auth import Principal, optional_principal
 from constat_api.db import SessionLocal
 from constat_api.orm import AuditEventORM
 from constat_api.settings import DEFAULT_TENANT_ID
-from constat_api.tenant import bind_tenant
+from constat_api.tenant import bind_tenant, current_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,12 @@ class AuditLogger:
     def __init__(self, session: Session, tenant_id: Any = None):
         self.session = session
         # Events land in the caller's tenant (3.1: resolved from the
-        # authenticated principal). Default keeps CLI/system callers
-        # working without plumbing.
-        self.tenant_id = tenant_id or DEFAULT_TENANT_ID
+        # authenticated principal). When the caller doesn't pass one,
+        # fall back to the session's bound tenant so system actors
+        # (collector, runner) don't trip the RLS WITH CHECK; the
+        # default tenant keeps CLI/system callers working without
+        # plumbing.
+        self.tenant_id = tenant_id or current_tenant(session) or DEFAULT_TENANT_ID
 
     def record(
         self,

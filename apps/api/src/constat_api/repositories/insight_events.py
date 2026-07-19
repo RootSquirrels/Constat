@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InsightEventORM, InsightORM
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 EVENTS: frozenset[str] = frozenset({"appeared", "resolved"})
 
@@ -70,13 +70,16 @@ def diff_and_record_events(
     current = snapshot_rule(session, rule_name)
     appeared = 0
     resolved = 0
+    # Stamped once per run: both event kinds belong to the session's
+    # tenant (RLS WITH CHECK rejects the ORM default otherwise).
+    tenant_id = tenant_or_default(session)
 
     for fp, row in current.items():
         if fp in previous:
             continue
         session.add(
             InsightEventORM(
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=tenant_id,
                 fingerprint=fp,
                 rule_name=rule_name,
                 resource_id=row.resource_id,
@@ -94,7 +97,7 @@ def diff_and_record_events(
             continue
         session.add(
             InsightEventORM(
-                tenant_id=DEFAULT_TENANT_ID,
+                tenant_id=tenant_id,
                 fingerprint=fp,
                 rule_name=rule_name,
                 resource_id=row.resource_id,

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from constat_api.orm import SourceRunORM
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 # Default threshold for "stuck" run detection. A run is considered stuck
 # if it's been in status='running' for longer than this. Two hours is
@@ -51,7 +51,7 @@ def start_run(
 
     run = SourceRunORM(
         id=uuid4(),
-        tenant_id=DEFAULT_TENANT_ID,
+        tenant_id=tenant_or_default(session),
         account_id=account_id,
         region=region,
         resource_type=resource_type,

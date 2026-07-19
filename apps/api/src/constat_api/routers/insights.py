@@ -231,7 +231,13 @@ def create_insight_endpoint(
             "(set CONSTAT_ENABLE_MANUAL_INSIGHTS=1 to enable)",
         )
     insight.payload = {**insight.payload, "source": "manual"}
-    return repo.insert_insight(session, insight)
+    created = repo.insert_insight(session, insight)
+    # Every other write endpoint commits in the router (collect_targets,
+    # PATCH /inconclusives, admin); without this the flushed row is
+    # rolled back when get_db closes the session — invisible on
+    # Postgres, where each request gets its own session.
+    session.commit()
+    return created
 
 
 # ----------------------------------------------------------------------------

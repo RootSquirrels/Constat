@@ -27,7 +27,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from constat_api.orm import PIIClassificationORM
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +156,7 @@ class PIIClassifier:
                     f"(must be one of {ALL_SENSITIVITIES})"
                 )
         row = PIIClassificationORM(
-            tenant_id=DEFAULT_TENANT_ID,
+            tenant_id=tenant_or_default(self.session),
             resource_type=resource_type,
             resource_id=resource_id,
             field_name=field_name,

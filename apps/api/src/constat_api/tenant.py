@@ -29,6 +29,8 @@ from uuid import UUID
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
+from constat_api.settings import DEFAULT_TENANT_ID
+
 logger = logging.getLogger(__name__)
 
 # GUC name used by the RLS policies in 0007_rls_policies.sql.
@@ -54,6 +56,17 @@ def bind_tenant(session: Session, tenant_id: UUID | str | None) -> None:
 def current_tenant(session: Session) -> UUID | None:
     """Return the tenant id bound to this session, or None if unbound."""
     return session.info.get("tenant_id")
+
+
+def tenant_or_default(session: Session) -> UUID:
+    """The session's tenant, or the V1 default tenant when unbound.
+
+    Every write path stamps new rows with this: the ORM column default
+    is the default tenant, which the RLS WITH CHECK rejects under any
+    other tenant (fail-closed). Unbound sessions (CLI, dev, tests) keep
+    the historical default-tenant behavior.
+    """
+    return current_tenant(session) or DEFAULT_TENANT_ID
 
 
 @event.listens_for(Session, "after_begin")

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import ResourceORM, SourceRunORM
+from constat_api.tenant import tenant_or_default
 
 # F-08: a resource is retired only after this many CONSECUTIVE successful
 # scans in the same scope both missed it. One scan is not proof of
@@ -62,6 +63,7 @@ def upsert_resource(
         return existing
 
     new = ResourceORM(
+        tenant_id=tenant_or_default(session),
         account_id=account_id,
         region=region,
         resource_type=resource_type,

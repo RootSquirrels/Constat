@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import FactORM
+from constat_api.tenant import tenant_or_default
 
 
 def _orm_to_pydantic(orm: FactORM) -> Fact:
@@ -76,9 +77,13 @@ def list_facts_for_account(session: Session, account_id: UUID) -> list[Fact]:
 def insert_facts(session: Session, facts: list[Fact]) -> int:
     """Bulk-insert facts. Caller is responsible for uniqueness (use upsert_facts
     in production code paths). Returns the number of rows inserted."""
+    # Stamped once per batch, not per row (RLS WITH CHECK rejects the ORM
+    # default under a non-default tenant).
+    tenant_id = tenant_or_default(session)
     orm_rows = [
         FactORM(
             id=f.id or uuid4(),
+            tenant_id=tenant_id,
             resource_id=f.resource_id,
             account_id=UUID(f.account_id) if f.account_id else None,
             namespace=f.namespace,
@@ -110,6 +115,9 @@ def upsert_facts(
     """
     inserted = 0
     updated = 0
+    # Stamped once per batch, not per row (RLS WITH CHECK rejects the ORM
+    # default under a non-default tenant).
+    tenant_id = tenant_or_default(session)
 
     for f in facts:
         existing = session.execute(
@@ -131,6 +139,7 @@ def upsert_facts(
             session.add(
                 FactORM(
                     id=f.id or uuid4(),
+                    tenant_id=tenant_id,
                     resource_id=f.resource_id,
                     account_id=UUID(f.account_id) if f.account_id else None,
                     namespace=f.namespace,

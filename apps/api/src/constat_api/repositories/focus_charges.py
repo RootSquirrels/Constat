@@ -19,7 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import FocusChargeORM, FocusChargeTagORM
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 
 def upsert_aggregated(
@@ -41,7 +41,10 @@ def upsert_aggregated(
     """
     inserted = 0
     updated = 0
-
+    # Stamped once per ingest, not per row: every row of this batch
+    # belongs to the session's tenant (RLS WITH CHECK rejects the ORM
+    # default under a non-default tenant).
+    tenant_id = tenant_or_default(session)
     for agg in aggregated:
         existing = session.execute(
             select(FocusChargeORM).where(
@@ -67,10 +70,12 @@ def upsert_aggregated(
                 existing.id,
                 agg.per_row_tag_dicts,
                 agg.per_row_costs,
+                tenant_id=tenant_id,
             )
             updated += 1
         else:
             new_row = FocusChargeORM(
+                tenant_id=tenant_id,
                 account_id=account_id,
                 period_start=agg.period_start,
                 period_end=agg.period_end,
@@ -92,6 +97,7 @@ def upsert_aggregated(
                 new_row.id,
                 agg.per_row_tag_dicts,
                 agg.per_row_costs,
+                tenant_id=tenant_id,
             )
             inserted += 1
 
@@ -104,6 +110,8 @@ def _write_per_row_tags(
     focus_charge_id: int,
     per_row_tag_dicts: list[dict[str, str]],
     per_row_costs: list[tuple[float, float]] | list[tuple[Decimal, Decimal]] | None = None,
+    *,
+    tenant_id: UUID,
 ) -> None:
     """Write per-input-row tag + cost data to focus_charge_tags.
 
@@ -144,7 +152,7 @@ def _write_per_row_tags(
         for key, value in tag_dict.items():
             session.add(
                 FocusChargeTagORM(
-                    tenant_id=DEFAULT_TENANT_ID,
+                    tenant_id=tenant_id,
                     focus_charge_id=focus_charge_id,
                     key=key,
                     value=value,

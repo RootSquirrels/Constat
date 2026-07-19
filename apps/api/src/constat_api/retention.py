@@ -26,6 +26,7 @@ from constat_api.orm import (
     SourceRunORM,
 )
 from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 logger = logging.getLogger(__name__)
 
@@ -96,17 +97,21 @@ def seed_default_policies(session: Session) -> int:
     on a populated table is a no-op.
     """
     inserted = 0
+    # Seed for the session's tenant (default tenant when unbound) so the
+    # insert passes the RLS WITH CHECK; the existence check must use the
+    # same tenant or idempotency breaks.
+    tenant_id = tenant_or_default(session)
     for table_name, days in DEFAULT_RETENTION_DAYS.items():
         existing = session.execute(
             select(RetentionPolicyORM).where(
-                RetentionPolicyORM.tenant_id == DEFAULT_TENANT_ID,
+                RetentionPolicyORM.tenant_id == tenant_id,
                 RetentionPolicyORM.table_name == table_name,
             )
         ).scalar_one_or_none()
         if existing is None:
             session.add(
                 RetentionPolicyORM(
-                    tenant_id=DEFAULT_TENANT_ID,
+                    tenant_id=tenant_id,
                     table_name=table_name,
                     retention_days=days,
                     enabled=True,

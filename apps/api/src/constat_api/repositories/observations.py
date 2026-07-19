@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import ObservationORM
+from constat_api.tenant import tenant_or_default
 
 
 def insert_observation(
@@ -25,6 +26,7 @@ def insert_observation(
     """
     orm = ObservationORM(
         id=observation.id or uuid4(),
+        tenant_id=tenant_or_default(session),
         resource_id=observation.resource_id,
         source=observation.source,
         observed_at=observation.observed_at,

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InconclusiveORM
+from constat_api.tenant import tenant_or_default
 
 
 def _orm_to_pydantic(orm: InconclusiveORM) -> Inconclusive:
@@ -88,6 +89,7 @@ def get_inconclusive(session: Session, inconclusive_id: UUID) -> Inconclusive | 
 def insert_inconclusive(session: Session, item: Inconclusive) -> Inconclusive:
     orm = InconclusiveORM(
         id=item.id or uuid4(),
+        tenant_id=tenant_or_default(session),
         rule_name=item.rule_name,
         resource_id=item.resource_id,
         account_id=UUID(item.account_id) if item.account_id else None,

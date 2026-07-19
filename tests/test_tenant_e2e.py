@@ -13,17 +13,10 @@ GET /insights, tenant B exactly its own, and each must be blind to the
 other. That is the whole chain — FastAPI dependency, `bind_tenant`,
 `after_begin` GUC install, FORCE RLS policy — exercised in one request.
 
-FALLBACK NOTE (write path): the brief asked to insert via POST
-/insights as tenant A. That is not possible without touching files
-outside this chantier's ownership: `repositories/insights.py
-insert_insight` does not stamp the session tenant — the ORM column
-default (`DEFAULT_TENANT_ID`) fills `tenant_id`, so an insert under a
-non-default tenant GUC is rejected by the RLS WITH CHECK (by design).
-Making API writes tenant-aware means teaching the repositories/ORM
-defaults to read `current_tenant(session)` — a separate chantier. The
-read path exercised here is the security-critical direction (a tenant
-must never SEE another tenant's rows); write-path stamping is fail-closed
-(RLS rejects it loudly), not silently cross-tenant.
+WRITE LEG: repositories now stamp the session's tenant on insert
+(`tenant_or_default`), so POST /insights under tenant A's key passes
+the RLS WITH CHECK (pre-chantier the ORM default tenant made it fail
+closed) and the fresh row is visible to A and invisible to B.
 """
 
 from __future__ import annotations
@@ -31,16 +24,17 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import pytest
 from constat_api import db as db_module
 from constat_api.audit import get_audit_db
-from constat_api.auth import _get_settings
+from constat_api.auth import Principal, _get_settings, optional_principal
 from constat_api.main import app
-from constat_api.settings import DEFAULT_TENANT_ID, ApiKeyEntry, Settings
+from constat_api.settings import ApiKeyEntry, Settings
 from constat_api.tenant import bind_tenant
+from fastapi import Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -88,8 +82,8 @@ def pg_migrated() -> Iterator[str]:
 @pytest.fixture(scope="module")
 def pg_seeded(pg_migrated: str) -> Iterator[str]:
     """One account + one insight per tenant, inserted with the tenant GUC
-    set — exactly what the app's write path will do once repositories
-    stamp the session tenant."""
+    set — the same shape the app's write path produces now that
+    repositories stamp the session tenant."""
     psycopg = _psycopg()
     with psycopg.connect(pg_migrated, autocommit=True) as conn:
         for tenant_id, external_id, title in (
@@ -116,10 +110,11 @@ def api_client(pg_seeded: str) -> Iterator[TestClient]:
 
     `db.SessionLocal` is repointed at the test database (the dep itself
     is NOT overridden — principal resolution and bind_tenant run for
-    real). Two API keys are configured, one per tenant. The audit-write
-    dep is overridden only to point at the same database: AuditLogger
-    still stamps the default tenant (audit.py is outside this chantier),
-    so its session is bound accordingly.
+    real). Two API keys are configured, one per tenant. Manual insight
+    creation is enabled so the write leg can exercise POST /insights.
+    The audit-write dep is overridden only to point at the same
+    database; it mirrors the real get_audit_db (principal's tenant),
+    so read-attribution rows land in the acting tenant.
     """
     engine = create_engine(pg_seeded, pool_pre_ping=True, future=True)
     pg_session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
@@ -128,12 +123,15 @@ def api_client(pg_seeded: str) -> Iterator[TestClient]:
         api_keys=(
             ApiKeyEntry(name="alice", role="operator", key=KEY_A, tenant_id=TENANT_A),
             ApiKeyEntry(name="bob", role="reader", key=KEY_B, tenant_id=TENANT_B, kind="human"),
-        )
+        ),
+        enable_manual_insights=True,
     )
 
-    def _audit_db() -> Iterator[Session]:
+    def _audit_db(
+        principal: Annotated[Principal, Depends(optional_principal)],
+    ) -> Iterator[Session]:
         session = pg_session_factory()
-        bind_tenant(session, DEFAULT_TENANT_ID)
+        bind_tenant(session, principal.tenant_id)
         try:
             yield session
         finally:
@@ -182,6 +180,35 @@ class TestTenantIsolationE2E:
     def test_unknown_key_is_401(self, api_client: TestClient) -> None:
         response = api_client.get("/insights", headers={"X-API-Key": "not-a-key"})
         assert response.status_code == 401
+
+    def test_post_insight_under_tenant_a_passes_rls_with_check(
+        self, api_client: TestClient
+    ) -> None:
+        """The write leg: insert_insight stamps the session tenant, so the
+        RLS WITH CHECK accepts the row — and it lands in tenant A only."""
+        accounts = api_client.get("/accounts", headers={"X-API-Key": KEY_A})
+        assert accounts.status_code == 200, accounts.text
+        account_id = accounts.json()[0]["id"]
+
+        created = api_client.post(
+            "/insights",
+            headers={"X-API-Key": KEY_A},
+            json={
+                "rule_name": "rds_eol",
+                "account_id": account_id,
+                "severity": "warning",
+                "title": "manual-insight-of-tenant-A",
+                "payload": {},
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        # Visible to A, alongside its seeded insight.
+        titles_a = _titles(api_client.get("/insights", headers={"X-API-Key": KEY_A}))
+        assert titles_a == ["insight-of-tenant-A", "manual-insight-of-tenant-A"]
+        # Invisible to B.
+        titles_b = _titles(api_client.get("/insights", headers={"X-API-Key": KEY_B}))
+        assert titles_b == ["insight-of-tenant-B"]
 
     def test_missing_key_is_401_on_protected_route(self, api_client: TestClient) -> None:
         response = api_client.get("/insights")

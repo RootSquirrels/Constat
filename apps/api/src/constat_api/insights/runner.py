@@ -64,7 +64,7 @@ from constat_api.repositories import insight_events as insight_events_repo
 from constat_api.repositories import insights as insights_repo
 from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.repositories.source_runs import _age_since
-from constat_api.settings import DEFAULT_TENANT_ID
+from constat_api.tenant import tenant_or_default
 
 logger = logging.getLogger(__name__)
 
@@ -485,7 +485,7 @@ def run_resource_rule(
     source = RULE_SOURCES.get(rule_name, DEFAULT_SOURCE)
 
     run = InsightRunORM(
-        tenant_id=DEFAULT_TENANT_ID,
+        tenant_id=tenant_or_default(session),
         rule_name=rule_name,
         status="running",
     )
@@ -678,7 +678,7 @@ def run_chargeback(
             Charges with no tag for the key are bucketed as `UNTAGGED`.
     """
     run = InsightRunORM(
-        tenant_id=DEFAULT_TENANT_ID,
+        tenant_id=tenant_or_default(session),
         rule_name="chargeback",
         status="running",
     )

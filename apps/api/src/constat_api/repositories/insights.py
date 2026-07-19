@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InsightORM
+from constat_api.tenant import tenant_or_default
 
 
 def _orm_to_pydantic(orm: InsightORM) -> Insight:
@@ -75,6 +76,7 @@ def insert_insight(session: Session, insight: Insight) -> Insight:
     """Insert one insight. The caller owns the transaction."""
     orm = InsightORM(
         id=insight.id or uuid4(),
+        tenant_id=tenant_or_default(session),
         rule_name=insight.rule_name,
         resource_id=insight.resource_id,
         account_id=UUID(insight.account_id) if insight.account_id else None,
