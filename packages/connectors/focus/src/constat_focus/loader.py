@@ -16,7 +16,7 @@ import csv
 import json
 import logging
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -84,15 +84,22 @@ class FocusCharge:
     Field naming uses our mental model:
     - billed_cost    ← FOCUS BilledCost (what you pay)
     - amortized_cost ← FOCUS EffectiveCost (amortized over the period)
-    - tags           ← FOCUS Tags (list of unique tag dicts seen)
+    - tags           ← FOCUS Tags (list of per-input-row tag dicts, see below)
+    - per_row_costs  ← [(billed, amortized)] per input row, parallel to tags
     - billing_currency ← FOCUS BillingCurrency (ISO 4217, preserved as-written)
 
-    `tags` is always a list. A raw FOCUS row carries exactly one tag dict, so
-    the loader wraps it in a single-element list. After aggregation by
-    (service, period), the list contains all unique tag dicts across input
-    rows — heterogeneous tag values are preserved, not collapsed to a mode.
-    The chargeback runner iterates this list to re-aggregate by any tag key
-    (Application, CostCenter, ...).
+    `tags` and `per_row_costs` are parallel lists. Each element corresponds
+    to one input FOCUS row:
+    - A row with tags {Application: web} has tags=[{Application: web}] and
+      per_row_costs=[(row.billed_cost, row.amortized_cost)].
+    - A row with no tags has tags=[{}] and per_row_costs=[(billed, amortized)].
+      The empty dict is preserved so the lists stay parallel — the resolver
+      attributes the cost to UNTAGGED via "tag_key not in {}".
+
+    After aggregation by (service, period), the lists are flattened across
+    all input rows that contributed to the bucket. The resolver uses them
+    together to attribute cost per-input-row to its tag value (cost-weighted
+    split, not count-weighted). 3 EUR web + 97 EUR api -> 3% / 97%.
     """
 
     account_id: str
@@ -108,6 +115,7 @@ class FocusCharge:
     sub_account_id: str | None
     tags: list[dict[str, str]]
     billing_currency: str
+    per_row_costs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
 
 
 def _parse_date(s: str) -> date:
@@ -210,6 +218,14 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
     """Build a FocusCharge from a dict row (CSV) or from a pyarrow Row mapping."""
     raw_tags = _parse_tags(row.get("Tags"))
     currency = _parse_billing_currency(row.get("BillingCurrency"))
+    billed = _parse_decimal(row.get("BilledCost"))
+    amortized = _parse_decimal(row.get("EffectiveCost"))
+    # tags is always a single-element list (one input row -> one tag dict,
+    # possibly empty). Parallel to per_row_costs: 1 element per input row.
+    # The empty dict for untagged rows is intentional — the lists stay
+    # parallel so the resolver can attribute per-row cost correctly.
+    tags_for_row: list[dict[str, str]] = [raw_tags]
+    per_row_costs: list[tuple[Decimal, Decimal]] = [(billed, amortized)]
     return FocusCharge(
         account_id=str(row.get("BillingAccountId", "")).strip(),
         account_name=str(row.get("BillingAccountName", "")).strip(),
@@ -218,11 +234,12 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
         pricing_category=_opt_str(row.get("PricingCategory")),
         period_start=_parse_date(str(row["ChargePeriodStart"])),
         period_end=_parse_date(str(row["ChargePeriodEnd"])),
-        billed_cost=_parse_decimal(row.get("BilledCost")),
-        amortized_cost=_parse_decimal(row.get("EffectiveCost")),
+        billed_cost=billed,
+        amortized_cost=amortized,
         resource_id=_opt_str(row.get("ResourceId")),
         sub_account_id=_opt_str(row.get("SubAccountId")),
-        tags=[raw_tags] if raw_tags else [],
+        tags=tags_for_row,
+        per_row_costs=per_row_costs,
         billing_currency=currency,
     )
 

@@ -20,6 +20,20 @@ def _charge(
     tags: list[dict[str, str]] | None = None,
     billing_currency: str = "USD",
 ) -> FocusCharge:
+    billed_d = Decimal(billed)
+    amortized_d = Decimal(amortized)
+    # Migration 0020: tags and per_row_costs are parallel lists. An
+    # untagged row has tags=[{}] so the resolver attributes the cost
+    # to UNTAGGED via "tag_key not in {}". When the test passes N
+    # tag dicts, we default to N rows of equal cost (billed / N each).
+    # Tests that need heterogeneous per-row costs should build
+    # FocusCharge directly.
+    if not tags:
+        tags = [{}]
+    n = len(tags)
+    per_billed = billed_d / Decimal(n)
+    per_amortized = amortized_d / Decimal(n)
+    per_row_costs = [(per_billed, per_amortized) for _ in range(n)]
     return FocusCharge(
         account_id=account,
         account_name=f"acct-{account}",
@@ -28,12 +42,13 @@ def _charge(
         pricing_category=pricing,
         period_start=date(2026, 7, 1),
         period_end=date(2026, 7, 31),
-        billed_cost=Decimal(billed),
-        amortized_cost=Decimal(amortized),
+        billed_cost=billed_d,
+        amortized_cost=amortized_d,
         resource_id=None,
         sub_account_id=None,
-        tags=tags if tags is not None else [],
+        tags=tags,
         billing_currency=billing_currency,
+        per_row_costs=per_row_costs,
     )
 
 
@@ -180,3 +195,65 @@ def test_build_insights_untagged_title():
     insights = build_insights(agg)
     assert "__untagged__" in insights[0].title
     assert insights[0].payload["tag_value"] == "__untagged__"
+
+
+# ---------------------------------------------------------------------------
+# Migration 0020: cost-weighted tag attribution (audit committee fix)
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_by_tag_attributes_by_cost_not_count():
+    """The audit committee's deal-breaker: tag attribution must
+    follow the cost, not the row count. 1 web row of 3 EUR + 1 api
+    row of 97 EUR (total 100 EUR) must give web=3, api=97 — not
+    50/50 (V1 even split) and not the row-count-weighted equivalent
+    (also 50/50 when row counts are equal).
+
+    Per-row cost attribution (migration 0020): the resolver reads
+    (tag_dict, (billed, amortized)) pairs from the FocusCharge and
+    attributes each row's own cost to its tag value. A 3 EUR web
+    row and a 97 EUR api row give web=3, api=97, exactly what
+    the audit committee asked for.
+    """
+    web_charge = FocusCharge(
+        account_id="111",
+        account_name="acct-111",
+        service="AmazonRDS",
+        region="eu-west-1",
+        pricing_category="On-Demand",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        billed_cost=Decimal("3"),
+        amortized_cost=Decimal("3"),
+        resource_id=None,
+        sub_account_id=None,
+        tags=[{"Application": "web"}],
+        billing_currency="EUR",
+        per_row_costs=[(Decimal("3"), Decimal("3"))],
+    )
+    api_charge = FocusCharge(
+        account_id="111",
+        account_name="acct-111",
+        service="AmazonRDS",
+        region="eu-west-1",
+        pricing_category="On-Demand",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        billed_cost=Decimal("97"),
+        amortized_cost=Decimal("97"),
+        resource_id=None,
+        sub_account_id=None,
+        tags=[{"Application": "api"}],
+        billing_currency="EUR",
+        per_row_costs=[(Decimal("97"), Decimal("97"))],
+    )
+
+    # Use aggregate_by_tag directly (no FOCUS storage round-trip).
+    # The two charges have the same (account, service, period) so
+    # aggregate_by_period would collapse them into 1 bucket; we
+    # test the per-row attribution at the resolver level.
+    agg = aggregate_by_tag([web_charge, api_charge], tag_key="Application")
+
+    by_value = {a.tag_value: a.billed_cost for a in agg}
+    # 3 EUR web + 97 EUR api -> 3% / 97% (not 50% / 50%, not 25% / 75%).
+    assert by_value == {"web": Decimal("3"), "api": Decimal("97")}

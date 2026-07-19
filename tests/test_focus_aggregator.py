@@ -21,6 +21,15 @@ def _charge(
     sub_account_id: str = "111",
     tags: list[dict[str, str]] | None = None,
 ) -> FocusCharge:
+    billed_d = Decimal(billed)
+    amortized_d = Decimal(amortized)
+    # Migration 0020: tags and per_row_costs are parallel lists, one
+    # element per input row. An untagged row has tags=[{}] (the empty
+    # dict signals "no tag for any key" so the resolver attributes
+    # the cost to UNTAGGED). The loader always emits a 1-element tags
+    # list per FocusCharge; this factory matches that invariant.
+    if not tags:
+        tags = [{}]
     return FocusCharge(
         account_id="111111111111",
         account_name="prod",
@@ -29,12 +38,13 @@ def _charge(
         pricing_category=pricing,
         period_start=ps,
         period_end=pe,
-        billed_cost=Decimal(billed),
-        amortized_cost=Decimal(amortized),
+        billed_cost=billed_d,
+        amortized_cost=amortized_d,
         resource_id=resource_id,
         sub_account_id=sub_account_id,
-        tags=tags if tags is not None else [],
+        tags=tags,
         billing_currency="USD",
+        per_row_costs=[(billed_d, amortized_d)],
     )
 
 
@@ -107,8 +117,9 @@ def test_aggregator_handles_null_resource_id():
             amortized_cost=Decimal("10"),
             resource_id=None,
             sub_account_id=None,
-            tags=[],
+            tags=[{}],
             billing_currency="USD",
+            per_row_costs=[(Decimal("10"), Decimal("10"))],
         )
     ]
     agg = aggregate_for_storage(rows)

@@ -14,6 +14,16 @@ split (1/N per unique value), which was wrong for heterogeneous tag
 data. The per-row data lives in `focus_charge_tags` (migration 0009);
 the runner reads it and exposes it via `FocusCharge.tags` as a flat
 list of per-row tag dicts.
+
+Migration 0020: per-row cost-weighted attribution. The V2 row-count
+weighting was still wrong when costs were heterogeneous — a row of
+3 EUR counted the same as a row of 97 EUR. Migration 0020 stores
+per-input-row (billed_cost, amortized_cost) in focus_charge_tags, and
+the resolver attributes each input row's own cost to its tag value.
+3 EUR web + 97 EUR api -> 3 EUR web / 97 EUR api (3% / 97%), not
+50 EUR / 50 EUR. The audit committee's deal-breaker was "an
+attribution by tag that follows the number of lines rather than
+their cost" — this is the fix.
 """
 
 from __future__ import annotations
@@ -130,20 +140,26 @@ def aggregate_by_tag(
 ) -> list[AggregatedCost]:
     """Re-aggregate by (account, service, period, tag_key_value).
 
-    V2 cost attribution (P3 item 11 fix): for each FocusCharge
-    representing N input FOCUS rows, count the rows per (tag_value)
-    and attribute cost proportionally. Replaces V1's even split
-    (1/N per unique value), which was wrong for heterogeneous tag data.
+    Migration 0020 (cost-weighted attribution, the audit committee's
+    fix): for each FocusCharge representing N input FOCUS rows, the
+    per-row cost is attributed to that row's tag value. Replaces V2's
+    row-count weighting, which was wrong when costs were heterogeneous
+    (3 EUR web + 97 EUR api gave 50/50 under V2, gives 3% / 97% now).
 
     Each FocusCharge.tags is a list of per-row tag dicts (1 element
-    per contributing input row). The runner reads focus_charge_tags
-    to build this. The loader wraps a single dict per raw FOCUS row.
+    per contributing input row, possibly empty `{}` for untagged
+    rows). FocusCharge.per_row_costs is a parallel list of
+    (billed, amortized) tuples for the same input rows. The resolver
+    zips the two lists and attributes per-row cost to tag_value.
 
     Attribution rules:
-    - If 5 input rows have {Application: web} and 2 have
-      {Application: api}, web gets 5/7 of the cost, api gets 2/7.
-    - Rows with no tag for the key go to UNTAGGED with their full cost.
-    - Empty tags -> full cost to UNTAGGED.
+    - For each input row: if its tag dict has tag_key, its cost goes
+      to bucket tag_value. Otherwise, its cost goes to UNTAGGED.
+    - 3 EUR web + 97 EUR api -> web=3, api=97 (3% / 97% of total).
+    - 1 row web (3 EUR) + 1 row untagged (97 EUR) -> web=3, untagged=97.
+    - Empty tags AND empty per_row_costs (pre-0020 data) -> fall back
+      to V2 row-count weighting, then to UNTAGGED with the full
+      FocusCharge.billed_cost.
 
     Output: one AggregatedCost per (account, service, period, tag_value)
     tuple, with `tag_key` and `tag_value` set in the result.
@@ -151,12 +167,9 @@ def aggregate_by_tag(
     if not tag_key:
         raise ValueError("tag_key must be a non-empty string")
 
-    # (account, service, period, tag_value) -> list of (cost_billed, cost_amortized, weight)
-    # The weight is the per-row attribution share. Sum of weights for a
-    # (charge, tag_value) is the proportion of that charge's cost
-    # attributed to tag_value.
-    buckets: dict[tuple[str, str, date, date, str], list[tuple[Decimal, Decimal, Decimal]]] = (
-        defaultdict(list)
+    # (account, service, period, tag_value) -> (sum_billed, sum_amortized, count)
+    buckets: dict[tuple[str, str, date, date, str], tuple[Decimal, Decimal, int]] = defaultdict(
+        lambda: (Decimal("0"), Decimal("0"), 0)
     )
     # Track per-bucket tag dicts for the insight payload.
     bucket_tags: dict[tuple[str, str, date, date, str], list[dict[str, str]]] = defaultdict(list)
@@ -170,40 +183,56 @@ def aggregate_by_tag(
             # Should never happen for storage rows; defensive.
             continue
 
-        # Count per-input-row tag values for `tag_key`. Each element of
-        # c.tags is one input row's tag dict.
-        per_value_count: dict[str, int] = {}
-        for t in c.tags:
-            if tag_key in t:
-                v = t[tag_key]
-                per_value_count[v] = per_value_count.get(v, 0) + 1
-
-        if not per_value_count:
-            # No row carried the requested key -> full cost to UNTAGGED.
+        if c.per_row_costs:
+            # Migration 0020 path: per-row cost attribution. Iterate
+            # (tag_dict, (billed, amortized)) pairs. If tag_key is in
+            # the tag dict, the cost goes to that tag_value. Otherwise
+            # (tag dict is {} or doesn't have the key), the cost goes
+            # to UNTAGGED.
+            for tag_dict, (billed, amortized) in zip(c.tags, c.per_row_costs, strict=True):
+                if tag_key in tag_dict and tag_dict[tag_key] != "":
+                    tag_value = tag_dict[tag_key]
+                    bucket_tags_dict = {tag_key: tag_value}
+                else:
+                    tag_value = UNTAGGED
+                    bucket_tags_dict = {}
+                key = (c.account_id, c.service, c.period_start, c.period_end, tag_value)
+                prev_billed, prev_amortized, prev_count = buckets[key]
+                buckets[key] = (
+                    prev_billed + billed,
+                    prev_amortized + amortized,
+                    prev_count + 1,
+                )
+                bucket_tags[key].append(bucket_tags_dict)
+        elif c.tags:
+            # Fallback for charges with tags but no per_row_costs
+            # (shouldn't happen post-0020, but be defensive): use V2
+            # row-count weighting on the tag dicts.
+            _attribute_row_count(c, tag_key, buckets, bucket_tags)
+        else:
+            # No per-row data at all: full cost to UNTAGGED.
             key = (c.account_id, c.service, c.period_start, c.period_end, UNTAGGED)
-            buckets[key].append((c.billed_cost, c.amortized_cost, Decimal("1")))
+            prev_billed, prev_amortized, prev_count = buckets[key]
+            buckets[key] = (
+                prev_billed + c.billed_cost,
+                prev_amortized + c.amortized_cost,
+                prev_count + 1,
+            )
             bucket_tags[key].append({})
-            continue
-
-        # Proportional split: each tag_value gets cost * (count / total_rows).
-        total_rows = sum(per_value_count.values())
-        for tag_value, count in per_value_count.items():
-            weight = Decimal(count) / Decimal(total_rows)
-            key = (c.account_id, c.service, c.period_start, c.period_end, tag_value)
-            buckets[key].append((c.billed_cost, c.amortized_cost, weight))
-            bucket_tags[key].append({tag_key: tag_value})
 
     results: list[AggregatedCost] = []
-    for (account_id, service, ps, pe, tag_value), weights in buckets.items():
-        billed = sum((b * w for b, _a, w in weights), Decimal("0"))
-        amortized = sum((a * w for _b, a, w in weights), Decimal("0"))
+    for (account_id, service, ps, pe, tag_value), (
+        billed,
+        amortized,
+        count,
+    ) in buckets.items():
         results.append(
             AggregatedCost(
                 account_id=account_id,
                 service=service,
                 billed_cost=billed,
                 amortized_cost=amortized,
-                charge_count=len(weights),
+                charge_count=count,
                 period_start=ps,
                 period_end=pe,
                 tags=_unique_dicts_flat(bucket_tags[(account_id, service, ps, pe, tag_value)]),
@@ -213,6 +242,56 @@ def aggregate_by_tag(
             )
         )
     return results
+
+
+def _attribute_row_count(
+    c: FocusCharge,
+    tag_key: str,
+    buckets: dict[tuple[str, str, date, date, str], tuple[Decimal, Decimal, int]],
+    bucket_tags: dict[tuple[str, str, date, date, str], list[dict[str, str]]],
+) -> None:
+    """V2 row-count fallback for charges with tags but no per_row_costs.
+
+    This branch should not run for post-0020 ingests: every input row
+    has per_row_costs. It exists for backward compat with old data
+    that has only per-row tag dicts in focus_charge_tags. When the
+    per-row cost is 0 (migration 0020 default for old rows), the
+    charge ends up here.
+
+    Same semantics as the V2 implementation: count rows per tag_value
+    and attribute cost by count weight. Heterogeneous costs still give
+    a wrong split, but that's the data-quality debt documented in
+    migration 0020 — re-ingest the FOCUS file to recover per-row cost.
+    """
+    per_value_count: dict[str, int] = {}
+    for t in c.tags:
+        if tag_key in t:
+            v = t[tag_key]
+            per_value_count[v] = per_value_count.get(v, 0) + 1
+
+    if not per_value_count:
+        # No row carried the requested key -> full cost to UNTAGGED.
+        key = (c.account_id, c.service, c.period_start, c.period_end, UNTAGGED)
+        prev_billed, prev_amortized, prev_count = buckets[key]
+        buckets[key] = (
+            prev_billed + c.billed_cost,
+            prev_amortized + c.amortized_cost,
+            prev_count + 1,
+        )
+        bucket_tags[key].append({})
+        return
+
+    total_rows = sum(per_value_count.values())
+    for tag_value, count in per_value_count.items():
+        weight = Decimal(count) / Decimal(total_rows)
+        key = (c.account_id, c.service, c.period_start, c.period_end, tag_value)
+        prev_billed, prev_amortized, prev_count = buckets[key]
+        buckets[key] = (
+            prev_billed + c.billed_cost * weight,
+            prev_amortized + c.amortized_cost * weight,
+            prev_count + 1,
+        )
+        bucket_tags[key].append({tag_key: tag_value})
 
 
 def _first_account_name(rows: Iterable[FocusCharge]) -> str:

@@ -171,8 +171,11 @@ def test_tagged_resource_tags_parsed() -> None:
         assert c.tags == [{"Application": "web", "CostCenter": "42"}]
     untagged = [c for c in rows if c.resource_id and not c.resource_id.endswith(":db:myapp")]
     assert untagged
+    # Migration 0020: untagged rows have tags=[{}] (1 element, empty
+    # dict) parallel to per_row_costs. The empty dict signals "no tag
+    # for any key" so the resolver attributes the cost to UNTAGGED.
     for c in untagged:
-        assert c.tags == []
+        assert c.tags == [{}]
 
 
 def test_extra_focus_columns_not_silently_dropped() -> None:

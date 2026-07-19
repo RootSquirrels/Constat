@@ -31,6 +31,12 @@ class AggregatedFocusCharge:
     a bucket somehow has mixed currencies (it shouldn't, the loader
     fails on the first row of a non-conformant file), the mode is
     used as a best-effort, but the loader is the real defense.
+
+    Migration 0020: `per_row_costs` is parallel to `per_row_tag_dicts`.
+    Each tuple is (billed_cost, amortized_cost) for one input FOCUS
+    row. The resolver uses (per_row_tag_dicts, per_row_costs) together
+    to attribute cost per-input-row to its tag value (cost-weighted,
+    not count-weighted). 3 EUR web + 97 EUR api -> 3% / 97%.
     """
 
     service: str
@@ -54,6 +60,12 @@ class AggregatedFocusCharge:
     # rows. Cross-row duplicates are preserved (intentional: the runner
     # uses the count to attribute cost proportionally).
     per_row_tag_dicts: list[dict[str, str]] = field(default_factory=list)
+    # Migration 0020: per-input-row costs, parallel to per_row_tag_dicts.
+    # Each tuple is (billed, amortized) for the same input row at the
+    # same index. The upsert writes these to focus_charge_tags.billed_cost
+    # and .amortized_cost, denormalized across all (key, value) rows
+    # of the same input row (the resolver groups by input_row_index).
+    per_row_costs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     # ISO 4217 currency code, preserved as-written (USD, EUR, GBP, ...).
     # Same for all rows in the bucket (the loader refuses mixed-currency
     # input via BillingCurrencyError before the aggregator sees it).
@@ -110,15 +122,22 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
 
     results: list[AggregatedFocusCharge] = []
     for (service, ps, pe), rows in buckets.items():
-        # Flatten per-input-row tag dicts. The loader wraps each row's
-        # single tag dict in a list, so [r.tags for r in rows] gives
-        # list[list[dict]] — we flatten to list[dict]. Cross-row
-        # duplicates are preserved (intentional: the runner uses the
-        # count to attribute cost proportionally).
+        # Flatten per-input-row tag dicts AND costs. The loader wraps
+        # each row's single tag dict in a list, and each row's cost in
+        # a 1-tuple in per_row_costs. Flattening both gives parallel
+        # lists: per_row_tag_dicts[i] is the tag dict of the same input
+        # row as per_row_costs[i]. The resolver uses them together for
+        # cost-weighted tag attribution.
         flat_tag_dicts: list[dict[str, str]] = []
+        flat_per_row_costs: list[tuple[Decimal, Decimal]] = []
         for r in rows:
-            for t in r.tags:
+            # The lists are parallel: each input row contributes one
+            # element to both. If the row had no tags, r.tags[0] is
+            # {} (loader invariant). The per_row_costs list always has
+            # the same length as the tags list.
+            for t, cost in zip(r.tags, r.per_row_costs, strict=True):
                 flat_tag_dicts.append(t)
+                flat_per_row_costs.append(cost)
 
         # Currency: the loader has already rejected mixed/empty
         # BillingCurrency per row, so all rows in a bucket share the
@@ -140,6 +159,7 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 sub_account_id=_mode([r.sub_account_id for r in rows]),
                 tags=_unique_dicts([r.tags for r in rows]),
                 per_row_tag_dicts=flat_tag_dicts,
+                per_row_costs=flat_per_row_costs,
                 billing_currency=_mode(currencies) or "USD",
             )
         )

@@ -93,8 +93,12 @@ def test_loads_valid_focus_1_0_row(tmp_path: Path) -> None:
     assert r.resource_id == "arn:aws:rds:eu-west-1:111111111111:db:myapp"
     assert r.sub_account_id == "222222222222"
     assert r.billing_currency == "USD"
-    # Tags column is optional; missing -> empty list.
-    assert r.tags == []
+    # Migration 0020: tags is always a 1-element list, parallel to
+    # per_row_costs. An untagged row has tags=[{}] (the empty dict
+    # signals "no tag for any key" so the resolver attributes the
+    # cost to UNTAGGED).
+    assert r.tags == [{}]
+    assert r.per_row_costs == [(Decimal("100.50"), Decimal("120.00"))]
 
 
 def test_missing_required_column_raises(tmp_path: Path) -> None:
@@ -224,7 +228,7 @@ def test_csv_treats_blank_tags_as_empty_list(tmp_path: Path) -> None:
         include_tags=True,
     )
     rows = list(load_focus_csv(p))
-    assert rows[0].tags == []
+    assert rows[0].tags == [{}]
 
 
 def test_csv_handles_invalid_tags_json(tmp_path: Path) -> None:
@@ -252,7 +256,7 @@ def test_csv_handles_invalid_tags_json(tmp_path: Path) -> None:
     )
     rows = list(load_focus_csv(p))
     assert len(rows) == 1
-    assert rows[0].tags == []
+    assert rows[0].tags == [{}]
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +325,7 @@ def test_parquet_missing_tags_column_yields_empty_list(tmp_path: Path) -> None:
 
     rows = list(load_focus_parquet(p))
     assert len(rows) == 1
-    assert rows[0].tags == []
+    assert rows[0].tags == [{}]
 
 
 def test_parquet_missing_required_column_raises(tmp_path: Path) -> None:

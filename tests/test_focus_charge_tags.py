@@ -155,7 +155,9 @@ def test_upsert_with_empty_per_row_tags_writes_nothing(session: Session) -> None
 
 def test_aggregator_populates_per_row_tag_dicts() -> None:
     """When 3 FOCUS rows aggregate, per_row_tag_dicts has 3 elements
-    (one per row, with multiplicity preserved)."""
+    (one per row, with multiplicity preserved). Migration 0020:
+    per_row_costs is parallel to per_row_tag_dicts, with the same
+    length and per-row cost matching each row's billed_cost."""
     rows = [
         FocusCharge(
             account_id="111",
@@ -171,6 +173,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             amortized_cost=Decimal("10"),
             tags=[{"Application": "web"}],
             billing_currency="USD",
+            per_row_costs=[(Decimal("10"), Decimal("10"))],
         ),
         FocusCharge(
             account_id="111",
@@ -186,6 +189,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             amortized_cost=Decimal("20"),
             tags=[{"Application": "web"}],
             billing_currency="USD",
+            per_row_costs=[(Decimal("20"), Decimal("20"))],
         ),
         FocusCharge(
             account_id="111",
@@ -201,6 +205,7 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
             amortized_cost=Decimal("30"),
             tags=[{"Application": "api"}],
             billing_currency="USD",
+            per_row_costs=[(Decimal("30"), Decimal("30"))],
         ),
     ]
     agg_list = aggregate_for_storage(rows)
@@ -216,6 +221,14 @@ def test_aggregator_populates_per_row_tag_dicts() -> None:
     for d in agg.per_row_tag_dicts:
         counts[d["Application"]] += 1
     assert counts == {"web": 2, "api": 1}
+    # Migration 0020: per_row_costs is parallel to per_row_tag_dicts.
+    # Same length; each tuple's billed matches the row's billed_cost.
+    assert len(agg.per_row_costs) == 3
+    assert [b for b, _ in agg.per_row_costs] == [
+        Decimal("10"),
+        Decimal("20"),
+        Decimal("30"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +244,12 @@ def test_runner_proportional_split_with_heterogeneous_tags(
     (cost 40) gives web=45, api=15. The V1 even split would have given
     30/30."""
     acc = accounts_repo.get_or_create(session, "111111111111")
+    # Migration 0020: per-row cost is parallel to per-row tag dicts.
+    # 4 input rows with equal cost (60/4 = 15 each). 3 web + 1 api.
+    # Cost-weighted attribution: web = 3*15 = 45, api = 1*15 = 15.
+    # The result coincides with V2 row-count because all rows have
+    # equal cost. Heterogeneous costs would diverge.
+    per_row_costs = [(Decimal("15"), Decimal("15")) for _ in range(4)]
     agg = AggregatedFocusCharge(
         service="AmazonRDS",
         period_start=date(2026, 7, 1),
@@ -249,6 +268,7 @@ def test_runner_proportional_split_with_heterogeneous_tags(
             {"Application": "web"},
             {"Application": "api"},
         ],
+        per_row_costs=per_row_costs,
     )
     focus_charges_repo.upsert_aggregated(session, acc.id, [agg])
     session.commit()
@@ -260,17 +280,20 @@ def test_runner_proportional_split_with_heterogeneous_tags(
 
     rows = session.query(InsightORM).all()
     by_value = {r.payload["tag_value"]: r.payload["billed_cost_usd"] for r in rows}
-    # Proportional: web gets 3/4 of 60 = 45, api gets 1/4 of 60 = 15.
-    # V1 even split would have been 30/30.
+    # Cost-weighted: web gets 3 rows * 15 = 45, api gets 1 row * 15 = 15.
+    # V1 even split would have been 30/30. V2 row-count would have
+    # been 45/15 (same as V3 here because all rows have equal cost).
     assert by_value == {"web": 45.0, "api": 15.0}
 
 
 def test_runner_proportional_split_with_even_tags_matches_v1(
     session: Session,
 ) -> None:
-    """When per-row tags are evenly distributed (2 web + 2 api), the
-    proportional split coincides with the V1 even split."""
+    """When per-row tags AND per-row costs are evenly distributed
+    (2 web + 2 api, each at 25), the cost-weighted split coincides
+    with V1's even split and V2's row-count weighting."""
     acc = accounts_repo.get_or_create(session, "111111111111")
+    per_row_costs = [(Decimal("25"), Decimal("25")) for _ in range(4)]
     agg = AggregatedFocusCharge(
         service="AmazonRDS",
         period_start=date(2026, 7, 1),
@@ -289,6 +312,7 @@ def test_runner_proportional_split_with_even_tags_matches_v1(
             {"Application": "api"},
             {"Application": "api"},
         ],
+        per_row_costs=per_row_costs,
     )
     focus_charges_repo.upsert_aggregated(session, acc.id, [agg])
     session.commit()
@@ -426,7 +450,9 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
 
     # Now run the chargeback runner with tag_key=Application
     # Total cost: 30+30+30+10 = 100
-    # V2: web gets 3/4 of 100 = 75, api gets 1/4 of 100 = 25
+    # Migration 0020 (cost-weighted): web gets 30+30+30 = 90,
+    # api gets 10. V1 (even split) would have given 50/50.
+    # V2 (row count) would have given 75/25 (3 web rows, 1 api row).
     response = client.post(
         "/insights/run",
         json={"rule": "chargeback", "tag_key": "Application"},
@@ -439,5 +465,8 @@ def test_e2e_ingest_and_chargeback_by_tag_uses_proportional_split(
     assert list_response.status_code == 200
     insights = list_response.json()
     by_value = {i["payload"]["tag_value"]: i["payload"]["billed_cost_usd"] for i in insights}
-    # V1 would have given 50/50. V2 gives 75/25.
-    assert by_value == {"web": 75.0, "api": 25.0}
+    # Per-row cost attribution: web = 90 (3 rows * 30), api = 10 (1 row * 10).
+    # The audit committee's deal-breaker: 3 EUR web + 97 EUR api
+    # under row-count weighting gave 50/50; cost-weighted gives
+    # 3% / 97%. Same shape here: 90/10 instead of 75/25.
+    assert by_value == {"web": 90.0, "api": 10.0}

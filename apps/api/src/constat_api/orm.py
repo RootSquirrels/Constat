@@ -250,6 +250,11 @@ class FocusChargeTagORM(Base):
     Why per-row matters: a focus_charge representing 5 input FOCUS
     rows might have 3 rows tagged Application=web and 2 tagged
     Application=api. V1 even-split gave 50/50; V2 gives 60/40.
+
+    Migration 0020: billed_cost + amortized_cost columns store the
+    per-input-row cost. The resolver weights tag attribution by
+    per-row cost, not row count. 3 EUR web + 97 EUR api -> 3% / 97%,
+    not 25% / 75% (the V2 row-count weighting on heterogeneous costs).
     """
 
     __tablename__ = "focus_charge_tags"
@@ -274,6 +279,22 @@ class FocusChargeTagORM(Base):
     )
     key: Mapped[str] = mapped_column(String, nullable=False)
     value: Mapped[str] = mapped_column(String, nullable=False)
+    # 0-based index of the input FOCUS row within the focus_charge
+    # (migration 0020). All focus_charge_tags rows for the same input
+    # row share this index. The resolver groups by input_row_index to
+    # reconstruct per-row data: each input row has N tag keys (one
+    # focus_charge_tags row per key) and a single billed_cost /
+    # amortized_cost (denormalized across the N rows of that input row).
+    input_row_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Per-input-row cost (migration 0020). Pre-0020 rows have 0.0 here
+    # and the resolver falls back to row-count weighting for them.
+    # Re-ingest the FOCUS file to recover per-row cost.
+    billed_cost: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=Decimal("0")
+    )
+    amortized_cost: Mapped[Decimal] = mapped_column(
+        Numeric(20, 6), nullable=False, default=Decimal("0")
+    )
 
 
 class InsightORM(Base):

@@ -4,10 +4,14 @@ V1: portable manual upsert (query + insert/update). Works on sqlite + postgres.
 V2 (migration 0009): also writes per-input-row tag data to
 `focus_charge_tags`. The cost attribution in the chargeback runner
 now uses these per-row rows to split cost proportionally, not evenly.
+Migration 0020: also writes per-input-row cost to focus_charge_tags
+(billed_cost, amortized_cost, input_row_index). The resolver uses
+these for cost-weighted tag attribution, not count-weighted.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import UUID
 
 from constat_focus.aggregator import AggregatedFocusCharge
@@ -30,6 +34,10 @@ def upsert_aggregated(
     are written to `focus_charge_tags` after each focus_charges
     upsert. Existing focus_charge_tags rows for the focus_charge
     are deleted first (the source of truth is the new ingest).
+    Migration 0020: per-row costs from `AggregatedFocusCharge.per_row_costs`
+    are written to the same focus_charge_tags rows, denormalized
+    across all (key, value) rows of the same input row. The resolver
+    groups by input_row_index to reconstruct per-row (cost, tag) pairs.
     """
     inserted = 0
     updated = 0
@@ -54,7 +62,12 @@ def upsert_aggregated(
             existing.sub_account_id = agg.sub_account_id
             existing.tags = list(agg.tags)
             existing.billing_currency = agg.billing_currency
-            _write_per_row_tags(session, existing.id, agg.per_row_tag_dicts)
+            _write_per_row_tags(
+                session,
+                existing.id,
+                agg.per_row_tag_dicts,
+                agg.per_row_costs,
+            )
             updated += 1
         else:
             new_row = FocusChargeORM(
@@ -74,7 +87,12 @@ def upsert_aggregated(
             )
             session.add(new_row)
             session.flush()  # get new_row.id
-            _write_per_row_tags(session, new_row.id, agg.per_row_tag_dicts)
+            _write_per_row_tags(
+                session,
+                new_row.id,
+                agg.per_row_tag_dicts,
+                agg.per_row_costs,
+            )
             inserted += 1
 
     session.flush()
@@ -85,16 +103,23 @@ def _write_per_row_tags(
     session: Session,
     focus_charge_id: int,
     per_row_tag_dicts: list[dict[str, str]],
+    per_row_costs: list[tuple[float, float]] | list[tuple[Decimal, Decimal]] | None = None,
 ) -> None:
-    """Write per-input-row tag data to focus_charge_tags.
+    """Write per-input-row tag + cost data to focus_charge_tags.
 
-    For each input row's tag dict, write one focus_charge_tags row
-    per (key, value) pair. Duplicate (key, value) pairs across input
+    For each input row, write one focus_charge_tags row per
+    (key, value) pair. Duplicate (key, value) pairs across input
     rows are preserved — the runner uses the row count to attribute
     cost proportionally. The (focus_charge_id, key, value) UNIQUE
     constraint is intentionally not enforced at the row level: a
     focus_charge representing 5 input rows can have the same
     (key, value) appear multiple times, once per contributing row.
+
+    Migration 0020: each focus_charge_tags row also carries the
+    per-input-row billed_cost and amortized_cost (denormalized
+    across all (key, value) rows of the same input row) and the
+    input_row_index (so the runner can group them back into
+    per-input-row records).
     """
     if not per_row_tag_dicts:
         return
@@ -106,7 +131,16 @@ def _write_per_row_tags(
         delete(FocusChargeTagORM).where(FocusChargeTagORM.focus_charge_id == focus_charge_id)
     )
 
-    for tag_dict in per_row_tag_dicts:
+    for row_index, tag_dict in enumerate(per_row_tag_dicts):
+        # Migration 0020: per-row cost from the parallel list. If
+        # the cost list is missing (old callers / pre-0020 data),
+        # billed_cost and amortized_cost default to 0 in the DB and
+        # the resolver falls back to row-count weighting for that row.
+        if per_row_costs is not None and row_index < len(per_row_costs):
+            row_billed, row_amortized = per_row_costs[row_index]
+        else:
+            row_billed = Decimal("0")
+            row_amortized = Decimal("0")
         for key, value in tag_dict.items():
             session.add(
                 FocusChargeTagORM(
@@ -114,6 +148,9 @@ def _write_per_row_tags(
                     focus_charge_id=focus_charge_id,
                     key=key,
                     value=value,
+                    input_row_index=row_index,
+                    billed_cost=row_billed,
+                    amortized_cost=row_amortized,
                 )
             )
     session.flush()

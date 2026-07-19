@@ -29,6 +29,7 @@ def _add_focus(
     period_start: date = date(2026, 7, 1),
     period_end: date = date(2026, 7, 31),
     tags: list[dict[str, str]] | None = None,
+    per_row_costs: list[tuple[Decimal, Decimal]] | None = None,
 ) -> None:
     """Add one FOCUS charge row for an account.
 
@@ -36,8 +37,19 @@ def _add_focus(
     type the upsert expects) and writes it via upsert_aggregated. Tags
     are recorded both in the denormalized JSONB column AND as
     per-row entries in focus_charge_tags (V2 behavior).
+
+    Migration 0020: per_row_costs is parallel to per_row_tag_dicts.
+    If omitted, defaults to equal per-row cost (billed / len(tags)),
+    which matches the V2 row-count weighting and lets the existing
+    tests keep their semantics. Tests that exercise heterogeneous
+    per-row costs should pass an explicit per_row_costs list.
     """
     tag_list = list(tags) if tags else []
+    if per_row_costs is None:
+        n = len(tag_list) if tag_list else 1
+        per_billed = Decimal(billed) / Decimal(n)
+        per_amortized = Decimal(amortized) / Decimal(n)
+        per_row_costs = [(per_billed, per_amortized) for _ in range(n)]
     agg = AggregatedFocusCharge(
         service=service,
         period_start=period_start,
@@ -51,6 +63,7 @@ def _add_focus(
         sub_account_id=None,
         tags=tag_list,
         per_row_tag_dicts=tag_list,  # one row per tag dict; preserves multiplicity
+        per_row_costs=per_row_costs,
     )
     focus_charges_repo.upsert_aggregated(session, account_id, [agg])
     session.commit()

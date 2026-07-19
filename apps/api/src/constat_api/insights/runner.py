@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from constat_aurora_eol.resolver import evaluate as aurora_eol_evaluate
@@ -295,10 +296,11 @@ def _evaluate_resource(
 def _focus_charge_to_pydantic(
     orm: FocusChargeORM,
     per_row_tag_dicts: list[dict[str, str]] | None = None,
+    per_row_costs: list[tuple[Decimal, Decimal]] | None = None,
     *,
     account_name: str = "",
 ) -> FocusCharge:
-    """Build a FocusCharge dataclass from the ORM row + (optional) per-row tags.
+    """Build a FocusCharge dataclass from the ORM row + (optional) per-row data.
 
     V2 (P3 item 11 fix): `per_row_tag_dicts` is the flat list of
     per-input-row tag dicts read from `focus_charge_tags`. Each element
@@ -306,10 +308,20 @@ def _focus_charge_to_pydantic(
     intentionally — the resolver uses the row count to attribute
     cost proportionally.
 
+    Migration 0020: `per_row_costs` is parallel to `per_row_tag_dicts`.
+    Each tuple is (billed, amortized) for the same input row. The
+    resolver uses the two lists together for cost-weighted tag
+    attribution: 3 EUR web + 97 EUR api -> 3% / 97% (not 50/50).
+
     If `per_row_tag_dicts` is None, fall back to the denormalized
     `focus_charges.tags` JSONB column (one element per unique tag
     dict, V1 semantics). This keeps the runner usable for callers
     that haven't read focus_charge_tags yet.
+
+    If `per_row_costs` is None, the FocusCharge has no per-row cost
+    data — the resolver falls back to V2 row-count weighting for it.
+    Pre-0020 data and data with no tags (and therefore no per-row
+    tag rows) end up in this branch.
 
     `account_name` is the display name from the accounts table (audit
     F-13): focus_charges doesn't store it, so the caller resolves it.
@@ -329,6 +341,7 @@ def _focus_charge_to_pydantic(
         resource_id=orm.resource_id,
         sub_account_id=orm.sub_account_id,
         tags=per_row_tag_dicts,
+        per_row_costs=per_row_costs or [],
         billing_currency=orm.billing_currency,
     )
 
@@ -338,13 +351,19 @@ def _load_per_row_tags_for(
 ) -> dict[int, list[dict[str, str]]]:
     """Read per-row tags for a list of focus_charge ids.
 
-    Returns a dict {focus_charge_id: [tag_dict, ...]} where each
-    tag_dict is one input FOCUS row's tag dict. The list preserves
-    multiplicity (a focus_charge representing 5 input rows can have
-    the same (key, value) appear 5 times).
+    Migration 0020: returns {focus_charge_id: [tag_dict, ...]} where
+    each tag_dict is one INPUT FOCUS ROW's full tag dict (1 element
+    per input row, NOT 1 element per (key, value) row). The list is
+    parallel to the per_row_costs list returned by
+    `_load_per_row_costs_for`. The resolver zips the two together
+    for cost-weighted tag attribution.
 
-    Used by the V2 chargeback runner to attribute cost proportionally
-    rather than evenly.
+    Pre-0020 data: input_row_index=0, so all focus_charge_tags rows
+    of the same focus_charge collapse into a single input row with
+    all the keys merged. This loses per-row granularity for old data
+    (a 5-row bucket with 1 web + 4 api rows would have all 5 keys
+    merged into 1 dict), but the resolver's V2 row-count fallback
+    handles the missing per-row cost anyway.
     """
     if not focus_charge_ids:
         return {}
@@ -353,10 +372,72 @@ def _load_per_row_tags_for(
     from constat_api.orm import FocusChargeTagORM
 
     stmt = select(FocusChargeTagORM).where(FocusChargeTagORM.focus_charge_id.in_(focus_charge_ids))
-    by_charge: dict[int, list[dict[str, str]]] = {cid: [] for cid in focus_charge_ids}
+    # Group by (focus_charge_id, input_row_index) — collect all (key,
+    # value) pairs of the same input row into one tag dict.
+    grouped: dict[tuple[int, int], dict[str, str]] = {}
+    max_idx_per_charge: dict[int, int] = {cid: -1 for cid in focus_charge_ids}
     for tag_row in session.execute(stmt).scalars():
-        by_charge[tag_row.focus_charge_id].append({tag_row.key: tag_row.value})
+        key = (tag_row.focus_charge_id, tag_row.input_row_index)
+        if key not in grouped:
+            grouped[key] = {}
+        grouped[key][tag_row.key] = tag_row.value
+        max_idx_per_charge[tag_row.focus_charge_id] = max(
+            max_idx_per_charge[tag_row.focus_charge_id], tag_row.input_row_index
+        )
+    by_charge: dict[int, list[dict[str, str]]] = {cid: [] for cid in focus_charge_ids}
+    for cid in focus_charge_ids:
+        max_idx = max_idx_per_charge[cid]
+        for i in range(max_idx + 1):
+            by_charge[cid].append(grouped.get((cid, i), {}))
     return by_charge
+
+
+def _load_per_row_costs_for(
+    session: Session, focus_charge_ids: list[int]
+) -> dict[int, list[tuple[Decimal, Decimal]]]:
+    """Read per-row costs for a list of focus_charge ids (migration 0020).
+
+    Returns {focus_charge_id: [(billed, amortized), ...]} where each
+    tuple is one input FOCUS row's cost, indexed by input_row_index
+    in the focus_charge_tags table.
+
+    The cost is denormalized across all (key, value) rows of the
+    same input row in focus_charge_tags. We group by input_row_index
+    and take the first row's cost (they should all be equal for the
+    same input row — the upsert writes the same cost on every row
+    of the same input).
+
+    Pre-0020 rows have input_row_index=0 and billed_cost=0; the
+    resolver falls back to V2 row-count weighting for those.
+
+    The returned list is parallel to the one returned by
+    `_load_per_row_tags_for`: index N is the cost of the input row
+    whose tag dict is at index N in the tag list.
+    """
+    if not focus_charge_ids:
+        return {}
+    from sqlalchemy import select
+
+    from constat_api.orm import FocusChargeTagORM
+
+    stmt = select(FocusChargeTagORM).where(FocusChargeTagORM.focus_charge_id.in_(focus_charge_ids))
+    # Group by (focus_charge_id, input_row_index) — keep the first
+    # billed_cost / amortized_cost seen (they should be equal across
+    # all tag rows of the same input row, by the upsert invariant).
+    by_charge: dict[int, dict[int, tuple[Decimal, Decimal]]] = {cid: {} for cid in focus_charge_ids}
+    for tag_row in session.execute(stmt).scalars():
+        per_input = by_charge[tag_row.focus_charge_id]
+        if tag_row.input_row_index not in per_input:
+            per_input[tag_row.input_row_index] = (tag_row.billed_cost, tag_row.amortized_cost)
+    # Convert the inner dict to an ordered list, indexed by input_row_index.
+    out: dict[int, list[tuple[Decimal, Decimal]]] = {}
+    for cid, per_input in by_charge.items():
+        if per_input:
+            max_idx = max(per_input.keys())
+            out[cid] = [per_input.get(i, (Decimal("0"), Decimal("0"))) for i in range(max_idx + 1)]
+        else:
+            out[cid] = []
+    return out
 
 
 def run_resource_rule(
@@ -606,13 +687,18 @@ def run_chargeback(
                 continue
 
             # V2: read per-row tags for proportional cost attribution.
+            # Migration 0020: also read per-row costs for cost-weighted
+            # tag attribution (3 EUR web + 97 EUR api -> 3% / 97%, not
+            # 50/50). The two lists are zipped in the resolver.
             focus_charge_ids = [c.id for c in orm_charges]
             per_row_tags_by_id = _load_per_row_tags_for(session, focus_charge_ids)
+            per_row_costs_by_id = _load_per_row_costs_for(session, focus_charge_ids)
 
             charges = [
                 _focus_charge_to_pydantic(
                     c,
                     per_row_tags_by_id.get(c.id),
+                    per_row_costs_by_id.get(c.id),
                     account_name=account_names.get(str(c.account_id), ""),
                 )
                 for c in orm_charges
