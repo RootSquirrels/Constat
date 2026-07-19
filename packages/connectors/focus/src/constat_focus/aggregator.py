@@ -26,11 +26,11 @@ class AggregatedFocusCharge:
     attribution in the chargeback runner instead of V1's even split.
 
     Migration 0019: `billing_currency` is preserved as-written across
-    the aggregation. The aggregator doesn't convert — same input
-    currency on all rows of the bucket means same output currency; if
-    a bucket somehow has mixed currencies (it shouldn't, the loader
-    fails on the first row of a non-conformant file), the mode is
-    used as a best-effort, but the loader is the real defense.
+    the aggregation. The aggregator doesn't convert — all rows of a
+    bucket must share the same currency; a mixed-currency bucket is
+    refused loud (ValueError) because the storage natural key
+    (account, service, period) cannot hold two currencies without
+    summing them under one label.
 
     Migration 0020: `per_row_costs` is parallel to `per_row_tag_dicts`.
     Each tuple is (billed_cost, amortized_cost) for one input FOCUS
@@ -67,8 +67,8 @@ class AggregatedFocusCharge:
     # of the same input row (the resolver groups by input_row_index).
     per_row_costs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
     # ISO 4217 currency code, preserved as-written (USD, EUR, GBP, ...).
-    # Same for all rows in the bucket (the loader refuses mixed-currency
-    # input via BillingCurrencyError before the aggregator sees it).
+    # Same for all rows in the bucket — aggregate_for_storage raises on
+    # a mixed-currency bucket before producing this row.
     billing_currency: str = "USD"
 
 
@@ -115,6 +115,17 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
     V2: also preserves per-input-row tag dicts (`per_row_tag_dicts`)
     so the upsert can write one focus_charge_tags row per input row.
     See migration 0009.
+
+    Currency: the storage natural key is (account, service, period) —
+    one row per bucket, one `billing_currency` column. A bucket that
+    mixes currencies (e.g. an Azure EA export with an EUR-billed and a
+    USD-billed subscription for the same service+period) CANNOT be
+    stored without either summing unlike currencies under one label or
+    silently overwriting one currency with the other. Both are the
+    silent-FX-error class the audit committee flagged as a deal-breaker,
+    so we refuse loud: ValueError with operator guidance. Ingest each
+    currency under its own account id (e.g. `--account 87654321-eur`)
+    until the storage key carries the currency.
     """
     buckets: dict[tuple[str, object, object], list[FocusCharge]] = defaultdict(list)
     for c in charges:
@@ -139,12 +150,21 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 flat_tag_dicts.append(t)
                 flat_per_row_costs.append(cost)
 
-        # Currency: the loader has already rejected mixed/empty
-        # BillingCurrency per row, so all rows in a bucket share the
-        # same currency. We still use mode() defensively in case a
-        # future refactor breaks that invariant — better to preserve
-        # the majority than crash on a one-off outlier.
-        currencies = [r.billing_currency for r in rows]
+        # Fail loud on mixed currencies. The loader validates each row's
+        # BillingCurrency but does NOT enforce a single currency per
+        # file — an earlier version of this docstring claimed it did,
+        # and the mode() below silently labeled the sum of EUR+USD with
+        # the majority currency. Storage cannot hold two currencies for
+        # one (service, period) bucket, so refuse instead of mislabeling.
+        currencies = {r.billing_currency for r in rows}
+        if len(currencies) > 1:
+            raise ValueError(
+                f"FOCUS bucket ({service!r}, {ps}..{pe}) mixes currencies "
+                f"{sorted(currencies)}: V1 storage keys cost rows by "
+                f"(account, service, period) and cannot hold two currencies "
+                f"without summing them. Split the export per currency and "
+                f"ingest each under its own account id."
+            )
         results.append(
             AggregatedFocusCharge(
                 service=service,
@@ -160,7 +180,7 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 tags=_unique_dicts([r.tags for r in rows]),
                 per_row_tag_dicts=flat_tag_dicts,
                 per_row_costs=flat_per_row_costs,
-                billing_currency=_mode(currencies) or "USD",
+                billing_currency=currencies.pop() if currencies else "USD",
             )
         )
     return results

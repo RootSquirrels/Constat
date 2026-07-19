@@ -31,3 +31,34 @@ this file with a real, anonymized AWS Data Exports (FOCUS) export from
 the first prospect. Synthetic data proves we parse the *shape*; only a
 real export proves we survive provider quirks (NULL sentinels, locale
 decimals, per-row granularity, actual `ServiceName` values).
+
+## `focus_azure_v1_0.csv` — golden FOCUS 1.0 dataset, Azure variant
+
+**Provenance:** synthetic but spec-shaped, hand-written as the Azure
+twin of `focus_golden_v1_0.csv`. Same FULL official FOCUS 1.0 column
+set (43 columns, alphabetical). All account IDs, subscription GUIDs,
+ARM resource IDs, SKU IDs, and amounts are invented; no real customer
+data.
+
+**Why it exists:** the FOCUS 1.0 spec is provider-agnostic and Azure
+Cost Management exports FOCUS natively. This fixture proves the loader,
+aggregator, and chargeback resolver have no hidden AWS assumption
+(nothing in the pipeline reads `ProviderName` — the check is by shape,
+not by provider).
+
+**Coverage:** 18 rows, three services (Virtual Machines, Azure Database
+for PostgreSQL, Storage Accounts), two regions (`westeurope`,
+`francecentral`), ARM-format `ResourceId`s
+(`/subscriptions/<guid>/resourceGroups/<rg>/providers/...`), EA-style
+`BillingAccountId`, GUID `SubAccountId`s, on-demand usage rows,
+reservation / savings-plan amortization rows (`PricingCategory=Committed`,
+`BilledCost=0`, `EffectiveCost>0`), commitment purchase rows
+(`ChargeCategory=Purchase`, `EffectiveCost=0`), refund/credit rows
+(`ChargeCategory=Credit`, negative amounts), and tagged resources.
+**Mixed currency on purpose:** most rows are `EUR`, three rows (a
+second subscription's billing profile) are `USD` — Virtual Machines and
+Storage Accounts each carry both currencies in the same period. This
+pins two behaviors in `tests/test_azure_focus.py`: the chargeback
+resolver's currency-aware grouping, and the loud ingest refusal of
+mixed-currency (service, period) buckets (V1 storage keys cost rows by
+(account, service, period) — one currency per row).

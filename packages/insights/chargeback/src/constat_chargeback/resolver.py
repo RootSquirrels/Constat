@@ -24,6 +24,16 @@ the resolver attributes each input row's own cost to its tag value.
 50 EUR / 50 EUR. The audit committee's deal-breaker was "an
 attribution by tag that follows the number of lines rather than
 their cost" — this is the fix.
+
+Currency: every grouping includes `billing_currency` in the bucket
+key. FOCUS 1.0 is provider-agnostic and a single export can mix
+currencies (e.g. an Azure EA with an EUR-billed and a USD-billed
+subscription). Summing EUR + USD into one number labeled "usd" is a
+silent FX error, so each (account, service, period, currency) gets
+its own insight, and the payload carries `billing_currency` so the
+restitution never has to guess. The payload amount KEYS keep their
+V1 `*_usd` suffix (registry-locked, see constat_core.monetary) —
+the `billing_currency` field is the authoritative label.
 """
 
 from __future__ import annotations
@@ -68,6 +78,10 @@ class AggregatedCost:
     # Human-readable account name (audit F-13). Empty when unknown;
     # build_insights falls back to account_id in the title.
     account_name: str = ""
+    # ISO 4217 code shared by every charge in this aggregate (the
+    # grouping is currency-aware, so one aggregate is always single-
+    # currency). Surfaced in the insight payload as `billing_currency`.
+    billing_currency: str = "USD"
 
     @property
     def drift_amortized_minus_billed(self) -> Decimal:
@@ -77,17 +91,17 @@ class AggregatedCost:
 
 
 def aggregate(charges: Iterable[FocusCharge]) -> list[AggregatedCost]:
-    """Group FOCUS charges by (account, service) — all periods summed.
+    """Group FOCUS charges by (account, service, currency) — all periods summed.
 
     Kept for backward compat / V1 'all-time' view. V1 production code
     should prefer aggregate_by_period for monthly trends.
     """
-    buckets: dict[tuple[str, str], list[FocusCharge]] = defaultdict(list)
+    buckets: dict[tuple[str, str, str], list[FocusCharge]] = defaultdict(list)
     for c in charges:
-        buckets[(c.account_id, c.service)].append(c)
+        buckets[(c.account_id, c.service, c.billing_currency)].append(c)
 
     results: list[AggregatedCost] = []
-    for (account_id, service), rows in buckets.items():
+    for (account_id, service, currency), rows in buckets.items():
         results.append(
             AggregatedCost(
                 account_id=account_id,
@@ -97,6 +111,7 @@ def aggregate(charges: Iterable[FocusCharge]) -> list[AggregatedCost]:
                 charge_count=len(rows),
                 tags=_merge_tag_lists(rows),
                 account_name=_first_account_name(rows),
+                billing_currency=currency,
             )
         )
     return results
@@ -105,18 +120,19 @@ def aggregate(charges: Iterable[FocusCharge]) -> list[AggregatedCost]:
 def aggregate_by_period(
     charges: Iterable[FocusCharge],
 ) -> list[AggregatedCost]:
-    """Group FOCUS charges by (account, service, period_start, period_end).
+    """Group FOCUS charges by (account, service, period_start, period_end, currency).
 
-    One row per (account, service, billing period). Use this for monthly
+    One row per (account, service, billing period, currency). Use this for monthly
     trends. The `tags` field carries every unique tag dict seen in the
     contributing rows, ready for downstream tag-based re-aggregation.
     """
-    buckets: dict[tuple[str, str, date, date], list[FocusCharge]] = defaultdict(list)
+    buckets: dict[tuple[str, str, date, date, str], list[FocusCharge]] = defaultdict(list)
     for c in charges:
-        buckets[(c.account_id, c.service, c.period_start, c.period_end)].append(c)
+        key = (c.account_id, c.service, c.period_start, c.period_end, c.billing_currency)
+        buckets[key].append(c)
 
     results: list[AggregatedCost] = []
-    for (account_id, service, ps, pe), rows in buckets.items():
+    for (account_id, service, ps, pe, currency), rows in buckets.items():
         results.append(
             AggregatedCost(
                 account_id=account_id,
@@ -128,6 +144,7 @@ def aggregate_by_period(
                 period_end=pe,
                 tags=_merge_tag_lists(rows),
                 account_name=_first_account_name(rows),
+                billing_currency=currency,
             )
         )
     return results
@@ -138,7 +155,7 @@ def aggregate_by_tag(
     *,
     tag_key: str,
 ) -> list[AggregatedCost]:
-    """Re-aggregate by (account, service, period, tag_key_value).
+    """Re-aggregate by (account, service, period, currency, tag_key_value).
 
     Migration 0020 (cost-weighted attribution, the audit committee's
     fix): for each FocusCharge representing N input FOCUS rows, the
@@ -161,18 +178,20 @@ def aggregate_by_tag(
       to V2 row-count weighting, then to UNTAGGED with the full
       FocusCharge.billed_cost.
 
-    Output: one AggregatedCost per (account, service, period, tag_value)
-    tuple, with `tag_key` and `tag_value` set in the result.
+    Output: one AggregatedCost per (account, service, period, currency,
+    tag_value) tuple, with `tag_key` and `tag_value` set in the result.
     """
     if not tag_key:
         raise ValueError("tag_key must be a non-empty string")
 
-    # (account, service, period, tag_value) -> (sum_billed, sum_amortized, count)
-    buckets: dict[tuple[str, str, date, date, str], tuple[Decimal, Decimal, int]] = defaultdict(
-        lambda: (Decimal("0"), Decimal("0"), 0)
+    # (account, service, period, currency, tag_value) -> (sum_billed, sum_amortized, count)
+    buckets: dict[tuple[str, str, date, date, str, str], tuple[Decimal, Decimal, int]] = (
+        defaultdict(lambda: (Decimal("0"), Decimal("0"), 0))
     )
     # Track per-bucket tag dicts for the insight payload.
-    bucket_tags: dict[tuple[str, str, date, date, str], list[dict[str, str]]] = defaultdict(list)
+    bucket_tags: dict[tuple[str, str, date, date, str, str], list[dict[str, str]]] = defaultdict(
+        list
+    )
     # First non-empty account name seen per account_id (audit F-13).
     account_names: dict[str, str] = {}
 
@@ -196,7 +215,14 @@ def aggregate_by_tag(
                 else:
                     tag_value = UNTAGGED
                     bucket_tags_dict = {}
-                key = (c.account_id, c.service, c.period_start, c.period_end, tag_value)
+                key = (
+                    c.account_id,
+                    c.service,
+                    c.period_start,
+                    c.period_end,
+                    c.billing_currency,
+                    tag_value,
+                )
                 prev_billed, prev_amortized, prev_count = buckets[key]
                 buckets[key] = (
                     prev_billed + billed,
@@ -211,7 +237,14 @@ def aggregate_by_tag(
             _attribute_row_count(c, tag_key, buckets, bucket_tags)
         else:
             # No per-row data at all: full cost to UNTAGGED.
-            key = (c.account_id, c.service, c.period_start, c.period_end, UNTAGGED)
+            key = (
+                c.account_id,
+                c.service,
+                c.period_start,
+                c.period_end,
+                c.billing_currency,
+                UNTAGGED,
+            )
             prev_billed, prev_amortized, prev_count = buckets[key]
             buckets[key] = (
                 prev_billed + c.billed_cost,
@@ -221,7 +254,7 @@ def aggregate_by_tag(
             bucket_tags[key].append({})
 
     results: list[AggregatedCost] = []
-    for (account_id, service, ps, pe, tag_value), (
+    for (account_id, service, ps, pe, currency, tag_value), (
         billed,
         amortized,
         count,
@@ -235,10 +268,13 @@ def aggregate_by_tag(
                 charge_count=count,
                 period_start=ps,
                 period_end=pe,
-                tags=_unique_dicts_flat(bucket_tags[(account_id, service, ps, pe, tag_value)]),
+                tags=_unique_dicts_flat(
+                    bucket_tags[(account_id, service, ps, pe, currency, tag_value)]
+                ),
                 tag_key=tag_key,
                 tag_value=tag_value,
                 account_name=account_names.get(account_id, ""),
+                billing_currency=currency,
             )
         )
     return results
@@ -247,8 +283,8 @@ def aggregate_by_tag(
 def _attribute_row_count(
     c: FocusCharge,
     tag_key: str,
-    buckets: dict[tuple[str, str, date, date, str], tuple[Decimal, Decimal, int]],
-    bucket_tags: dict[tuple[str, str, date, date, str], list[dict[str, str]]],
+    buckets: dict[tuple[str, str, date, date, str, str], tuple[Decimal, Decimal, int]],
+    bucket_tags: dict[tuple[str, str, date, date, str, str], list[dict[str, str]]],
 ) -> None:
     """V2 row-count fallback for charges with tags but no per_row_costs.
 
@@ -271,7 +307,14 @@ def _attribute_row_count(
 
     if not per_value_count:
         # No row carried the requested key -> full cost to UNTAGGED.
-        key = (c.account_id, c.service, c.period_start, c.period_end, UNTAGGED)
+        key = (
+            c.account_id,
+            c.service,
+            c.period_start,
+            c.period_end,
+            c.billing_currency,
+            UNTAGGED,
+        )
         prev_billed, prev_amortized, prev_count = buckets[key]
         buckets[key] = (
             prev_billed + c.billed_cost,
@@ -284,7 +327,7 @@ def _attribute_row_count(
     total_rows = sum(per_value_count.values())
     for tag_value, count in per_value_count.items():
         weight = Decimal(count) / Decimal(total_rows)
-        key = (c.account_id, c.service, c.period_start, c.period_end, tag_value)
+        key = (c.account_id, c.service, c.period_start, c.period_end, c.billing_currency, tag_value)
         prev_billed, prev_amortized, prev_count = buckets[key]
         buckets[key] = (
             prev_billed + c.billed_cost * weight,
@@ -362,7 +405,7 @@ def build_insights(
 
         title = (
             f"{agg.service} on {display_account} ({label}){tag_suffix}: "
-            f"amortized {direction} by ${abs(drift):.2f}"
+            f"amortized {direction} by {agg.billing_currency} {abs(drift):.2f}"
         )
 
         insights.append(
@@ -378,6 +421,11 @@ def build_insights(
                     "period_label": label,
                     "period_start": agg.period_start.isoformat() if agg.period_start else None,
                     "period_end": agg.period_end.isoformat() if agg.period_end else None,
+                    # The amount KEYS keep their V1 `*_usd` suffix
+                    # (registry-locked in constat_core.monetary.MONETARY);
+                    # `billing_currency` is the authoritative label for
+                    # what those amounts actually are.
+                    "billing_currency": agg.billing_currency,
                     "billed_cost_usd": float(agg.billed_cost),
                     "amortized_cost_usd": float(agg.amortized_cost),
                     "drift_amortized_minus_billed_usd": float(drift),

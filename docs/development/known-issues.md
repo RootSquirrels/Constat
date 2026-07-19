@@ -207,6 +207,69 @@ customers).
 `uq_accounts_tenant_external`). `repositories/accounts.py` now scopes
 `get_by_external_id` to the session's tenant.
 
+## 12. Azure FOCUS ingestion
+
+**Verdict: ready-with-limits.** Proven by `tests/test_azure_focus.py`
+against `tests/fixtures/focus_azure_v1_0.csv` (Azure-shaped FOCUS 1.0
+golden fixture, the Azure twin of `focus_golden_v1_0.csv`).
+
+**What works (proven by the test):**
+- The loader (`packages/connectors/focus`) is provider-agnostic: an
+  Azure Cost Management FOCUS 1.0 export (ProviderName "Microsoft",
+  ARM-format `ResourceId`s, GUID `SubAccountId`s, `westeurope` /
+  `francecentral` region ids) ingests with **zero skipped rows**. The
+  required-column set is the FOCUS 1.0 spec set; nothing reads
+  `ProviderName` — acceptance is by shape, not by provider.
+- `BillingCurrency` is required, validated (ISO 4217, uppercase) and
+  preserved per row end-to-end (loader → `focus_charges` → chargeback).
+- The chargeback resolver groups **currency-aware** since this fix
+  (2026-07-19): every insight payload carries `billing_currency`, and
+  the amounts are never silently passed off as USD. The amount payload
+  keys keep their V1 `*_usd` suffix (registry-locked in
+  `constat_core.monetary.MONETARY`); `billing_currency` is the
+  authoritative label. Restitution/FX conversion happens downstream of
+  the insight, as for AWS.
+- The FOCUS reconcile pass is a **no-op, not an error**, for Azure
+  rows: Azure `ServiceName`s are absent from `RULE_FOCUS_SERVICES` and
+  ARM resource ids never match collected AWS `native_id`s, so no
+  `focus_confirmed` context is attached and nothing flips to ACTUAL.
+
+**Limits:**
+- **No Azure collector.** FOCUS gives cost lines only. Inventory,
+  resource-level insights (EOL, gp2→gp3-style rules), and retirement
+  tracking over Azure resources need an Azure adapter per ADR-14 —
+  out of V1 scope.
+- **Currency mixing policy (2026-07-19):** currencies are never
+  converted and never summed together. The chargeback resolver groups
+  by (account, service, period, currency). But the V1 *storage* key
+  for `focus_charges` is (account, service, period) — one row, one
+  `billing_currency` column — so `aggregate_for_storage` **refuses
+  loud** (ValueError with operator guidance) when a single export
+  mixes currencies inside one (service, period) bucket, rather than
+  silently summing EUR+USD under one label (the audit committee's
+  deal-breaker class). Real Azure exports are per billing profile
+  (single currency), so this rarely bites; when it does, split the
+  export per currency and ingest each under its own account id
+  (e.g. `--account 87654321-eur` / `--account 87654321-usd`). The
+  proper fix is adding `billing_currency` to the storage natural key
+  (migration + repository change) — V2.
+- **Region naming:** Azure region ids (`westeurope`) are stored
+  verbatim; there is no normalization to AWS-style names. Anything
+  keyed on AWS region naming conventions will not match Azure rows.
+- Chargeback titles render the drift with the ISO code
+  (`amortized down by EUR 660.00`) — the `$` prefix is gone, so titles
+  are honest for any currency.
+
+**Onboarding an Azure subscription's FOCUS export concretely:**
+```bash
+python -m constat_api.cli.focus --account <ea-or-mca-billing-account-id> \
+  --file focus_azure.csv --account-name <friendly-name>
+```
+(same command as AWS; CSV or Parquet, format detected by extension;
+`--account` is the billing account id you want the charges filed under,
+not an AWS account number; the export must be single-currency per
+(service, period) — see the mixing policy above).
+
 ## Reporting new issues
 
 When you find a new one, add a section here. Each section should
