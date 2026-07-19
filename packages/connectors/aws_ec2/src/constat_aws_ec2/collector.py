@@ -1,33 +1,41 @@
-"""AWS EC2/EBS collector.
+"""AWS EC2/EBS collector — boto3 DescribeInstances/Volumes/Snapshots.
 
-Mirrors the aws_rds connector pattern: the caller owns the boto3 Session
-(so we can support cross-account AssumeRole). This module only translates
-AWS API responses into canonical Resources / Facts / Observations.
+Mirrors the aws_rds connector pattern: the caller owns the boto3
+Session (so we can support cross-account AssumeRole). This module
+only translates AWS API responses into canonical Resources / Facts
+/ Observations.
 
 Three resource types:
 - AWS::EC2::Volume   (EBS volumes, gp2/gp3/io1/io2/st1/sc1/magnetic)
 - AWS::EC2::Snapshot (EBS snapshots, owner=self)
 - AWS::EC2::Instance (EC2 instances, all states)
 
-Per-region pagination uses the boto3 paginator + the same adaptive
-retry config as aws_rds (10 attempts, client-side rate limiting,
-jittered backoff). A throttled multi-region scan backs off smoothly
-instead of hammering the API in lockstep.
+Chantier III.3: the retry policy, default region list, the
+per-region paginator pattern, and the per-connector `_fact`
+closure now live in `constat_core.collectors.aws`. This
+connector consumes the lib; the per-resource-type specifics
+(items_extractor for the nested describe-instances case, the
+10-key fact shape, the correlation post-pass) stay here.
 
-Source name: `aws_ec2`. The runner's scope-completeness check looks up
-source_runs by this name, distinct from `aws_rds`. A successful RDS scan
-does NOT prove EC2 scope and vice-versa.
+Source name: `aws_ec2`. The runner's scope-completeness check
+looks up source_runs by this name, distinct from `aws_rds`. A
+successful RDS scan does NOT prove EC2 scope and vice-versa.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 import boto3
-from botocore.config import Config as BotoConfig
+from constat_core.collectors.aws import (
+    known_or_unknown,
+    make_fact_builder,
+    now_utc,
+    paginate_aws,
+)
 from constat_core.models import Fact, Observation, Resource, ValueState
 
 # Resource types. One source_run per (account, region, resource_type, source).
@@ -37,29 +45,53 @@ INSTANCE_RESOURCE_TYPE = "AWS::EC2::Instance"
 
 SOURCE_NAME = "aws_ec2"
 
-# Default region set. Same default as aws_rds. Tunable per tenant.
-DEFAULT_REGIONS: list[str] = [
-    "eu-west-1",
-    "eu-west-2",
-    "eu-west-3",
-    "eu-central-1",
-    "us-east-1",
-    "us-east-2",
-    "us-west-2",
+# §III.3: `ADAPTIVE_RETRY_CONFIG` and `DEFAULT_REGIONS` live in
+# `constat_core.collectors.aws`. This connector consumes the lib
+# via `paginate_aws(...)`; the retry config + region defaults are
+# applied inside the lib. The orchestrator (apps/api) imports
+# from the lib, not from here.
+__all__ = [
+    "INSTANCE_RESOURCE_TYPE",
+    "SNAPSHOT_RESOURCE_TYPE",
+    "SOURCE_NAME",
+    "VOLUME_RESOURCE_TYPE",
+    "collect_instances",
+    "collect_snapshots",
+    "collect_volumes",
+    "correlation_facts",
+    "instance_to_facts",
+    "instance_to_observation",
+    "instance_to_resource",
+    "snapshot_to_facts",
+    "snapshot_to_observation",
+    "snapshot_to_resource",
+    "volume_to_facts",
+    "volume_to_observation",
+    "volume_to_resource",
 ]
 
-# Same adaptive retry config as aws_rds (shared intent): throttling
-# resilience for paginated, multi-region scans. EC2 Describe* APIs are
-# also throttled (token-bucket) so the same policy applies.
-ADAPTIVE_RETRY_CONFIG = BotoConfig(
-    retries={"mode": "adaptive", "max_attempts": 10},
-    connect_timeout=10,
-    read_timeout=30,
-)
+
+# ---------------------------------------------------------------------------
+# Items extractors — one per AWS operation. Flat for Volumes and
+# Snapshots, nested for Instances (the describe_instances response
+# wraps Instances[*] in Reservations[*]).
+# ---------------------------------------------------------------------------
 
 
-def _now_utc() -> datetime:
-    return datetime.now(tz=UTC)
+def _volumes_in_page(page: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    return iter(page.get("Volumes", []))
+
+
+def _snapshots_in_page(page: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    return iter(page.get("Snapshots", []))
+
+
+def _instances_in_page(page: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Nested extractor: `Reservations[*].Instances[*]`. A generator
+    so we don't materialize the whole reservation list in memory
+    on a 10K-instance account."""
+    for reservation in page.get("Reservations", []):
+        yield from reservation.get("Instances", [])
 
 
 # ---------------------------------------------------------------------------
@@ -72,18 +104,18 @@ def collect_volumes(
 ) -> Iterator[dict[str, Any]]:
     """Yield raw EBS volume dicts from AWS EC2 DescribeVolumes across regions.
 
-    Each yielded dict has an extra `_region` key. We do NOT filter by
-    status — the rules decide (e.g. `ebs.unattached` cares about
-    `status=available`; `ebs.gp2_to_gp3` cares about `type=gp2`).
+    Each yielded dict has an extra `_region` key. We do NOT filter
+    by status — the rules decide (e.g. `ebs.unattached` cares
+    about `status=available`; `ebs.gp2_to_gp3` cares about
+    `type=gp2`).
     """
-    regions = regions or DEFAULT_REGIONS
-    for region in regions:
-        client = session.client("ec2", region_name=region, config=ADAPTIVE_RETRY_CONFIG)
-        paginator = client.get_paginator("describe_volumes")
-        for page in paginator.paginate():
-            for vol in page.get("Volumes", []):
-                vol["_region"] = region
-                yield vol
+    return paginate_aws(
+        session,
+        regions,
+        service="ec2",
+        operation="describe_volumes",
+        items_extractor=_volumes_in_page,
+    )
 
 
 def collect_snapshots(
@@ -91,19 +123,20 @@ def collect_snapshots(
 ) -> Iterator[dict[str, Any]]:
     """Yield raw EBS snapshot dicts from DescribeSnapshots across regions.
 
-    Filters to `owner=self` so we only see the prospect's own snapshots
-    (orphan detection works on assets the prospect actually owns).
-    The full snapshot list (cross-account copies) would otherwise be huge
-    on accounts that receive a lot of shared snapshots.
+    Filters to `owner=self` so we only see the prospect's own
+    snapshots (orphan detection works on assets the prospect
+    actually owns). The full snapshot list (cross-account copies)
+    would otherwise be huge on accounts that receive a lot of
+    shared snapshots.
     """
-    regions = regions or DEFAULT_REGIONS
-    for region in regions:
-        client = session.client("ec2", region_name=region, config=ADAPTIVE_RETRY_CONFIG)
-        paginator = client.get_paginator("describe_snapshots")
-        for page in paginator.paginate(OwnerIds=["self"]):
-            for snap in page.get("Snapshots", []):
-                snap["_region"] = region
-                yield snap
+    return paginate_aws(
+        session,
+        regions,
+        service="ec2",
+        operation="describe_snapshots",
+        items_extractor=_snapshots_in_page,
+        paginate_args={"OwnerIds": ["self"]},
+    )
 
 
 def collect_instances(
@@ -111,19 +144,18 @@ def collect_instances(
 ) -> Iterator[dict[str, Any]]:
     """Yield raw EC2 instance dicts from DescribeInstances across regions.
 
-    No state filter — `ec2.stopped_with_storage` needs `state=stopped`,
-    and the rules read state themselves. Filtering at the API level
-    would force callers to re-scan for every rule.
+    No state filter — `ec2.stopped_with_storage` needs
+    `state=stopped`, and the rules read state themselves. Filtering
+    at the API level would force callers to re-scan for every
+    rule.
     """
-    regions = regions or DEFAULT_REGIONS
-    for region in regions:
-        client = session.client("ec2", region_name=region, config=ADAPTIVE_RETRY_CONFIG)
-        paginator = client.get_paginator("describe_instances")
-        for page in paginator.paginate():
-            for reservation in page.get("Reservations", []):
-                for inst in reservation.get("Instances", []):
-                    inst["_region"] = region
-                    yield inst
+    return paginate_aws(
+        session,
+        regions,
+        service="ec2",
+        operation="describe_instances",
+        items_extractor=_instances_in_page,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +165,7 @@ def collect_instances(
 
 def volume_to_resource(vol: dict[str, Any], account_id: str) -> Resource:
     """Build a canonical Resource from an EBS DescribeVolumes item."""
-    now = _now_utc()
+    now = now_utc()
     return Resource(
         account_id=account_id,
         region=vol["_region"],
@@ -151,13 +183,13 @@ def volume_to_facts(
 
     Keys: size_gb, volume_type, state, encrypted, iops, throughput,
     attached_instance_id, attached_device, create_time, region. The
-    region fact is what lets the pricing rules pick the right catalog
-    grid (EBS pricing is not region-uniform); it comes from the
-    collector-injected `_region` key, KNOWN whenever it is present.
-    State-derived booleans (is_unattached, is_gp2) are derived in the
-    rule, not emitted as facts — the catalog doesn't know what a
-    `is_unattached` fact means, and rules should encode their own
-    semantics.
+    region fact is what lets the pricing rules pick the right
+    catalog grid (EBS pricing is not region-uniform); it comes
+    from the collector-injected `_region` key, KNOWN whenever it
+    is present. State-derived booleans (is_unattached, is_gp2) are
+    derived in the rule, not emitted as facts — the catalog
+    doesn't know what a `is_unattached` fact means, and rules
+    should encode their own semantics.
     """
     vol_type = vol.get("VolumeType")
     state = vol.get("State")
@@ -171,49 +203,39 @@ def volume_to_facts(
     attached_instance = attachments[0].get("InstanceId") if attachments else None
     attached_device = attachments[0].get("Device") if attachments else None
 
-    def _fact(key: str, value: Any, state: ValueState) -> Fact:
-        return Fact(
-            resource_id=resource_id,
-            account_id=account_id,
-            namespace="aws.ec2.volume",
-            key=key,
-            value=value,
-            value_state=state,
-            source=SOURCE_NAME,
-            observed_at=observed_at,
-        )
+    _fact = make_fact_builder(
+        namespace="aws.ec2.volume",
+        source=SOURCE_NAME,
+        account_id=account_id,
+        observed_at=observed_at,
+    )
 
     return [
-        _fact("size_gb", size_gb, ValueState.KNOWN if size_gb is not None else ValueState.UNKNOWN),
-        _fact("volume_type", vol_type, ValueState.KNOWN if vol_type else ValueState.UNKNOWN),
-        _fact("state", state, ValueState.KNOWN if state else ValueState.UNKNOWN),
+        _fact(resource_id, "size_gb", size_gb, known_or_unknown(size_gb)),
+        _fact(resource_id, "volume_type", vol_type, known_or_unknown(vol_type)),
+        _fact(resource_id, "state", state, known_or_unknown(state)),
+        _fact(resource_id, "encrypted", encrypted, known_or_unknown(encrypted)),
+        _fact(resource_id, "iops", iops, known_or_unknown(iops)),
+        _fact(resource_id, "throughput", throughput, known_or_unknown(throughput)),
         _fact(
-            "encrypted",
-            encrypted,
-            ValueState.KNOWN if encrypted is not None else ValueState.UNKNOWN,
-        ),
-        _fact("iops", iops, ValueState.KNOWN if iops is not None else ValueState.UNKNOWN),
-        _fact(
-            "throughput",
-            throughput,
-            ValueState.KNOWN if throughput is not None else ValueState.UNKNOWN,
-        ),
-        _fact(
+            resource_id,
             "attached_instance_id",
             attached_instance,
-            ValueState.KNOWN if attached_instance else ValueState.UNKNOWN,
+            known_or_unknown(attached_instance),
         ),
         _fact(
+            resource_id,
             "attached_device",
             attached_device,
-            ValueState.KNOWN if attached_device else ValueState.UNKNOWN,
+            known_or_unknown(attached_device),
         ),
         _fact(
+            resource_id,
             "create_time",
             create_time.isoformat() if create_time else None,
-            ValueState.KNOWN if create_time else ValueState.UNKNOWN,
+            known_or_unknown(create_time),
         ),
-        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
+        _fact(resource_id, "region", region, known_or_unknown(region)),
     ]
 
 
@@ -257,7 +279,7 @@ def volume_to_observation(
 
 def snapshot_to_resource(snap: dict[str, Any], account_id: str) -> Resource:
     """Build a canonical Resource from an EBS DescribeSnapshots item."""
-    now = _now_utc()
+    now = now_utc()
     return Resource(
         account_id=account_id,
         region=snap["_region"],
@@ -274,12 +296,13 @@ def snapshot_to_facts(
     """Convert an EBS snapshot to canonical Facts (aws.ec2.snapshot.*).
 
     Keys: state, size_gb, storage_tier, volume_id, start_time,
-    description, region. The region fact lets snapshot_orphan pick the
-    right snapshot pricing grid (collector-injected `_region`).
-    Cross-resource facts (volume_exists) are NOT produced here — they
-    need the region's volume scan, so they are written by the
-    correlation post-pass (`correlation_facts`). Same split as volumes:
-    state-derived booleans (is_orphan) are derived in the rule.
+    description, region. The region fact lets snapshot_orphan pick
+    the right snapshot pricing grid (collector-injected `_region`).
+    Cross-resource facts (volume_exists) are NOT produced here —
+    they need the region's volume scan, so they are written by the
+    correlation post-pass (`correlation_facts`). Same split as
+    volumes: state-derived booleans (is_orphan) are derived in the
+    rule.
     """
     state = snap.get("State")
     size_gb = snap.get("VolumeSize")
@@ -289,38 +312,31 @@ def snapshot_to_facts(
     description = snap.get("Description")
     region = snap.get("_region")
 
-    def _fact(key: str, value: Any, state: ValueState) -> Fact:
-        return Fact(
-            resource_id=resource_id,
-            account_id=account_id,
-            namespace="aws.ec2.snapshot",
-            key=key,
-            value=value,
-            value_state=state,
-            source=SOURCE_NAME,
-            observed_at=observed_at,
-        )
+    _fact = make_fact_builder(
+        namespace="aws.ec2.snapshot",
+        source=SOURCE_NAME,
+        account_id=account_id,
+        observed_at=observed_at,
+    )
 
     return [
-        _fact("state", state, ValueState.KNOWN if state else ValueState.UNKNOWN),
-        _fact("size_gb", size_gb, ValueState.KNOWN if size_gb is not None else ValueState.UNKNOWN),
+        _fact(resource_id, "state", state, known_or_unknown(state)),
+        _fact(resource_id, "size_gb", size_gb, known_or_unknown(size_gb)),
         _fact(
+            resource_id,
             "storage_tier",
             storage_tier,
-            ValueState.KNOWN if storage_tier else ValueState.UNKNOWN,
+            known_or_unknown(storage_tier),
         ),
-        _fact("volume_id", volume_id, ValueState.KNOWN if volume_id else ValueState.UNKNOWN),
+        _fact(resource_id, "volume_id", volume_id, known_or_unknown(volume_id)),
         _fact(
+            resource_id,
             "start_time",
             start_time.isoformat() if start_time else None,
-            ValueState.KNOWN if start_time else ValueState.UNKNOWN,
+            known_or_unknown(start_time),
         ),
-        _fact(
-            "description",
-            description,
-            ValueState.KNOWN if description is not None else ValueState.UNKNOWN,
-        ),
-        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
+        _fact(resource_id, "description", description, known_or_unknown(description)),
+        _fact(resource_id, "region", region, known_or_unknown(region)),
     ]
 
 
@@ -349,7 +365,7 @@ def snapshot_to_observation(
 
 def instance_to_resource(inst: dict[str, Any], account_id: str) -> Resource:
     """Build a canonical Resource from an EC2 DescribeInstances item."""
-    now = _now_utc()
+    now = now_utc()
     return Resource(
         account_id=account_id,
         region=inst["_region"],
@@ -400,10 +416,10 @@ def instance_to_facts(
     attached volumes on the right catalog grid — the volumes of an
     instance are always in the instance's region (EBS volumes attach
     within an AZ), so one region fact covers the whole breakdown.
-    The cross-resource `attached_volumes` fact (volume ids resolved to
-    sizes/types against the region's volume scan) is written by the
-    correlation post-pass (`correlation_facts`), not here — a single
-    instance's raw payload doesn't carry volume sizes.
+    The cross-resource `attached_volumes` fact (volume ids resolved
+    to sizes/types against the region's volume scan) is written by
+    the correlation post-pass (`correlation_facts`), not here — a
+    single instance's raw payload doesn't carry volume sizes.
     """
     state = (inst.get("State") or {}).get("Name")
     instance_type = inst.get("InstanceType")
@@ -415,35 +431,33 @@ def instance_to_facts(
         if (ebs := m.get("Ebs") or {}).get("VolumeId")
     ]
 
-    def _fact(key: str, value: Any, state: ValueState) -> Fact:
-        return Fact(
-            resource_id=resource_id,
-            account_id=account_id,
-            namespace="aws.ec2.instance",
-            key=key,
-            value=value,
-            value_state=state,
-            source=SOURCE_NAME,
-            observed_at=observed_at,
-        )
+    _fact = make_fact_builder(
+        namespace="aws.ec2.instance",
+        source=SOURCE_NAME,
+        account_id=account_id,
+        observed_at=observed_at,
+    )
 
     return [
-        _fact("state", state, ValueState.KNOWN if state else ValueState.UNKNOWN),
+        _fact(resource_id, "state", state, known_or_unknown(state)),
         _fact(
+            resource_id,
             "instance_type",
             instance_type,
-            ValueState.KNOWN if instance_type else ValueState.UNKNOWN,
+            known_or_unknown(instance_type),
         ),
         _fact(
+            resource_id,
             "launch_time",
             launch_time.isoformat() if launch_time else None,
-            ValueState.KNOWN if launch_time else ValueState.UNKNOWN,
+            known_or_unknown(launch_time),
         ),
         # Always KNOWN: an empty list is a real observation ("no EBS
         # block devices"), not a gap. Instance-store-only instances
-        # legitimately have zero entries.
-        _fact("block_device_volume_ids", volume_ids, ValueState.KNOWN),
-        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
+        # legitimately have zero entries. This is the one fact that
+        # bypasses `known_or_unknown` by design.
+        _fact(resource_id, "block_device_volume_ids", volume_ids, ValueState.KNOWN),
+        _fact(resource_id, "region", region, known_or_unknown(region)),
     ]
 
 
@@ -462,23 +476,26 @@ def correlation_facts(
 ) -> list[Fact]:
     """Build the cross-resource facts one item's raw payload cannot carry.
 
-    Pure function over the (resource_id, raw) pairs collected in ONE
-    region — no DB access. The caller (apps/api collector) runs it after
-    all jobs of a region and persists the result.
+    Pure function over the (resource_id, raw) pairs collected in
+    ONE region — no DB access. The caller (apps/api collector)
+    runs it after all jobs of a region and persists the result.
 
-    - `aws.ec2.snapshot.volume_exists` (bool): the snapshot's VolumeId
-      was seen by THIS region's volume scan. Written for every snapshot
-      when the volume job ran — True and False are both proven facts.
+    - `aws.ec2.snapshot.volume_exists` (bool): the snapshot's
+      VolumeId was seen by THIS region's volume scan. Written for
+      every snapshot when the volume job ran — True and False are
+      both proven facts.
     - `aws.ec2.instance.attached_volumes` (list of
-      {volume_id, size_gb, volume_type}): for stopped instances only,
-      the BlockDeviceMappings volume ids resolved to sizes/types from
-      the volume scan. A volume id the scan didn't see (deleted since,
-      or in another account) is skipped — the list is what we can prove.
+      {volume_id, size_gb, volume_type}): for stopped instances
+      only, the BlockDeviceMappings volume ids resolved to
+      sizes/types from the volume scan. A volume id the scan
+      didn't see (deleted since, or in another account) is
+      skipped — the list is what we can prove.
 
-    `volumes=None` means the volume job did NOT run (or failed) in this
-    region: no correlation fact is written at all. Absence of the fact
-    is what makes the rules INCONCLUSIVE — we never write a guessed
-    "volume does not exist" (absence of proof is not proof of absence).
+    `volumes=None` means the volume job did NOT run (or failed)
+    in this region: no correlation fact is written at all.
+    Absence of the fact is what makes the rules INCONCLUSIVE —
+    we never write a guessed "volume does not exist" (absence of
+    proof is not proof of absence).
     """
     if volumes is None:
         return []

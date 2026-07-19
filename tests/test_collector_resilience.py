@@ -21,7 +21,8 @@ from unittest.mock import MagicMock
 from botocore.exceptions import ClientError
 from constat_api.collectors.aws import TargetAccount, _assume_role, collect_target
 from constat_api.orm import SourceRunORM
-from constat_aws_rds.collector import ADAPTIVE_RETRY_CONFIG, collect_db_instances
+from constat_aws_rds.collector import collect_db_instances
+from constat_core.collectors.aws import ADAPTIVE_RETRY_CONFIG
 from sqlalchemy.orm import Session
 
 from tests.conftest import make_rds_db_dict

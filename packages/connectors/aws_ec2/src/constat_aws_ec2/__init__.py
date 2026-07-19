@@ -1,8 +1,6 @@
 """AWS EC2/EBS connector — boto3 DescribeInstances/Volumes/Snapshots."""
 
 from constat_aws_ec2.collector import (
-    ADAPTIVE_RETRY_CONFIG,
-    DEFAULT_REGIONS,
     INSTANCE_RESOURCE_TYPE,
     SNAPSHOT_RESOURCE_TYPE,
     SOURCE_NAME,
@@ -20,8 +18,6 @@ from constat_aws_ec2.collector import (
 )
 
 __all__ = [
-    "ADAPTIVE_RETRY_CONFIG",
-    "DEFAULT_REGIONS",
     "INSTANCE_RESOURCE_TYPE",
     "SNAPSHOT_RESOURCE_TYPE",
     "SOURCE_NAME",

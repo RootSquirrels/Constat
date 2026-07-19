@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 import boto3
-from constat_aws_rds.collector import ADAPTIVE_RETRY_CONFIG
+from constat_core.collectors.aws import ADAPTIVE_RETRY_CONFIG
 
 from constat_api.collectors.aws import TargetAccount, _assume_role
 

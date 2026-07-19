@@ -32,7 +32,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import boto3
@@ -59,12 +59,16 @@ from constat_aws_ec2.collector import (
     SOURCE_NAME as EC2_SOURCE_NAME,
 )
 from constat_aws_rds.collector import (
-    ADAPTIVE_RETRY_CONFIG,
-    DEFAULT_REGIONS,
-    collect_db_instances,
+    collect_db_instances as collect_db_instances,  # re-export: tests patch this attribute
+)
+from constat_aws_rds.collector import (
     db_to_facts,
     db_to_observation,
     db_to_resource,
+)
+from constat_core.collectors.aws import (
+    ADAPTIVE_RETRY_CONFIG,
+    DEFAULT_REGIONS,
 )
 from constat_core.models import Fact, Observation, Resource
 from sqlalchemy.orm import Session
@@ -306,13 +310,13 @@ def _native_id_for_job(job: ScanJob, raw: dict[str, Any]) -> str:
     which field carries the cloud-unique id (ARN for RDS, VolumeId for
     EBS, SnapshotId for snapshots, InstanceId for EC2)."""
     if job.key == "rds":
-        return raw["DBInstanceArn"]
+        return cast(str, raw["DBInstanceArn"])
     if job.key == "ec2_volume":
-        return raw["VolumeId"]
+        return cast(str, raw["VolumeId"])
     if job.key == "ec2_snapshot":
-        return raw["SnapshotId"]
+        return cast(str, raw["SnapshotId"])
     if job.key == "ec2_instance":
-        return raw["InstanceId"]
+        return cast(str, raw["InstanceId"])
     raise ValueError(f"unknown job key: {job.key}")
 
 

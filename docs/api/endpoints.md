@@ -343,7 +343,7 @@ arrives when the scan is done (or has failed per-region).
 
 - `targets`: at least one. `role_arn` null = use the base session
   (single-account mode, useful in dev). `regions` null = use the
-  default set in `packages/connectors/aws_rds/src/constat_aws_rds/collector.py::DEFAULT_REGIONS`.
+  default set in `packages/core/src/constat_core/collectors/aws.py::DEFAULT_REGIONS` (§III.3).
 - `resource_types` (per target): which AWS resource types to scan.
   Accepted keys: `rds`, `ec2_volume`, `ec2_snapshot`, `ec2_instance`.
   Default (null) = RDS only. Unknown keys are rejected (HTTP 422).
