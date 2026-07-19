@@ -17,7 +17,9 @@ figure priced on the wrong grid is not defensible in front of a CFO.
 Lookups for an uncatalogued region fall back to the us-east-1 grid and
 the returned price row carries the region it was actually priced in —
 callers must surface `price_region_exact=False` instead of silently
-presenting a us-east-1 number as local.
+presenting a us-east-1 number as local. Callers that don't know
+their resource's region (the V1 default) use the same us-east-1
+grid.
 
 EBS pricing has two components per volume type:
 - Storage cost ($/GB-month) — what you pay for the provisioned size.
@@ -57,7 +59,7 @@ EBS_CATALOG_VERSION = "2026-07-19"
 
 # The fallback grid when a region isn't catalogued. us-east-1 is the
 # region AWS uses in its own pricing examples, so it stays the default
-# for region-less callers (backward compatibility).
+# for region-less callers.
 DEFAULT_REGION = "us-east-1"
 
 _EBS_PRICING_URL = "https://aws.amazon.com/ebs/pricing/"
@@ -129,9 +131,6 @@ EBS_PRICING_BY_REGION: dict[str, dict[str, EbsPrice]] = {
     for region, grid in _STORAGE_GRID_USD.items()
 }
 
-# Backward-compatible alias: the us-east-1 grid.
-EBS_PRICING: dict[str, EbsPrice] = EBS_PRICING_BY_REGION[DEFAULT_REGION]
-
 
 @dataclass(frozen=True)
 class EbsSnapshotPrice:
@@ -168,14 +167,11 @@ EBS_SNAPSHOT_PRICING_BY_REGION: dict[str, dict[str, EbsSnapshotPrice]] = {
     for region, grid in _SNAPSHOT_GRID_USD.items()
 }
 
-# Backward-compatible alias: the us-east-1 grid.
-EBS_SNAPSHOT_PRICING: dict[str, EbsSnapshotPrice] = EBS_SNAPSHOT_PRICING_BY_REGION[DEFAULT_REGION]
-
 
 def ebs_price_per_gb_month(volume_type: str, region: str | None = None) -> EbsPrice | None:
     """Return the price entry for an EBS volume type, or None if unknown.
 
-    `region=None` prices on the us-east-1 grid (backward compatibility).
+    `region=None` prices on the us-east-1 grid.
     A catalogued region prices on its own grid; an uncatalogued region
     (or a type missing from that region's grid) falls back to us-east-1
     and the returned row's `region` says so — use `price_region_exact`

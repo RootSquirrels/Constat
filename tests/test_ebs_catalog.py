@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from constat_core.catalog.ebs import (
     EBS_CATALOG_VERSION,
-    EBS_PRICING,
+    EBS_PRICING_BY_REGION,
     ebs_price_per_gb_month,
     ebs_snapshot_price_per_gb_month,
     monthly_storage_cost,
@@ -60,7 +60,7 @@ def test_gp3_is_cheaper_than_gp2():
 def test_all_volume_types_have_a_review_date():
     """Every catalogued price row must carry a review date. A price
     without a review date is a price nobody can defend at a sales call."""
-    for vt, p in EBS_PRICING.items():
+    for vt, p in EBS_PRICING_BY_REGION["us-east-1"].items():
         assert p.review_date != "", f"{vt} missing review_date"
         # ISO date format
         assert len(p.review_date) == 10
@@ -69,7 +69,7 @@ def test_all_volume_types_have_a_review_date():
 def test_all_volume_types_have_a_source_url():
     """Every catalogued price row must link to the AWS pricing page.
     Auditors and customers will click through; broken links kill trust."""
-    for vt, p in EBS_PRICING.items():
+    for vt, p in EBS_PRICING_BY_REGION["us-east-1"].items():
         assert p.source_url.startswith("https://aws.amazon.com"), (
             f"{vt} source_url doesn't look like an AWS page: {p.source_url}"
         )

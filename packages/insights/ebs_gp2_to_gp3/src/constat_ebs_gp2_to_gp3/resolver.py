@@ -1,35 +1,35 @@
 """EBS gp2 → gp3 insight.
 
-The cheapest, most defensible FinOps win: AWS EBS gp2 costs $0.10/GB-month,
-gp3 costs $0.08/GB-month for the same storage. A 20% storage saving, with
-no behavior change and no migration window — gp3 is the default for new
-volumes since 2021 and is API-compatible (resize / change-type in place,
-online, no downtime).
+The cheapest, most defensible FinOps win: AWS EBS gp2 costs
+$0.10/GB-month, gp3 costs $0.08/GB-month for the same storage.
+A 20% storage saving, with no behavior change and no migration
+window — gp3 is the default for new volumes since 2021 and is
+API-compatible (resize / change-type in place, online, no
+downtime).
 
-MATCH: a volume with type=gp2 and a real saving > $0.50/month.
-NO_MATCH: any other volume type.
-INCONCLUSIVE: a fact is missing (no type, no size, no region) or the
-  catalog can't price the volume. The region fact is mandatory — the
-  gp2/gp3 delta is not region-uniform, so a saving priced without
-  knowing the region is not defensible. A region the catalog doesn't
-  cover still matches on the us-east-1 fallback grid, with
+MATCH: a volume with type=gp2 and a real saving > MIN_SAVINGS.
+NO_MATCH: any other volume type, or a gp2 below the noise
+  threshold.
+INCONCLUSIVE: a fact is missing or the catalog can't price the
+  volume. The region fact is mandatory — the gp2/gp3 delta is not
+  region-uniform, so a saving priced without knowing the region
+  is not defensible. A region the catalog doesn't cover still
+  matches on the us-east-1 fallback grid, with
   `price_region_exact: false` in the payload.
 
-Payload carries the monthly saving stamped `value_basis=ESTIMATED`
-(catalog-derived until a FOCUS line confirms the actual charge), the
-region grid used (`pricing_region`), and whether that grid is the
-volume's own region (`price_region_exact`). Amounts are USD
-(`source_currency`); the EUR conversion happens at export/display.
-
-The dedupe rule "one volume = one insight" is enforced by the runner's
-delete-and-replace. Re-running the rule does not accumulate duplicates.
+Chantier III.2 of the roadmap consolidation: the
+`size_gb x $/GB-month` arithmetic, the $500/$50 severity
+thresholds, and the payload assembly live in
+`constat_core.insights.storage`. This file is the rule-specific
+config (which volume types, which savings breakdown) + a thin
+wrapper. The existing test suite passes unchanged.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 from uuid import UUID
 
 from constat_core.catalog.ebs import (
@@ -37,110 +37,46 @@ from constat_core.catalog.ebs import (
     ebs_price_per_gb_month,
     price_region_exact,
 )
-from constat_core.models import Fact, Insight, Severity, ValueState
+from constat_core.insights.storage import (
+    StorageCost,
+    StorageInconclusiveError,
+    StorageInsightResult,
+    StorageRuleConfig,
+    evaluate_storage,
+)
+from constat_core.models import Fact
 
 RULE_NAME = "ebs_gp2_to_gp3"
 SOURCE_NAME = "aws_ec2"
 
-# Minimum monthly savings to emit (filters out tiny volumes that round
-# to $0.00 and would create noise on the dashboard). $0.50/month is
-# roughly a 64GB gp2 → gp3 move — below that, the operational cost
-# of the migration (tickets, change windows) probably exceeds the
-# savings. The operator can still see all volumes in the inventory;
-# the insight is for "what to act on this quarter".
+# Minimum monthly savings to emit (filters out tiny volumes that
+# round to $0.00 and would create noise on the dashboard).
+# $0.50/month is roughly a 64GB gp2 → gp3 move — below that, the
+# operational cost of the migration (tickets, change windows)
+# probably exceeds the savings. The operator can still see all
+# volumes in the inventory; the insight is for "what to act on
+# this quarter".
 MIN_SAVINGS_USD_PER_MONTH = 0.50
 
 
-@dataclass(frozen=True)
-class InsightResult:
-    """Outcome of evaluating one resource.
-
-    - insights: gaps that should be surfaced (will be inserted into insights table)
-    - inconclusive_reasons: facts that, if present, would let us conclude.
-      A non-empty list means "we don't know yet" and produces an Inconclusive
-      record — never a silent skip.
-    """
-
-    insights: list[Insight] = field(default_factory=list)
-    inconclusive_reasons: list[str] = field(default_factory=list)
-
-    @property
-    def is_conclusive(self) -> bool:
-        return not self.inconclusive_reasons
-
-    @property
-    def has_gap(self) -> bool:
-        return bool(self.insights)
+def _should_emit(idx: dict[str, Fact]) -> bool:
+    """NO_MATCH for everything that isn't gp2. Only migration
+    candidates emit."""
+    return cast(str, idx["aws.ec2.volume.volume_type"].value) == "gp2"
 
 
-def _index_facts(facts: Iterable[Fact]) -> dict[str, Fact]:
-    return {f"{f.namespace}.{f.key}": f for f in facts}
-
-
-def _get(idx: dict[str, Fact], dotted_key: str) -> Fact | None:
-    return idx.get(dotted_key)
-
-
-def evaluate(
-    resource_id: UUID,
-    facts: Iterable[Fact],
-    *,
-    today: date | None = None,
-) -> InsightResult:
-    """Evaluate one EBS volume.
-
-    Returns an InsightResult with:
-    - insights: a single Insight if the volume is gp2 with a real saving,
-      else [].
-    - inconclusive_reasons: missing facts that block assessment.
-
-    NO_MATCH semantics: gp3/io1/io2/st1/sc1/standard/unknown — these are
-    not migration candidates, so we emit nothing. The runner turns an
-    empty insights list into a NO_MATCH for the caller.
-    """
-    idx = _index_facts(facts)
-
-    volume_type_fact = _get(idx, "aws.ec2.volume.volume_type")
-    size_fact = _get(idx, "aws.ec2.volume.size_gb")
-    region_fact = _get(idx, "aws.ec2.volume.region")
-
-    inconclusive: list[str] = []
-
-    # Gate 1: volume_type must be KNOWN.
-    if volume_type_fact is None or volume_type_fact.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.ec2.volume.volume_type")
-    # Gate 2: size must be KNOWN.
-    if size_fact is None or size_fact.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.ec2.volume.size_gb")
-    # Gate 3: region must be KNOWN — the gp2/gp3 delta is not
-    # region-uniform, so we can't price honestly without it.
-    if region_fact is None or region_fact.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.ec2.volume.region")
-
-    if inconclusive:
-        # Missing facts — never silent, always INCONCLUSIVE so the user
-        # sees the gap in their data.
-        return InsightResult(insights=[], inconclusive_reasons=inconclusive)
-
-    volume_type = volume_type_fact.value  # type: ignore[union-attr]
-    size_gb = int(size_fact.value)  # type: ignore[arg-type]
-    region = str(region_fact.value)  # type: ignore[union-attr]
-
-    # NO_MATCH for everything that isn't gp2. We only emit insights
-    # for migration candidates.
-    if volume_type != "gp2":
-        return InsightResult()
-
-    # gp2 → gp3 comparison on the volume's region grid. Both prices
-    # must be in the catalog; if not, we don't have a defensible
-    # saving number, so INCONCLUSIVE.
+def _compute_cost(idx: dict[str, Fact], today: date) -> StorageCost | None:
+    """The gp2 → gp3 comparison on the volume's region grid. Both
+    prices must be in the catalog; if not, INCONCLUSIVE."""
+    region = cast(str, idx["aws.ec2.volume.region"].value)
+    try:
+        size_gb = int(idx["aws.ec2.volume.size_gb"].value)
+    except (TypeError, ValueError) as exc:
+        raise StorageInconclusiveError("aws.ec2.volume.size_gb.malformed") from exc
     gp2_price = ebs_price_per_gb_month("gp2", region)
     gp3_price = ebs_price_per_gb_month("gp3", region)
     if gp2_price is None or gp3_price is None:
-        return InsightResult(
-            insights=[],
-            inconclusive_reasons=["catalog.gp2_or_gp3_price_missing"],
-        )
+        raise StorageInconclusiveError("catalog.gp2_or_gp3_price_missing") from None
 
     current_monthly = round(gp2_price.usd_per_gb_month * size_gb, 2)
     target_monthly = round(gp3_price.usd_per_gb_month * size_gb, 2)
@@ -148,75 +84,80 @@ def evaluate(
 
     if savings < MIN_SAVINGS_USD_PER_MONTH:
         # Below the noise threshold: NO_MATCH, not an insight. Keeps
-        # the dashboard clean for fleets with many tiny scratch volumes.
-        return InsightResult()
+        # the dashboard clean for fleets with many tiny scratch
+        # volumes. The shared function treats compute_cost returning
+        # None as a NO_MATCH.
+        return None
 
-    return InsightResult(
-        insights=[
-            _make_insight(
-                resource_id=resource_id,
-                account_id=volume_type_fact.account_id,  # type: ignore[union-attr]
-                size_gb=size_gb,
-                current_monthly_usd=current_monthly,
-                target_monthly_usd=target_monthly,
-                savings_monthly_usd=savings,
-                pricing_region=gp2_price.region,
-                price_region_exact=price_region_exact(region, gp2_price)
-                and price_region_exact(region, gp3_price),
-            )
-        ]
-    )
-
-
-def _make_insight(
-    *,
-    resource_id: UUID,
-    account_id: str | None,
-    size_gb: int,
-    current_monthly_usd: float,
-    target_monthly_usd: float,
-    savings_monthly_usd: float,
-    pricing_region: str,
-    price_region_exact: bool,
-) -> Insight:
-    # Severity thresholds: $50/month is "a real number" the operator
-    # notices; $500/month is "a fleet-level problem". The dashboard
-    # sorts by $ to surface the biggest wins regardless of severity.
-    if savings_monthly_usd >= 500:
-        severity = Severity.CRITICAL
-    elif savings_monthly_usd >= 50:
-        severity = Severity.WARNING
-    else:
-        severity = Severity.INFO
-
-    title = f"EBS gp2 volume ({size_gb} GB) costs ${savings_monthly_usd:.2f}/month more than gp3"
-    recommendation = (
-        f"Migrate to gp3 (online, no downtime): ${current_monthly_usd:.2f}/month "
-        f"→ ${target_monthly_usd:.2f}/month. Same API, no behavior change, "
-        f"~20% storage saving."
-    )
-
-    return Insight(
-        rule_name=RULE_NAME,
-        resource_id=resource_id,
-        account_id=account_id,
-        severity=severity,
-        title=title,
-        payload={
+    return StorageCost(
+        monthly_usd=savings,
+        monetary_payload_key="savings_monthly_usd",
+        pricing_region=gp2_price.region,
+        price_region_exact=(
+            price_region_exact(region, gp2_price)
+            and price_region_exact(region, gp3_price)
+        ),
+        extras={
             "volume_size_gb": size_gb,
             "current_volume_type": "gp2",
             "target_volume_type": "gp3",
-            "current_monthly_usd": current_monthly_usd,
-            "target_monthly_usd": target_monthly_usd,
-            "savings_monthly_usd": savings_monthly_usd,
-            "savings_pct": round(100 * savings_monthly_usd / current_monthly_usd, 1)
-            if current_monthly_usd > 0
+            "current_monthly_usd": current_monthly,
+            "target_monthly_usd": target_monthly,
+            "savings_pct": round(100 * savings / current_monthly, 1)
+            if current_monthly > 0
             else 0.0,
-            "value_basis": "ESTIMATED",
-            "pricing_region": pricing_region,
-            "price_region_exact": price_region_exact,
-            "source_currency": "USD",
-            "recommendation": recommendation,
-            "catalog_version": EBS_CATALOG_VERSION,
         },
+    )
+
+
+def _build_title(idx: dict[str, Fact], cost: StorageCost) -> str:
+    """The insight title goes onto the operator's dashboard. It
+    must answer 'what is this about' and 'how much will I save'
+    at a glance."""
+    size_gb = cost.extras["volume_size_gb"]
+    return f"EBS gp2 volume ({size_gb} GB) costs ${cost.monthly_usd:.2f}/month more than gp3"
+
+
+def _build_recommendation(idx: dict[str, Fact], cost: StorageCost) -> str:
+    """Migrate to gp3 (online, no downtime)."""
+    return (
+        f"Migrate to gp3 (online, no downtime): ${cost.extras['current_monthly_usd']:.2f}/month "
+        f"→ ${cost.extras['target_monthly_usd']:.2f}/month. Same API, no behavior change, "
+        f"~20% storage saving."
+    )
+
+
+CONFIG = StorageRuleConfig(
+    rule_name=RULE_NAME,
+    required_facts=(
+        "aws.ec2.volume.volume_type",
+        "aws.ec2.volume.size_gb",
+        "aws.ec2.volume.region",
+    ),
+    should_emit=_should_emit,
+    compute_cost=_compute_cost,
+    build_title=_build_title,
+    build_recommendation=_build_recommendation,
+)
+
+
+# Re-export so the rule's test file (which imports `InsightResult`
+# from this module) keeps working without touching the test.
+InsightResult = StorageInsightResult
+
+
+def evaluate(
+    resource_id: UUID,
+    facts: Iterable[Fact],
+    *,
+    today: date | None = None,
+) -> StorageInsightResult:
+    """Evaluate one EBS volume. Returns the same InsightResult
+    shape as the per-rule evaluator did before the refactor."""
+    return evaluate_storage(
+        resource_id,
+        facts,
+        CONFIG,
+        today=today,
+        catalog_version=EBS_CATALOG_VERSION,
     )

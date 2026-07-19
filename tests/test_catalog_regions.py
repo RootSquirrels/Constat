@@ -8,10 +8,7 @@ files (AmazonEC2 offer, publication 2026-07-17), reviewed 2026-07-19.
 from __future__ import annotations
 
 from constat_core.catalog.ebs import (
-    DEFAULT_REGION,
-    EBS_PRICING,
     EBS_PRICING_BY_REGION,
-    EBS_SNAPSHOT_PRICING,
     EBS_SNAPSHOT_PRICING_BY_REGION,
     ebs_price_per_gb_month,
     ebs_snapshot_price_per_gb_month,
@@ -81,13 +78,6 @@ def test_every_region_grid_covers_both_snapshot_tiers() -> None:
         for tier, rate in expected.items():
             assert grid[tier].usd_per_gb_month == rate
             assert grid[tier].region == region
-
-
-def test_backward_compatible_aliases_are_us_east_1() -> None:
-    """EBS_PRICING / EBS_SNAPSHOT_PRICING stay the us-east-1 grids."""
-    assert DEFAULT_REGION == "us-east-1"
-    assert EBS_PRICING is EBS_PRICING_BY_REGION["us-east-1"]
-    assert EBS_SNAPSHOT_PRICING is EBS_SNAPSHOT_PRICING_BY_REGION["us-east-1"]
 
 
 # ---------------------------------------------------------------------------
