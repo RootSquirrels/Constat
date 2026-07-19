@@ -1,74 +1,104 @@
 """RDS PostgreSQL Extended Support insight.
 
-Returns MATCH (gap found, emits Insight), NO_MATCH (no gap), or INCONCLUSIVE
-(missing facts that block assessment). The INCONCLUSIVE branch is critical:
-the GTM promise is "we tell you what you don't know about your fleet" —
-disappearing silently when facts are missing is exactly the failure mode
-the product must avoid (criterion n°15).
+Chantier III.1: the evaluation logic (4 fact gates, 3-branch
+severity, payload assembly) lives in `constat_core.insights.eol`.
+This file is the engine-specific config (catalog lookup, major
+parser, display name) + a thin wrapper. The existing test suite
+passes unchanged.
 
-Region honesty: Extended Support pricing is not region-uniform, so the
-aws.rds.region fact is mandatory — missing/UNKNOWN region = INCONCLUSIVE,
-never a silently mis-gridded amount. Facts written before the collector
-emitted the region fact lack it; the next daily scan heals them. A region
-the catalog doesn't cover still matches, on the us-east-1 fallback grid,
-with `price_region_exact: false` — the payload says which grid priced it
-(`pricing_region`). Amounts are USD (`source_currency`).
+Region honesty: Extended Support pricing is not region-uniform, so
+the aws.rds.region fact is mandatory — missing/UNKNOWN region =
+INCONCLUSIVE, never a silently mis-gridded amount. The shared
+function emits the inconclusive reason; this file just provides
+the matcher config that picks the PostgreSQL catalog.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
 
 from constat_core.catalog.aws import (
     CATALOG_VERSION,
-    PostgresEOLInfo,
     es_price_per_vcpu_hour,
     extended_support_tier,
     postgres_eol_info,
 )
-from constat_core.models import Fact, Insight, Severity, ValueState
+from constat_core.insights.eol import (
+    EngineEolMatcher,
+    EolInsightResult,
+    EolRuleConfig,
+    evaluate_eol,
+)
+from constat_core.models import Fact
 
 RULE_NAME = "rds_eol"
 
-# Alert when EOL is within this window. Beyond this, the upgrade is a roadmap
-# item, not an écart.
-EOL_ALERT_WINDOW_DAYS = 90
 
-# 730h = average month (365.25 * 24 / 12). Used for cost estimation.
-HOURS_PER_MONTH = 730
+def _parse_postgres_major(raw: str) -> int | None:
+    """PostgreSQL major from a raw engine_version fact (e.g. "14.7" -> 14).
 
-
-@dataclass(frozen=True)
-class InsightResult:
-    """Outcome of evaluating one resource.
-
-    - insights: gaps that should be surfaced (will be inserted into insights table)
-    - inconclusive_reasons: facts that, if present, would let us conclude.
-      A non-empty list means "we don't know yet" and produces an Inconclusive
-      record — never a silent skip.
+    Returns None on malformed input; the shared function emits the
+    inconclusive reason in that case.
     """
-
-    insights: list[Insight] = field(default_factory=list)
-    inconclusive_reasons: list[str] = field(default_factory=list)
-
-    @property
-    def is_conclusive(self) -> bool:
-        return not self.inconclusive_reasons
-
-    @property
-    def has_gap(self) -> bool:
-        return bool(self.insights)
+    parts = raw.split(".")
+    if not parts or not parts[0].isdigit():
+        return None
+    return int(parts[0])
 
 
-def _index_facts(facts: Iterable[Fact]) -> dict[str, Fact]:
-    return {f"{f.namespace}.{f.key}": f for f in facts}
+def _postgres_upgrade_target(major: int) -> str:
+    """The major + 1 rule is the AWS-published upgrade path for
+    PostgreSQL LTS-to-LTS (11 -> 12 -> 13 -> 14 -> 15)."""
+    return f"PostgreSQL {major + 1}"
 
 
-def _get(idx: dict[str, Fact], dotted_key: str) -> Fact | None:
-    return idx.get(dotted_key)
+# The matcher's `compute_tier` and `price_per_vcpu_hour` are
+# imported from `constat_core.catalog.aws`. The shared
+# `_make_insight` calls them with the EOL info + current date (for
+# tier) and tier + region (for price). The arithmetic
+# `vcpu x tier rate x 730h` lives in `_make_insight`, not here.
+#
+# `compute_tier` has a different shape for the two catalog types:
+# - `extended_support_tier(eol_date, today)` for `PostgresEOLInfo`
+#   (EOL date is the only input)
+# - `engine_extended_support_tier(info, today)` for `EngineEOLInfo`
+#   (the full info object, because year-3 may have a different start
+#   date than EOL + 2 years)
+# The shared function calls `compute_tier(eol_info, current)` — the
+# PG matcher adapts the signature to take the whole info by passing
+# only the eol_date.
+def _pg_compute_tier(info, today):
+    return extended_support_tier(info.eol_date, today)
+
+
+POSTGRES_MATCHER = EngineEolMatcher(
+    engine_value="postgres",
+    display_name="RDS PostgreSQL",
+    service_canonical="managed_postgres",
+    lookup_eol_info=postgres_eol_info,
+    parse_major=_parse_postgres_major,
+    format_major=str,
+    upgrade_target=_postgres_upgrade_target,
+    compute_tier=_pg_compute_tier,
+    price_per_vcpu_hour=es_price_per_vcpu_hour,
+    # rds_eol's pre-refactor payload used the `vcpu` key (not
+    # `vcpu_count`) and did not write a `value_basis` field. The
+    # test_monetary_extraction + test_reconcile_with_azure_focus
+    # suites both pin those shapes; the matcher keeps the old
+    # behavior so they pass unchanged. New engines: leave the
+    # defaults (`vcpu_count` + `"ESTIMATED"`).
+    vcpu_payload_key="vcpu",
+    value_basis=None,
+)
+
+CONFIG = EolRuleConfig(rule_name=RULE_NAME, engines=(POSTGRES_MATCHER,))
+
+
+# Re-export so the rule's test file (which imports `InsightResult`
+# from this module) keeps working without touching the test.
+InsightResult = EolInsightResult
 
 
 def evaluate(
@@ -76,184 +106,13 @@ def evaluate(
     facts: Iterable[Fact],
     *,
     today: date | None = None,
-) -> InsightResult:
-    """Evaluate one RDS resource.
-
-    Returns an InsightResult with:
-    - insights: a single Insight if a gap is found, else []
-    - inconclusive_reasons: what's missing, if anything blocks assessment
-    """
-    idx = _index_facts(facts)
-
-    engine = _get(idx, "aws.rds.engine")
-    version = _get(idx, "aws.rds.engine_version")
-    vcpu = _get(idx, "aws.rds.vcpu")
-    region = _get(idx, "aws.rds.region")
-
-    inconclusive: list[str] = []
-
-    # Gate 1: engine must be KNOWN and postgres.
-    if engine is None or engine.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.rds.engine")
-    elif engine.value != "postgres":
-        # Definitive NO_MATCH: we know it's not postgres, nothing to say.
-        return InsightResult()
-
-    # Gate 2: version must be KNOWN.
-    if version is None or version.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.rds.engine_version")
-
-    # Gate 3: vcpu must be KNOWN (we can't price without it).
-    if vcpu is None or vcpu.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.rds.vcpu")
-
-    # Gate 4: region must be KNOWN — Extended Support pricing is not
-    # region-uniform, so we can't price honestly without knowing the
-    # region. Facts written before the collector emitted this fact are
-    # healed by the next daily scan.
-    if region is None or region.value_state != ValueState.KNOWN:
-        inconclusive.append("aws.rds.region")
-
-    if inconclusive:
-        # We don't have enough to conclude. Don't emit a false negative — emit
-        # an Inconclusive so the user sees the gap in their data.
-        return InsightResult(insights=[], inconclusive_reasons=inconclusive)
-
-    # Parse major version (e.g. "14.7" -> 14).
-    try:
-        major = int(str(version.value).split(".")[0])  # type: ignore[union-attr]
-    except (ValueError, IndexError):
-        return InsightResult(insights=[], inconclusive_reasons=["aws.rds.engine_version.malformed"])
-
-    # Parse the vCPU count. Gate 3 guarantees the fact is KNOWN, but the
-    # value can still be malformed (a fact is JSON, not a schema). Without
-    # it we cannot price the finding — INCONCLUSIVE, never a silent skip.
-    try:
-        vcpu_count = int(vcpu.value)  # type: ignore[union-attr, arg-type]
-    except (TypeError, ValueError):
-        return InsightResult(insights=[], inconclusive_reasons=["aws.rds.vcpu.malformed"])
-
-    eol_info = postgres_eol_info(major)
-    if eol_info is None:
-        # LTS (16+) or unknown version. No alert.
-        return InsightResult()
-
-    current = today or date.today()
-
-    if current > eol_info.end_of_extended_support:
-        # AWS will force-upgrade. Critical.
-        days_to_force = (eol_info.end_of_extended_support - current).days
-        return InsightResult(
-            insights=[
-                _make_insight(
-                    resource_id=resource_id,
-                    account_id=engine.account_id,  # type: ignore[union-attr]
-                    major=major,
-                    version_value=version.value,  # type: ignore[arg-type]
-                    eol_info=eol_info,
-                    current=current,
-                    vcpu_count=vcpu_count,
-                    region=str(region.value),  # type: ignore[union-attr]
-                    days_to_event=days_to_force,
-                    severity=Severity.CRITICAL,
-                    title=f"RDS PostgreSQL {major} will be force-upgraded in {days_to_force} days",
-                    recommendation=(
-                        f"AWS will force-upgrade to {major + 1} on "
-                        f"{eol_info.end_of_extended_support.isoformat()}. "
-                        f"Upgrade manually now to control timing."
-                    ),
-                )
-            ]
-        )
-
-    days_to_eol = (eol_info.eol_date - current).days
-    if days_to_eol > EOL_ALERT_WINDOW_DAYS:
-        # Not yet urgent. Roadmap item, not an écart.
-        return InsightResult()
-
-    if days_to_eol <= 0:
-        # Past EOL, still in Extended Support.
-        severity = Severity.CRITICAL
-        title = f"RDS PostgreSQL {major} is in Extended Support"
-        recommendation = f"Upgrade to PostgreSQL {major + 1} LTS now to stop Extended Support fees"
-    else:
-        severity = Severity.WARNING
-        title = f"RDS PostgreSQL {major} reaches EOL in {days_to_eol} days"
-        recommendation = (
-            f"Plan upgrade to PostgreSQL {major + 1} LTS before {eol_info.eol_date.isoformat()}"
-        )
-
-    return InsightResult(
-        insights=[
-            _make_insight(
-                resource_id=resource_id,
-                account_id=engine.account_id,  # type: ignore[union-attr]
-                major=major,
-                version_value=version.value,  # type: ignore[arg-type]
-                eol_info=eol_info,
-                current=current,
-                vcpu_count=vcpu_count,
-                region=str(region.value),  # type: ignore[union-attr]
-                days_to_event=days_to_eol,
-                severity=severity,
-                title=title,
-                recommendation=recommendation,
-            )
-        ]
-    )
-
-
-def _make_insight(
-    *,
-    resource_id: UUID,
-    account_id: str | None,
-    major: int,
-    version_value: str,
-    eol_info: PostgresEOLInfo,
-    current: date,
-    vcpu_count: int,
-    region: str,
-    days_to_event: int,
-    severity: Severity,
-    title: str,
-    recommendation: str,
-) -> Insight:
-    tier = extended_support_tier(eol_info.eol_date, current)
-    rate, pricing_region, region_exact = es_price_per_vcpu_hour(tier, region)
-    # The number the whole product exists to produce. Regression note:
-    # the tiering refactor dropped this multiplication (vcpu was gated
-    # but never consumed) and no test caught it — the committee did.
-    # It is now covered by tests/test_monetary_extraction.py, which
-    # ties "rule emits money" to "restitution extracts money".
-    monthly_usd = round(vcpu_count * rate * HOURS_PER_MONTH, 2)
-
-    return Insight(
-        rule_name=RULE_NAME,
-        resource_id=resource_id,
-        account_id=account_id,
-        severity=severity,
-        title=title,
-        payload={
-            "engine_version": version_value,
-            "major_version": major,
-            "eol_date": eol_info.eol_date.isoformat(),
-            "end_of_extended_support": eol_info.end_of_extended_support.isoformat(),
-            "days_to_event": days_to_event,
-            "pricing_tier": tier,
-            "pricing_usd_per_vcpu_hour": rate,
-            "pricing_tier_label": "year_1_2" if tier == "year_1_2" else "year_3_plus",
-            "pricing_region": pricing_region,
-            "price_region_exact": region_exact,
-            "source_currency": "USD",
-            "vcpu": vcpu_count,
-            # Canonical monetary key — registered in constat_core.monetary
-            # (same key as mysql_eol / aurora_eol).
-            "extended_support_monthly_usd": monthly_usd,
-            "recommendation": recommendation,
-            # Source-of-truth stamp: which catalog version produced this insight.
-            # Sales can cite "based on AWS RDS PG release calendar dated
-            # 2026-07-18" — defensible, traceable, auditable. V2: the version
-            # moves to whatever the reference_datasets provider exposes.
-            "catalog_version": CATALOG_VERSION,
-        },
+) -> EolInsightResult:
+    """Evaluate one RDS resource. Returns the same InsightResult
+    shape as the per-rule evaluators did before the refactor."""
+    return evaluate_eol(
+        resource_id,
+        facts,
+        CONFIG,
+        today=today,
+        catalog_version=CATALOG_VERSION,
     )
