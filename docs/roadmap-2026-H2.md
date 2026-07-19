@@ -1,0 +1,104 @@
+# Roadmap H2-2026 — SOTA par l'exécution
+
+> Feuille de route active. **Ne liste que ce qui reste à faire** — les items
+> terminés sont archivés dans `docs/roadmap-done.md` (avec preuves et niveau
+> d'honnêteté FAIT vs CODE LIVRÉ).
+> Contexte : le comité d'évaluation client a produit ~25 corrections sur un
+> système que trois audits statiques avaient jugé « SOTA ». Cette roadmap
+> corrige les findings ET la méthode qui les a laissés passer.
+
+## Pourquoi « SOTA » a cassé — trois causes, trois réponses
+
+1. **Les audits étaient statiques** (lecture de code, rien d'exécuté). Tout ce
+   qui ne se voit qu'à l'exécution — npm ci cassé, frontend en 401, HTTP en
+   clair *appliqué*, purge jamais lancée — était noté « non vérifiable » puis
+   scoré avec optimisme. → Réponse : **chantier 0, la preuve par exécution
+   devient le gate**, plus jamais la lecture seule.
+2. **Le verdict était périmétré** (« SOTA pour le périmètre vendu ») ; le
+   comité a évalué **le produit qu'on achète** : déploiement, ROI vérifiable,
+   onboarding réel. → Réponse : la definition of done change (§ méthode).
+3. **Les seuils initiaux étaient auto-référencés** (« asynchrone au-delà de
+   5 comptes ») alors que l'ICP écrit commence à 5 et se vend à 35.
+   → Réponse : **les seuils dérivent de l'ICP**, pas du confort d'ingénierie.
+   Cette roadmap ignore les anciens seuils quand l'évolution est pertinente.
+
+**Nouvelle definition of done** (s'applique à chaque item ci-dessous) :
+démontré en exécution, sur environnement déployé, avec artefact observable
+(run CI, capture, ligne de journal datée). « Le code le fait » ne suffit plus.
+
+Ce qu'on continue de ne PAS faire (over-engineering exclu) : Kubernetes,
+Kafka/streaming, Neo4j, DSL de règles, data lake, microservices, mutualisation
+multi-tenant forcée (l'instance dédiée par client EST notre modèle de cellule —
+la mutualisation attendra un coût d'exploitation qui la justifie).
+
+---
+
+## Chantier 0 — La preuve par l'exécution *(semaines 1-3 · le gate de tout le reste)*
+
+| # | Action | Effort | Critère d'acceptation |
+|---|---|---|---|
+| 0.1 | **Staging permanent** : `terraform apply` réel en eu-west-3, image construite, migrations appliquées | M | L'URL staging répond en HTTPS ; apply rejouable depuis zéro |
+| 0.2 | **CI = arbitre unique** : pytest + `npm ci && build` + chaîne migrations + RLS Postgres + `terraform validate`/`plan` + build Docker, tout bloquant (pip-audit/npm audit inclus après triage) | S | Run vert publié sur le commit ; le badge remplace toute déclaration « tests OK » |
+| 0.3 | **E2E quotidien sur compte sandbox Constat** : vrai AssumeRole → vrai scan → vraie restitution, chronométré | M | Le test qui manquait au SRE : durée, appels API, throttling mesurés chaque nuit |
+| 0.4 | **Backup/restore exécuté** + game day (kill de la tâche mid-scan → reprise) | S | Ligne datée dans le runbook ; RTO/RPO mesurés, pas déclarés |
+| 0.5 | Reliquats comité : frontend authentifié contre l'API réelle (staging), purge lancée en réel, alertes reçues par un humain | S | Capture de l'alerte reçue ; 0 ligne « not yet executed » restante |
+
+## Chantier 1 — Collecte à l'échelle ICP *(reste : la preuve réelle)*
+
+Items 1.1 à 1.4 livrés en code (voir `roadmap-done.md`). Il reste :
+
+| # | Action | Effort | Critère d'acceptation |
+|---|---|---|---|
+| 1.5 | Bench réel publié : durée, coût AWS, appels par run à 35 comptes | S | docs/operations/benchmarks.md § « réel » — remplace le bench sqlite. Harnais prêt (`scripts/bench_real.py`) ; dépend du chantier 0 |
+
+La limite contractuelle 5 comptes du SLA §1 se lève une fois 1.1-1.3 démontrés
+sur staging (code livré, exécution à dater).
+
+## Chantier 3 — Un SaaS qu'un RSSI signe *(semaines 6-12)*
+
+Items 3.3 et 3.4 livrés en code (voir `roadmap-done.md`). Il reste :
+
+| # | Action | Effort | Critère d'acceptation |
+|---|---|---|---|
+| 3.1 | **Tenant par requête** : résolution depuis l'identité (plus de tenant par défaut) + service accounts à scopes (ADR-10, enfin dû) | L | Test e2e 2 tenants **via l'API** sur staging ; l'étiquette « fondation » du schéma devient « démontré » |
+| 3.2 | **SSO OIDC** pour l'UI (Google/Microsoft — ce que l'ETI a déjà) | M | Login sans clé partagée ; rôles lecture/admin |
+| 3.5 | Dossier sécurité : questionnaire type pré-rempli, DPA, politique de rétention signable | M | Le RSSI reçoit le dossier avant de le demander |
+| 3.6 | Pentest externe | M | Avant le 3e client payant ; findings triés publiés au client sur demande |
+
+## Chantier 4 — Le moat *(continu, dès semaine 4)*
+
+| # | Action | Effort | Critère d'acceptation |
+|---|---|---|---|
+| 4.1 | **Référentiels en données** : EOL/tarifs migrés du code vers `ReferenceDatasetVersion` (le concept du doc d'archi), avec job mensuel de vérification diff contre les pages AWS citées | M | Une mise à jour de tarif = une donnée versionnée, pas un commit ; l'écart détecté alerte |
+| 4.2 | Golden datasets réels par source (export FOCUS AWS anonymisé du 1er pilote) | S | La classe de bug « conforme à notre CSV maison » fermée définitivement |
+| 4.3 | **Tags + inventaire filtrable** (`aws.tag.*`, `/resources`, vue) — lève l'ADR-12 dès la demande d'un pilote, préparation anticipée | L | Chargeback par tag réel ; le mot « inventaire » redevient prononçable en démo |
+| 4.4 | Connecteur Compute Optimizer (gratuit, opt-in) → insights de surdimensionnement | M | 2e vague de valeur par démo, sans dépendance support plan. NB : CO ne couvre pas RDS (EC2/ASG/EBS/Lambda/ECS) — pas de `rds.rightsizing` par ce canal |
+| 4.5 | Cadrage « opposable » dans tout le matériel commercial (aligné SLA §5) | S | L'objection juridique du comité a une réponse écrite partout |
+
+## Suivis des chantiers livrés (petits, en attente)
+
+- Restitution : afficher la **part confirmée par facture** (ACTUAL, backend livré en 2.3).
+- Web : courbe « € récupérés » sur `GET /insights/history` (livré en 2.4).
+- Test pin du taux FX côté web (miroir TS non épinglé, contrairement à `RULE_MONETARY`).
+
+---
+
+## Séquence et jalons
+
+```
+S1-S3   Chantier 0 (gate)            → Jalon A : « ça tourne, prouvé » — staging vert, e2e réel, restore daté
+S3-S8   1.5 + exécution des CODE LIVRÉ → Jalon B : « 35 comptes, en euros » — bench réel publié, restitution EUR/région
+S6-S12  Chantier 3                   → Jalon C : « signable » — tenant par requête démontré, SSO, dossier sécurité
+S4-...  Chantier 4 (continu)         → Jalon D : « défendable durablement » — référentiels en données, golden réels
+```
+
+Le jalon A conditionne toute démo. Le jalon B lève la limite 5 comptes du SLA.
+Le jalon C conditionne le 2e client. Rien d'autre n'est bloquant.
+
+## Règle de gouvernance de cette roadmap
+
+Chaque item se ferme par son critère d'acceptation **exécuté et daté**, jamais
+par « le code est écrit ». Un item fermé sort de ce fichier vers
+`docs/roadmap-done.md`. Tout nouvel item passe le filtre : « quel persona du
+comité (FinOps, SRE, RSSI, DAF, marketing) cesse d'objecter si c'est fait ? »
+Un item sans persona est de l'over-engineering — il sort.
