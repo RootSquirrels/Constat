@@ -131,7 +131,7 @@ Trusted Advisor / Cost Explorer, which silently omit.
 - Multi-tenant RLS beyond the pilot shape — RLS **is** shipped and CI-enforced on all tenant tables (see the invariants above); V1 remains 1 prospect, 1 tenant operationally. Revisit when we onboard tenant #2.
 - Full `FactDefinitionRegistry` ceremony — V1 has a YAML registry (`packages/core/src/constat_core/catalog/fact_definitions.yaml`) guarded by a pytest cross-check against producers/consumers. The full registry (DB table, runtime validation, backfill tooling) is V2.
 - Azure, Prisma, ServiceNow, EDR connectors — V2/V3.
-- Streaming / Neo4j / Iceberg — only if quantitative thresholds are met (see ADR-04 in the arch doc).
+- Streaming / Neo4j / Iceberg — only if quantitative thresholds are met (see `docs/adr/`: ADR-07 streaming, ADR-08 Neo4j, ADR-01 Iceberg).
 
 If you find yourself adding any of these in V1, stop and write a one-paragraph justification
 in the PR description.

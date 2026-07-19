@@ -970,6 +970,13 @@ Capacités de replay selon rétention :
 
 ## 9. Décisions techniques — ADR
 
+> **Note (2026-07-19) :** le référentiel canonique des ADR est désormais
+> [`docs/adr/`](../adr/) — un fichier par décision (voir l'index
+> [`docs/adr/README.md`](../adr/README.md)). La présente section est conservée
+> comme source historique des ADR-01 à ADR-11 (extraits verbatim dans
+> `docs/adr/`) et **ne doit plus recevoir de nouvel ADR** : toute nouvelle
+> décision se documente dans un fichier dédié sous `docs/adr/`.
+
 ### ADR-01 — S3 + Parquet avant Iceberg
 
 **Décision :** S3 pour les batches, manifests et payloads ; Parquet append-only pour l'historique normalisé et FOCUS.

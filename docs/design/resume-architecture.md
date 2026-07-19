@@ -60,7 +60,7 @@ flowchart TB
 ## Trajectoire
 
 - **V1** — Inventaire AWS + FOCUS + insights chiffrés + API read-only. Preuve : 3 insights > prix.
-- **V2** — Resource 360, contrôles versionnés, connecteurs sécurité/ITSM, couche IA (ADR-09).
+- **V2** — Resource 360, contrôles versionnés, connecteurs sécurité/ITSM, couche IA ([ADR-09](../adr/ADR-09-ai-as-consumption-layer.md)).
 - **V3** — Findings, SLA, remédiation prouvée, Azure en parité, Neo4j si seuils atteints.
 
 Chaque extension (Storage Lens, CrowdStrike, Azure…) = un connecteur + des facts + des colonnes,

@@ -679,7 +679,8 @@ without a one-paragraph justification in the PR.
   constant time (`hmac.compare_digest`). When no key is configured
   (dev), auth is open and a startup warning is logged.
   V2: OIDC for users, OAuth2 client credentials for service
-  accounts (per the GTM doc, ADR-10 of the strategic brief). The
+  accounts (per the GTM doc, ADR-10 of the strategic brief —
+  now `docs/adr/ADR-10-authentication-api-identities.md`). The
   `Depends(verify_api_key)` interface stays the same — swap is
   one-line.
 - **Multi-replica idempotency.** The `Idempotency-Key` header is
