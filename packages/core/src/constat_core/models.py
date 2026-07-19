@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -113,3 +113,9 @@ class Inconclusive(BaseModel):
     computed_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=__import__("datetime").timezone.utc)
     )
+    # Work-queue fields (roadmap 2.5): an owner, a due date, and a triage
+    # status. Written only by PATCH /inconclusives/{id}; the runner never
+    # sets them (its delete-and-replace recreates rows at the defaults).
+    owner: str | None = None
+    due_date: date | None = None
+    status: str = "open"  # 'open' | 'acknowledged' | 'resolved'

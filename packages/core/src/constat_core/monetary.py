@@ -116,10 +116,22 @@ def monthly_cost_and_basis(
     Returns (None, None) for unregistered rules, and (None, basis) when
     the registered key is absent or non-numeric (bool excluded: it IS
     an int in Python, and True must not become $1.00).
+
+    Reconciliation (roadmap 2.3, ADR-13 note): once the API's reconcile
+    pass confirms an estimate against FOCUS billing lines, the payload
+    carries its own truth (`focus_confirmed` + `focus_actual_monthly_usd`)
+    and that invoice-backed amount wins over the catalog estimate — the
+    basis becomes per-insight ACTUAL. The MonetaryKind NEVER changes: a
+    confirmed amount keeps its kind (an AVOIDABLE_SAVING stays a saving,
+    it is merely better evidenced).
     """
     entry = MONETARY.get(rule_name)
     if entry is None:
         return None, None
+    if payload.get("focus_confirmed") is True:
+        actual = payload.get("focus_actual_monthly_usd")
+        if not isinstance(actual, bool) and isinstance(actual, int | float):
+            return float(actual), ValueBasis.ACTUAL.value
     raw = payload.get(entry.payload_key)
     if isinstance(raw, bool) or not isinstance(raw, int | float):
         return None, entry.value_basis.value

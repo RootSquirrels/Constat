@@ -243,9 +243,9 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 TENANT_A = "00000000-0000-0000-0000-00000000000a"
 TENANT_B = "00000000-0000-0000-0000-00000000000b"
 
-# Every table that must carry a tenant isolation policy after 0001 -> 0016
+# Every table that must carry a tenant isolation policy after 0001 -> 0017
 # (0007: 9 tables, 0011: the 4 tables of audit F-04, 0015: collect_jobs,
-# 0016: collect_targets).
+# 0016: collect_targets, 0017: insight_events).
 RLS_TABLES = [
     "accounts",
     "resources",
@@ -262,6 +262,7 @@ RLS_TABLES = [
     "pii_classifications",
     "collect_jobs",
     "collect_targets",
+    "insight_events",
 ]
 
 # Minimal wrong-tenant INSERT per table (tenant_id = TENANT_A while the
@@ -338,6 +339,11 @@ WRONG_TENANT_INSERTS: dict[str, tuple[str, tuple[Any, ...]]] = {
         "INSERT INTO collect_targets (tenant_id, aws_account_id, role_arn, external_id)"
         " VALUES (%s, %s, %s, %s)",
         (TENANT_A, "999999999999", "arn:aws:iam::999999999999:role/x", "intruder-secret"),
+    ),
+    "insight_events": (
+        "INSERT INTO insight_events (tenant_id, fingerprint, rule_name, title, event)"
+        " VALUES (%s, %s, %s, %s, %s)",
+        (TENANT_A, "0" * 64, "rds_eol", "intruder", "appeared"),
     ),
 }
 
@@ -465,6 +471,11 @@ def pg_seeded(pg_migrated: str) -> Iterator[str]:
                 "arn:aws:iam::111111111111:role/constat-collector",
                 "s3cr3t",
             ),
+        )
+        conn.execute(
+            "INSERT INTO insight_events (tenant_id, fingerprint, rule_name, resource_id,"
+            " title, event, monthly_usd) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (TENANT_A, "a" * 64, "rds_eol", resource_a, "seeded", "appeared", 10.0),
         )
     yield pg_migrated
 

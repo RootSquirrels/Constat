@@ -16,6 +16,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -309,6 +310,49 @@ class InsightORM(Base):
     ack_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class InsightEventORM(Base):
+    """Appeared/resolved history of insights (roadmap 2.4, migration 0017).
+
+    The runner's delete-and-replace wipes the insights table each run; this
+    append-only table keeps the lifecycle: one row when a gap appears, one
+    when it closes (with the last known monthly amount = money recovered).
+    `fingerprint` (sha256 of rule_name|resource_id|title) is the stable
+    identity of an insight across runs — the rows it replaced are gone, so
+    we cannot FK to insights.
+
+    resource_id / insight_run_id are ON DELETE SET NULL: history must
+    survive the retirement of the resource or the purge of old runs.
+    """
+
+    __tablename__ = "insight_events"
+    __table_args__ = (
+        CheckConstraint("event IN ('appeared', 'resolved')", name="insight_events_event_check"),
+        Index("idx_insight_events_tenant_rule_time", "tenant_id", "rule_name", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(
+        GUID(), nullable=False, default=DEFAULT_TENANT_ID, index=True
+    )
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    rule_name: Mapped[str] = mapped_column(String, nullable=False)
+    resource_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("resources.id", ondelete="SET NULL")
+    )
+    # TEXT (not the accounts FK): chargeback insights are account-scoped
+    # and history must not break if the account row disappears.
+    account_id: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    event: Mapped[str] = mapped_column(String, nullable=False)
+    monthly_usd: Mapped[float | None] = mapped_column(Float)
+    insight_run_id: Mapped[UUID | None] = mapped_column(
+        GUID(), ForeignKey("insight_runs.id", ondelete="SET NULL")
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class InsightRunORM(Base):
     __tablename__ = "insight_runs"
     __table_args__ = (
@@ -333,6 +377,13 @@ class InsightRunORM(Base):
 
 class InconclusiveORM(Base):
     __tablename__ = "inconclusive"
+    __table_args__ = (
+        # Roadmap 2.5 (migration 0018): the inconclusive queue is an
+        # operator work queue with a triage status.
+        CheckConstraint(
+            "status IN ('open', 'acknowledged', 'resolved')", name="inconclusive_status_check"
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(GUID(), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(
@@ -349,6 +400,14 @@ class InconclusiveORM(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    # Workflow fields (roadmap 2.5). Written only by PATCH /inconclusives/{id};
+    # the runner never touches them... except that delete-and-replace recreates
+    # the rows, which reset the workflow to defaults — accepted V1 semantic.
+    owner: Mapped[str | None] = mapped_column(String)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="open", server_default="open"
     )
 
 

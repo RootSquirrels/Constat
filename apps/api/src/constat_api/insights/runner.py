@@ -50,6 +50,7 @@ from constat_rds_eol.resolver import evaluate as rds_eol_evaluate
 from constat_snapshot_orphan.resolver import evaluate as snapshot_orphan_evaluate
 from sqlalchemy.orm import Session
 
+from constat_api.insights.reconcile import reconcile_with_focus
 from constat_api.metrics import (
     record_inconclusive,
     record_insight_emitted,
@@ -58,6 +59,7 @@ from constat_api.metrics import (
 from constat_api.orm import AccountORM, FocusChargeORM, InsightRunORM, ResourceORM
 from constat_api.repositories import facts as facts_repo
 from constat_api.repositories import inconclusive as inconclusive_repo
+from constat_api.repositories import insight_events as insight_events_repo
 from constat_api.repositories import insights as insights_repo
 from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.repositories.source_runs import _age_since
@@ -369,7 +371,11 @@ def run_resource_rule(
 
     Delete-and-replace (audit F-03): the rule's previous insights and
     inconclusive rows are deleted at the start of the run, so re-runs
-    never accumulate duplicates.
+    never accumulate duplicates. The pre-delete state is snapshotted
+    first (roadmap 2.4): the post-run fingerprint diff writes
+    appeared/resolved rows to insight_events, so history survives the
+    replace. Fresh ESTIMATED amounts are then reconciled against FOCUS
+    (roadmap 2.3): matched insights flip to value_basis ACTUAL.
 
     Args:
         rule_name: key in RESOURCE_RULES (rds_eol, mysql_eol, aurora_eol).
@@ -395,6 +401,11 @@ def run_resource_rule(
 
     started = time.monotonic()
     resources = session.query(ResourceORM).all()
+
+    # Roadmap 2.4: snapshot the rule's current insights BEFORE the delete —
+    # the delete-and-replace below would otherwise destroy the history we
+    # need for the appeared/resolved diff after the fresh inserts.
+    previous_state = insight_events_repo.snapshot_rule(session, rule_name)
 
     # F-03: clear the rule's previous output before writing fresh results.
     insights_repo.delete_insights_for_rule(session, rule_name)
@@ -432,6 +443,16 @@ def run_resource_rule(
         except Exception as exc:
             errors.append(f"{resource.id}: {exc}")
             logger.exception("Resource %s failed", resource.id)
+
+    # Roadmap 2.3: confirm the fresh ESTIMATED amounts against FOCUS billing
+    # lines (in-place payload merge -> value_basis ACTUAL where matched).
+    reconcile_with_focus(session, rule_name)
+
+    # Roadmap 2.4: diff old vs fresh fingerprints -> appeared/resolved
+    # events, in the same transaction as the fresh insights.
+    insight_events_repo.diff_and_record_events(
+        session, rule_name=rule_name, previous=previous_state, insight_run_id=run.id
+    )
 
     run.finished_at = datetime.now(tz=UTC)
     run.status = "success" if not errors else "partial"
@@ -555,6 +576,11 @@ def run_chargeback(
     session.commit()
 
     started = time.monotonic()
+    # Roadmap 2.4: snapshot before the delete — chargeback also
+    # deletes/replaces, so its appeared/resolved history needs the same
+    # fingerprint diff as the resource rules.
+    previous_state = insight_events_repo.snapshot_rule(session, "chargeback")
+
     # F-03: clear the rule's previous output before writing fresh results.
     insights_repo.delete_insights_for_rule(session, "chargeback")
 
@@ -607,6 +633,12 @@ def run_chargeback(
     run.status = "success" if not errors else "partial"
     run.resources_scanned = len(account_ids)
     run.insights_emitted = insights_emitted
+
+    # Roadmap 2.4: diff old vs fresh fingerprints -> appeared/resolved
+    # events, same transaction as the fresh insights + the audit row.
+    insight_events_repo.diff_and_record_events(
+        session, rule_name="chargeback", previous=previous_state, insight_run_id=run.id
+    )
 
     # Audit: log the insight run. The metadata is the rule name +
     # the counts. The rule name is the action, the counts are the
