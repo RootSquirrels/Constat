@@ -8,13 +8,21 @@ job id. The actual scans run in the collection worker (`constat_api.worker`
 — in-process pool in inline mode, external service in sqs mode), and
 GET /collect/aws/jobs/{job_id} reports progress derived from source_runs.
 
+Ordering (SRE-4, transactional outbox): the job row is COMMITTED before
+the queue send. If the send then fails, the job is kept and its
+`enqueue_error` column records the failure — a queue send is not
+transactional with the DB, so rolling the job back would strand
+already-sent items with no job row to reconcile against. The caller
+gets 503 + Retry-After with the job_id in the detail.
+
 Targets come from the request body, or — when the body has none
 (roadmap 1.3) — from the persisted `collect_targets` table (see
 routers/collect_targets.py). The empty-body form is what the scheduler
 uses, so the fleet list lives in the DB, not in a JSON secret.
 
-Backpressure: when the in-process queue is full, the POST answers
-503 + Retry-After instead of accepting work it cannot hold.
+Backpressure: when the queue is full (or the send otherwise fails), the
+POST answers 503 + Retry-After instead of pretending the work was
+accepted.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from constat_api.auth import Principal, require_operator, verify_api_key
-from constat_api.collect_queue import QueueFullError, WorkItem, get_queue
+from constat_api.collect_queue import WorkItem, get_queue
 from constat_api.collectors.aws import DEFAULT_REGIONS, JOB_REGISTRY
 from constat_api.db import get_db
 from constat_api.idempotency import cache_response, get_cached_or_none
@@ -54,10 +62,11 @@ class TargetIn(BaseModel):
     external_id: str | None = None
     name: str | None = None
     regions: list[str] | None = None
-    # Selects which AWS resource types to scan. Default (None) = RDS only
-    # for V1 backward compat. Known keys: "rds", "ec2_volume",
-    # "ec2_snapshot", "ec2_instance". Unknown keys are rejected with 422
-    # before anything is enqueued.
+    # Selects which AWS resource types to scan. Default (None) = ALL
+    # registered jobs (the product's actual coverage: rds + ec2_volume +
+    # ec2_snapshot + ec2_instance). Pass ["rds"] explicitly for an
+    # rds-only scan. Unknown keys are rejected with 422 before anything
+    # is enqueued.
     resource_types: list[str] | None = None
 
     @model_validator(mode="after")
@@ -117,6 +126,12 @@ class CollectJobStatusResponse(BaseModel):
     least one source_run; `pending` = total_items - scopes_started (the
     "queued-ish" remainder). One work item writes one source_run per
     scanned resource type, so `runs` can outnumber `total_items`.
+
+    `enqueue_error` is set when the queue send failed AFTER the job row
+    committed (SRE-4): the job exists but some or all items never reached
+    the queue — reconcile by re-POSTing. `evaluation_status` tracks the
+    post-collect rule evaluation (SRE-1b): None until the job's last item
+    is acked and a worker claims it.
     """
 
     job_id: UUID
@@ -128,6 +143,24 @@ class CollectJobStatusResponse(BaseModel):
     pending: int
     runs_by_status: dict[str, int]
     runs: list[CollectJobRunOut]
+    enqueue_error: str | None = None
+    evaluation_status: str | None = None
+
+
+class EnqueueError(Exception):
+    """The queue send failed AFTER the job row was committed (SRE-4).
+
+    Carries the job_id so the caller (router -> 503 detail, CLI -> log)
+    can point the operator at the durable, reconcileable job row.
+    """
+
+    def __init__(self, job_id: UUID, cause: Exception) -> None:
+        self.job_id = job_id
+        super().__init__(
+            f"enqueue failed for collect job {job_id}: {type(cause).__name__}: {cause}. "
+            "The job row was kept and marked with enqueue_error — reconcile "
+            "via GET /collect/aws/jobs/{job_id} and re-POST."
+        )
 
 
 def _idempotency_key_header(
@@ -158,6 +191,106 @@ def _persisted_targets(session: Session) -> list[TargetIn]:
     ]
 
 
+def _validate_resource_types(targets: list[TargetIn]) -> None:
+    """Reject unknown resource_types BEFORE anything is enqueued.
+
+    The collector validates too, but in async mode a bad key would
+    otherwise surface in the worker, after the client already got a 202.
+    Raises ValueError; the router maps it to 422.
+    """
+    for t in targets:
+        if t.resource_types:
+            unknown = sorted(set(t.resource_types) - set(JOB_REGISTRY))
+            if unknown:
+                raise ValueError(
+                    f"unknown resource_type(s) {unknown} (known: {sorted(JOB_REGISTRY)})"
+                )
+
+
+def create_and_enqueue_collect_job(
+    session: Session,
+    *,
+    actor: str,
+    targets: list[TargetIn],
+    force: bool = False,
+    dry_run: bool = False,
+) -> tuple[UUID, int]:
+    """Create the collect_jobs row, commit it, THEN enqueue (SRE-4).
+
+    Shared by POST /collect/aws and the CLI `--enqueue-all` (the ECS
+    scheduled task) so the target->job->WorkItems construction and the
+    commit-before-send ordering exist exactly once.
+
+    Ordering: the job row is committed before `get_queue().send` — the
+    queue is not transactional with the DB, so a send-then-commit could
+    strand items whose job row never landed. On ANY send failure the job
+    is kept, `enqueue_error` is recorded on it (committed), and
+    EnqueueError is raised with the job_id for reconciliation.
+
+    Returns (job_id, items_enqueued).
+    """
+    # The job row first (flushed -> job_id), then one WorkItem per
+    # (target x region). Summary is counts only — no account ids or ARNs,
+    # same non-PII discipline as audit_events metadata.
+    all_resource_types = sorted(
+        {rt for t in targets for rt in (t.resource_types or tuple(JOB_REGISTRY))}
+    )
+    n_regions = sum(len(t.regions) if t.regions else len(DEFAULT_REGIONS) for t in targets)
+    job = collect_jobs_repo.create_job(
+        session,
+        actor=actor,
+        total_items=n_regions,
+        summary={
+            "accounts": len({t.aws_account_id for t in targets}),
+            "regions": n_regions,
+            "resource_types": all_resource_types,
+        },
+    )
+    items = [
+        WorkItem(
+            job_id=job.job_id,
+            aws_account_id=t.aws_account_id,
+            role_arn=t.role_arn,
+            external_id=t.external_id,
+            name=t.name,
+            region=region,
+            resource_types=tuple(t.resource_types) if t.resource_types else None,
+            force=force,
+            dry_run=dry_run,
+        )
+        for t in targets
+        for region in (t.regions or DEFAULT_REGIONS)
+    ]
+
+    # SRE-4: job durable BEFORE the send. Never rolled back afterwards.
+    session.commit()
+    try:
+        get_queue().send(items)
+    except Exception as e:
+        collect_jobs_repo.mark_enqueue_failed(session, job.job_id, f"{type(e).__name__}: {e}")
+        session.commit()
+        raise EnqueueError(job.job_id, e) from e
+    return job.job_id, len(items)
+
+
+def enqueue_all_persisted_targets(session: Session, *, actor: str) -> tuple[UUID, int]:
+    """Create + enqueue a collect job over ALL persisted collect_targets.
+
+    The batch entry point of roadmap 1.3, shared by the CLI
+    (`python -m constat_api.cli.aws --enqueue-all`, what the ECS
+    scheduled task runs) so it uses the exact same code path as the
+    router. Raises ValueError when no targets are persisted,
+    EnqueueError when the send fails after the job committed.
+    """
+    targets = _persisted_targets(session)
+    if not targets:
+        raise ValueError(
+            "no persisted collect_targets — import them first via POST /collect/targets/import"
+        )
+    _validate_resource_types(targets)
+    return create_and_enqueue_collect_job(session, actor=actor, targets=targets)
+
+
 @router.post("", status_code=202, response_model=CollectAcceptedResponse)
 def trigger_aws_collect(
     body: CollectRequest,
@@ -184,63 +317,29 @@ def trigger_aws_collect(
             "— import them first via POST /collect/targets/import",
         )
 
-    # Validate resource_types BEFORE enqueueing: the collector validates
-    # too, but in async mode a bad key would otherwise surface in the
-    # worker, after the client already got a 202.
-    for t in targets:
-        if t.resource_types:
-            unknown = sorted(set(t.resource_types) - set(JOB_REGISTRY))
-            if unknown:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"unknown resource_type(s) {unknown} (known: {sorted(JOB_REGISTRY)})",
-                )
+    try:
+        _validate_resource_types(targets)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
-    # The job row first (flushed -> job_id), then one WorkItem per
-    # (target x region). Summary is counts only — no account ids or ARNs,
-    # same non-PII discipline as audit_events metadata.
-    all_resource_types = sorted({rt for t in targets for rt in (t.resource_types or ("rds",))})
-    n_regions = sum(len(t.regions) if t.regions else len(DEFAULT_REGIONS) for t in targets)
-    job = collect_jobs_repo.create_job(
-        session,
-        actor=principal.name,
-        total_items=n_regions,
-        summary={
-            "accounts": len({t.aws_account_id for t in targets}),
-            "regions": n_regions,
-            "resource_types": all_resource_types,
-        },
-    )
-    items = [
-        WorkItem(
-            job_id=job.job_id,
-            aws_account_id=t.aws_account_id,
-            role_arn=t.role_arn,
-            external_id=t.external_id,
-            name=t.name,
-            region=region,
-            resource_types=tuple(t.resource_types) if t.resource_types else None,
+    try:
+        job_id, n_items = create_and_enqueue_collect_job(
+            session,
+            actor=principal.name,
+            targets=targets,
             force=body.force,
             dry_run=body.dry_run,
         )
-        for t in targets
-        for region in (t.regions or DEFAULT_REGIONS)
-    ]
-
-    try:
-        get_queue().send(items)
-    except QueueFullError as e:
-        # Backpressure (1.2): drop the job row and tell the caller to
-        # slow down rather than grow an unbounded in-memory backlog.
-        session.rollback()
+    except EnqueueError as e:
+        # SRE-4: the job row is durable and marked with enqueue_error;
+        # the caller reconciles via the job_id in the detail.
         raise HTTPException(
             status_code=503,
             detail=str(e),
             headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
         ) from e
-    session.commit()
 
-    response = CollectAcceptedResponse(job_id=job.job_id, items_enqueued=len(items))
+    response = CollectAcceptedResponse(job_id=job_id, items_enqueued=n_items)
     if idempotency_key:
         cache_response(
             "collect_aws",
@@ -264,6 +363,9 @@ def get_collect_job(
     for r in runs:
         runs_by_status[r.status] = runs_by_status.get(r.status, 0) + 1
     scopes_started = len({(r.account_id, r.region) for r in runs})
+    # Migration-0021 columns (enqueue_error, evaluation_status) come via
+    # raw SQL — orm.py is owned by a parallel workstream (see the repo).
+    ops = collect_jobs_repo.get_job_ops(session, job_id)
     return CollectJobStatusResponse(
         job_id=job.job_id,
         actor=job.actor,
@@ -286,6 +388,8 @@ def get_collect_job(
             )
             for r in runs
         ],
+        enqueue_error=ops.enqueue_error if ops else None,
+        evaluation_status=ops.evaluation_status if ops else None,
     )
 
 

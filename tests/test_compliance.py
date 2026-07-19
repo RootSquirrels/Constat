@@ -394,6 +394,9 @@ def test_aws_scan_writes_audit_and_pii_rows(client: TestClient, session: Session
                 "external_id": "secret",
                 "name": "prod",
                 "regions": ["eu-west-1"],
+                # Explicit rds-only scope (SRE-2b): only the RDS scan is
+                # mocked below; the default is now ALL registered jobs.
+                "resource_types": ["rds"],
             }
         ],
         "dry_run": False,

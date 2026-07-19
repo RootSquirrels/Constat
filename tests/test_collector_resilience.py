@@ -88,6 +88,8 @@ def test_targeted_rescan_touches_only_the_failed_region(session: Session) -> Non
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("eu-west-1", "us-east-1"),
+        # Explicit rds-only scope (SRE-2b changed the default to ALL jobs).
+        resource_types=("rds",),
     )
 
     def _flaky_scan(aws_session, regions):
@@ -113,7 +115,9 @@ def test_targeted_rescan_touches_only_the_failed_region(session: Session) -> Non
             yield {"_region": region, **make_rds_db_dict()}
 
     # Re-scan ONLY the failed region.
-    retry = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    retry = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     result2 = collect_target(
         session,
         retry,

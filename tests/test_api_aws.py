@@ -4,6 +4,10 @@ POST /collect/aws returns 202 + a job id and enqueues one work item per
 (target x region); the actual scan runs in the worker. Tests drain the
 in-process queue deterministically via `drain_inline_queue` (no sleeps),
 then assert on outcomes and the job status endpoint.
+
+SRE-2b: a target without `resource_types` now scans ALL registered jobs.
+These tests mock only the RDS scan, so they pass ["rds"] explicitly —
+that is also how an operator requests an rds-only scan now.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ def test_aws_collect_endpoint(client: TestClient, session: Session) -> None:
                 "external_id": "secret-uuid",
                 "name": "prod",
                 "regions": ["eu-west-1"],
+                "resource_types": ["rds"],
             }
         ],
         "dry_run": False,
@@ -75,6 +80,7 @@ def test_aws_collect_endpoint_dry_run(client: TestClient, session: Session) -> N
             {
                 "aws_account_id": "111111111111",
                 "regions": ["eu-west-1"],
+                "resource_types": ["rds"],
             }
         ],
         "dry_run": True,
@@ -128,7 +134,7 @@ def test_aws_collect_endpoint_with_force(client: TestClient, session: Session) -
     """force=True is accepted and propagated to the collector."""
     body = {
         "targets": [
-            {"aws_account_id": "111111111111", "regions": ["eu-west-1"]},
+            {"aws_account_id": "111111111111", "regions": ["eu-west-1"], "resource_types": ["rds"]},
         ],
         "force": True,
     }

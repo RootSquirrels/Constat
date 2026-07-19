@@ -93,7 +93,8 @@ class TargetAccount:
         REQUIRED when role_arn is set (F-06: no ExternalId = confused-deputy
         risk); `_assume_role` refuses to call STS without it.
     regions = None -> use the default set.
-    resource_types = None -> scan all registered jobs (V1 backward compat).
+    resource_types = None -> scan ALL registered jobs (rds + ec2_volume +
+        ec2_snapshot + ec2_instance) — the product's actual coverage.
         A list like ["rds"] or ["ec2_volume"] scopes the scan to one
         resource type, so a prospect who only wants EBS insights doesn't
         pay the RDS scan cost.
@@ -260,7 +261,9 @@ def _resolve_jobs(target: TargetAccount, scan_fn_override: ScanFn | None) -> lis
 
     Rules:
     1. If `target.resource_types` is set, use those jobs from the registry.
-    2. Otherwise, default to the RDS job (V1 backward compat).
+    2. Otherwise, default to ALL registered jobs (SRE-2b): the default
+       scope must match the product's actual coverage. An rds-only scan
+       now requires an explicit `resource_types=("rds",)`.
     3. If a `scan_fn_override` is passed AND the RDS job is in the resolved
        list, build a one-off RDS job with the override scan_fn. This keeps
        the existing test path alive without requiring a registry patch.
@@ -272,7 +275,7 @@ def _resolve_jobs(target: TargetAccount, scan_fn_override: ScanFn | None) -> lis
                 raise ValueError(f"unknown resource_type '{rt}' (known: {sorted(JOB_REGISTRY)})")
             jobs.append(JOB_REGISTRY[rt])
     else:
-        jobs = [JOB_REGISTRY["rds"]]
+        jobs = list(JOB_REGISTRY.values())
 
     if scan_fn_override is not None:
         # Legacy test path: override the RDS job's scan_fn. The other
@@ -484,7 +487,8 @@ def collect_target(
     """Scan one target: assume role, iterate regions/jobs, write resources/facts.
 
     The inner loop iterates `(region, job)` pairs. `target.resource_types`
-    selects which jobs run (default: RDS only). Per-region failures are
+    selects which jobs run (default: ALL registered jobs; pass ("rds",)
+    for an rds-only scan). Per-region failures are
     collected, not fatal; the circuit breaker trips after N consecutive
     region errors. The caller owns the session transaction; this function
     flushes per region so partial progress survives.

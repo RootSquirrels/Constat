@@ -10,13 +10,14 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
 from constat_api.collect_queue import InProcessQueue, QueueFullError, WorkItem
-from constat_api.orm import SourceRunORM
+from constat_api.orm import InsightRunORM, SourceRunORM
 from constat_api.repositories import accounts as accounts_repo
+from constat_api.repositories import collect_jobs as collect_jobs_repo
 from constat_api.repositories import source_runs as source_runs_repo
 from constat_api.worker import (
     NACK_BACKOFF_BASE_SECONDS,
@@ -30,8 +31,30 @@ from sqlalchemy.orm import Session
 from tests.conftest import make_rds_db_dict
 
 
-def _item(account: str = "111111111111", region: str = "eu-west-1") -> WorkItem:
-    return WorkItem(job_id=uuid4(), aws_account_id=account, region=region)
+def _item(
+    account: str = "111111111111", region: str = "eu-west-1", job_id: UUID | None = None
+) -> WorkItem:
+    # Explicit rds-only scope (SRE-2b changed the collector default to ALL
+    # registered jobs): these unit tests mock only the RDS scan. The
+    # all-jobs default is covered end-to-end in test_collect_async.py.
+    return WorkItem(
+        job_id=job_id or uuid4(),
+        aws_account_id=account,
+        region=region,
+        resource_types=("rds",),
+    )
+
+
+def _make_job(session: Session, total_items: int = 1) -> UUID:
+    """Persist a collect_jobs row and return its id.
+
+    The worker's orphan reconciliation (SRE-4) ack-drops any item whose
+    job row does not exist, so drain tests against a real session must
+    create the job first — exactly like POST /collect/aws does.
+    """
+    job = collect_jobs_repo.create_job(session, actor="test", total_items=total_items, summary={})
+    session.commit()
+    return job.job_id
 
 
 def _collector_patches(scan_return=None):
@@ -115,7 +138,7 @@ def test_work_item_json_round_trip() -> None:
 def test_drain_success_acks_and_writes_job_id(session: Session) -> None:
     """A successful item is acked; its source_run carries the job_id."""
     q = InProcessQueue(maxsize=10)
-    item = _item()
+    item = _item(job_id=_make_job(session))
     q.send([item])
     p_assume, p_scan = _collector_patches()
     with p_assume, p_scan:
@@ -132,7 +155,7 @@ def test_drain_region_error_nacks_with_backoff(session: Session) -> None:
     """A region error (BotoCoreError family) -> failed outcome + nack; the
     failed source_run is still recorded with the job_id."""
     q = InProcessQueue(maxsize=10)
-    item = _item()
+    item = _item(job_id=_make_job(session))
     q.send([item])
 
     def _boom(_session, _regions):
@@ -159,7 +182,10 @@ def test_drain_region_error_nacks_with_backoff(session: Session) -> None:
 def test_drain_collector_exception_isolated_per_item(session: Session) -> None:
     """1.1 AC: an exception in one item never affects the next item."""
     q = InProcessQueue(maxsize=10)
-    q.send([_item(account="111111111111"), _item(account="222222222222")])
+    job_id = _make_job(session, total_items=2)
+    q.send(
+        [_item(account="111111111111", job_id=job_id), _item(account="222222222222", job_id=job_id)]
+    )
 
     def _explode(*_args, **_kwargs):
         raise RuntimeError("worker bug")
@@ -220,7 +246,7 @@ def test_drain_duplicate_scope_reports_scan_already_in_progress(session: Session
     session.commit()
 
     q = InProcessQueue(maxsize=10)
-    q.send([_item()])
+    q.send([_item(job_id=_make_job(session))])
     p_assume, p_scan = _collector_patches()
     with p_assume, p_scan:
         outcomes = drain_once(lambda: session, q, base_session=MagicMock())
@@ -304,3 +330,139 @@ def test_per_account_cap_across_concurrent_drains() -> None:
     assert mock_collect.call_count == 1
     # The slot was released after the scan finished.
     assert limiter.in_flight("111111111111") == 0
+
+
+# ---------------------------------------------------------------------------
+# Orphan reconciliation (SRE-4)
+# ---------------------------------------------------------------------------
+
+
+def test_drain_drops_item_whose_job_row_is_gone(session: Session) -> None:
+    """An item whose collect_jobs row does not exist can never be
+    reconciled: the worker ack-drops it (no scan, no nack loop), logs,
+    and counts constat_collect_orphan_items_total."""
+    from constat_api.metrics import COLLECT_ORPHAN_ITEMS_TOTAL
+
+    q = InProcessQueue(maxsize=10)
+    q.send([_item()])  # random job_id, no job row
+    orphans_before = COLLECT_ORPHAN_ITEMS_TOTAL._value.get()
+
+    with patch("constat_api.collectors.aws.collect_target") as mock_collect:
+        outcomes = drain_once(lambda: session, q, base_session=MagicMock())
+
+    assert [o.status for o in outcomes] == ["dropped"]
+    mock_collect.assert_not_called()  # never scanned
+    assert q.receive(max_items=1, wait_seconds=0) == []  # acked, gone
+    assert COLLECT_ORPHAN_ITEMS_TOTAL._value.get() == orphans_before + 1
+
+
+# ---------------------------------------------------------------------------
+# Collect -> evaluate chain (SRE-1b)
+# ---------------------------------------------------------------------------
+
+
+def _eol_scan(session, regions):
+    """One PG12 instance per region: PG12 is past EOL but inside Extended
+    Support (catalog: EOL 2025-02-28, force-upgrade 2028-02-29), so the
+    rds_eol rule deterministically emits an insight."""
+    for r in regions:
+        yield {"_region": r, **make_rds_db_dict(engine_version="12.13")}
+
+
+def test_completed_job_triggers_rule_evaluation(session: Session) -> None:
+    """Draining the last (only) item of a job runs every registered rule:
+    insights land in the DB and evaluation_status flips to 'success'."""
+    from constat_api.orm import InsightORM
+
+    q = InProcessQueue(maxsize=10)
+    job_id = _make_job(session)
+    q.send([_item(job_id=job_id)])
+    with (
+        patch(
+            "constat_api.collectors.aws._assume_role",
+            side_effect=lambda base, target: base,
+        ),
+        patch("constat_api.collectors.aws.collect_db_instances", side_effect=_eol_scan),
+    ):
+        outcomes = drain_once(lambda: session, q, base_session=MagicMock())
+
+    assert [o.status for o in outcomes] == ["success"]
+    # Every registered rule produced an insight_run row.
+    run_rules = {r.rule_name for r in session.query(InsightRunORM).all()}
+    from constat_api.insights.runner import RUNNERS
+
+    assert run_rules == set(RUNNERS)
+    # The seeded PG12 instance produced an rds_eol insight.
+    insight_rules = {i.rule_name for i in session.query(InsightORM).all()}
+    assert "rds_eol" in insight_rules
+    # The job row records the chain outcome.
+    ops = collect_jobs_repo.get_job_ops(session, job_id)
+    assert ops is not None
+    assert ops.evaluation_status == "success"
+
+
+def test_evaluation_claim_is_atomic_no_rerun(session: Session) -> None:
+    """A second drain / worker does NOT re-run evaluation for a completed
+    job: the conditional UPDATE ... WHERE evaluation_status IS NULL
+    admits exactly one winner."""
+    from constat_api.worker import _maybe_run_evaluation
+
+    q = InProcessQueue(maxsize=10)
+    job_id = _make_job(session)
+    q.send([_item(job_id=job_id)])
+    p_assume, p_scan = _collector_patches()
+    with p_assume, p_scan:
+        drain_once(lambda: session, q, base_session=MagicMock())
+
+    runs_after_first = session.query(InsightRunORM).count()
+    assert runs_after_first > 0
+
+    # A second worker reaching the same completed job loses the claim.
+    assert collect_jobs_repo.try_claim_evaluation(session, job_id) is False
+    session.rollback()
+    _maybe_run_evaluation(lambda: session, job_id)
+    assert session.query(InsightRunORM).count() == runs_after_first
+
+
+def test_failed_rule_marks_evaluation_failed_and_drain_continues(
+    session: Session,
+) -> None:
+    """A rule raising inside the chain flips evaluation_status to 'failed'
+    but never crashes the drain loop: the item stays acked 'success'."""
+    q = InProcessQueue(maxsize=10)
+    job_id = _make_job(session)
+    q.send([_item(job_id=job_id)])
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("rule exploded")
+
+    p_assume, p_scan = _collector_patches()
+    with (
+        p_assume,
+        p_scan,
+        patch("constat_api.worker.run_rule", side_effect=_boom),
+    ):
+        outcomes = drain_once(lambda: session, q, base_session=MagicMock())
+
+    assert [o.status for o in outcomes] == ["success"]  # item acked regardless
+    ops = collect_jobs_repo.get_job_ops(session, job_id)
+    assert ops is not None
+    assert ops.evaluation_status == "failed"
+
+
+def test_incomplete_job_does_not_trigger_evaluation(session: Session) -> None:
+    """A job with 2 items where only 1 has been acked is not complete:
+    no rule runs yet (the second item is still queued)."""
+    q = InProcessQueue(maxsize=10)
+    job_id = _make_job(session, total_items=2)
+    # Only one of the two items is in the queue right now.
+    q.send([_item(job_id=job_id, region="eu-west-1")])
+    p_assume, p_scan = _collector_patches()
+    with p_assume, p_scan:
+        outcomes = drain_once(lambda: session, q, base_session=MagicMock())
+
+    assert [o.status for o in outcomes] == ["success"]
+    assert session.query(InsightRunORM).count() == 0
+    ops = collect_jobs_repo.get_job_ops(session, job_id)
+    assert ops is not None
+    assert ops.evaluation_status is None

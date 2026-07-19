@@ -147,6 +147,8 @@ def test_collector_creates_source_runs(session: Session) -> None:
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("eu-west-1", "us-east-1"),
+        # Explicit rds-only scope (SRE-2b changed the default to ALL jobs).
+        resource_types=("rds",),
     )
 
     def _scan(session, regions):
@@ -175,6 +177,8 @@ def test_collector_marks_failed_run_on_region_error(session: Session) -> None:
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("eu-west-1", "us-east-1"),
+        # Explicit rds-only scope (SRE-2b changed the default to ALL jobs).
+        resource_types=("rds",),
     )
 
     def _flaky_scan(session, regions):
@@ -218,6 +222,7 @@ def test_collector_returns_none_run_when_scan_in_progress(session: Session) -> N
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("eu-west-1",),
+        resource_types=("rds",),
     )
     result = collect_target(
         session,

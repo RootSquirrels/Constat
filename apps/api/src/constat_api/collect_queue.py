@@ -53,7 +53,8 @@ class WorkItem:
     """One unit of collection work: one AWS account, one region.
 
     `resource_types` travels inside the item (None = collector default,
-    i.e. RDS only). `force` and `dry_run` are propagated verbatim from the
+    i.e. ALL registered scan jobs — rds + ec2_volume + ec2_snapshot +
+    ec2_instance). `force` and `dry_run` are propagated verbatim from the
     POST body. `job_id` links every source_run the worker writes back to
     the collect_jobs row the API returned.
     """
@@ -256,11 +257,26 @@ class SQSQueue:
         # this is a few hundred calls per POST — fine, and it keeps a
         # partial failure surface obvious (SendMessageBatch silently
         # splits failures per entry). Revisit if a sweep grows 10x.
+        #
+        # Partial-send semantics (SRE-4): a failure mid-list RAISES, it
+        # never silently skips. Messages sent before the raise stay sent —
+        # that is why the router commits the job row BEFORE calling send
+        # and records `enqueue_error` on it instead of rolling back:
+        # the worker's orphan reconciliation (job row must exist for an
+        # item to be processed) and the idempotent source_runs dedupe
+        # make "some items sent, failure recorded" a safe, reconcileable
+        # state. The error names the item it failed on.
         for item in items:
-            self._client.send_message(
-                QueueUrl=self._queue_url,
-                MessageBody=json.dumps(item.to_dict()),
-            )
+            try:
+                self._client.send_message(
+                    QueueUrl=self._queue_url,
+                    MessageBody=json.dumps(item.to_dict()),
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"SQS send failed at item {item.aws_account_id}/{item.region} "
+                    f"(job {item.job_id}); earlier items in this batch are already sent"
+                ) from e
 
     def receive(self, max_items: int, wait_seconds: int) -> list[ReceivedItem]:
         response = self._client.receive_message(

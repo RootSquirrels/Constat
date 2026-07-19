@@ -59,7 +59,9 @@ def test_payload_to_db_round_trips_fields() -> None:
 def test_replay_rebuilds_facts_from_observations(session: Session) -> None:
     """End-to-end: scan produces observations + facts. Wipe facts, replay,
     facts come back identical."""
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     collect_target(
         session,
         target,
@@ -95,7 +97,9 @@ def test_replay_rebuilds_facts_from_observations(session: Session) -> None:
 
 
 def test_replay_dry_run_does_not_write(session: Session) -> None:
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     collect_target(
         session,
         target,
@@ -117,7 +121,9 @@ def test_replay_filters_by_account(session: Session) -> None:
     """Replay only touches observations on the requested account."""
     # Two accounts, each with one observation
     for ext_id in ("111", "222"):
-        target = TargetAccount(aws_account_id=ext_id, regions=("eu-west-1",))
+        target = TargetAccount(
+            aws_account_id=ext_id, regions=("eu-west-1",), resource_types=("rds",)
+        )
         collect_target(
             session,
             target,
@@ -143,7 +149,7 @@ def test_replay_filters_by_account(session: Session) -> None:
 
 def test_replay_filters_by_source(session: Session) -> None:
     """Unknown sources are skipped without raising."""
-    target = TargetAccount(aws_account_id="111", regions=("eu-west-1",))
+    target = TargetAccount(aws_account_id="111", regions=("eu-west-1",), resource_types=("rds",))
     collect_target(
         session,
         target,
@@ -163,7 +169,7 @@ def test_replay_filters_by_source(session: Session) -> None:
 
 def test_replay_skips_observations_without_resource(session: Session) -> None:
     """An observation whose resource was deleted is skipped (orphan)."""
-    target = TargetAccount(aws_account_id="111", regions=("eu-west-1",))
+    target = TargetAccount(aws_account_id="111", regions=("eu-west-1",), resource_types=("rds",))
     collect_target(
         session,
         target,

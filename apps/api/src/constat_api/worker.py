@@ -25,6 +25,20 @@ one account from several threads is not. An item for a busy account is
 nacked with a short delay (not a failure): it will be picked up when the
 account frees a slot.
 
+Orphan reconciliation (SRE-4): before processing, the worker checks the
+item's collect_jobs row still exists. A missing row means the job was
+deleted (or never committed) while items were queued — the item can
+never be reconciled, so it is ack-dropped, logged, and counted in
+`constat_collect_orphan_items_total`.
+
+Collect -> evaluate chain (SRE-1b): after acking an item, the worker
+checks whether the job is complete (every expected scope has its
+source_run, none still running). The worker that sees completion
+atomically claims evaluation on the job row (exactly one winner, even
+in a pool) and runs every registered insight rule; the outcome lands in
+collect_jobs.evaluation_status. A rule failure marks it 'failed' but
+never crashes the drain loop.
+
 Entry points:
 - API lifespan (inline mode): `start_worker_pool` on the in-process queue.
 - `python -m constat_api.worker` (sqs mode): standalone drain loop with
@@ -41,16 +55,20 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
 from constat_api.collect_queue import ReceivedItem, WorkItem, WorkQueue, get_queue
 from constat_api.collectors import aws as aws_collector
 from constat_api.collectors.aws import TargetAccount
+from constat_api.insights.runner import RUNNERS, run_rule
 from constat_api.metrics import (
     record_collect_item,
+    record_collect_orphan_item,
     set_collect_items_in_flight,
 )
+from constat_api.repositories import collect_jobs as collect_jobs_repo
 from constat_api.settings import settings
 from constat_api.tenant import bind_tenant
 
@@ -74,7 +92,9 @@ class ItemOutcome:
     """What drain_once did with one received item.
 
     status: "success" (acked), "failed" (nacked after errors/exception),
-    "deferred" (nacked, per-account cap reached — not a failure).
+    "deferred" (nacked, per-account cap reached — not a failure),
+    "dropped" (acked without processing: the item's collect_jobs row is
+    gone — orphan reconciliation, SRE-4).
     """
 
     item: WorkItem
@@ -127,6 +147,75 @@ class PerAccountLimiter:
 def _backoff_seconds(attempts: int) -> int:
     """30s x attempt, capped. attempts is the delivery count (>= 1)."""
     return min(NACK_BACKOFF_BASE_SECONDS * max(attempts, 1), NACK_BACKOFF_MAX_SECONDS)
+
+
+def _job_exists(session_factory: SessionFactory, job_id: UUID) -> bool:
+    """True when the item's collect_jobs row still exists (SRE-4).
+
+    An item whose job row is gone can never be reconciled (the status
+    endpoint 404s, nobody is waiting on it), so drain_once ack-drops it
+    instead of scanning an account nobody asked about.
+    """
+    session = session_factory()
+    try:
+        # Same tenant binding as _process_item: on Postgres the RLS GUC
+        # must be set or the collect_jobs read sees zero rows.
+        bind_tenant(session, settings.default_tenant_id)
+        return collect_jobs_repo.get_job(session, job_id) is not None
+    finally:
+        session.close()
+
+
+def _maybe_run_evaluation(session_factory: SessionFactory, job_id: UUID) -> None:
+    """Run the collect -> evaluate chain when this ack completed the job (SRE-1b).
+
+    Completion = every expected scope has at least one source_run for
+    this job and none is still 'running' (failed runs count as done: the
+    rules degrade unproven scopes to INCONCLUSIVE — that is the product
+    contract, not a reason to block evaluation).
+
+    The claim is an atomic UPDATE ... WHERE evaluation_status IS NULL, so
+    exactly one worker in a pool wins even if several ack the last items
+    concurrently. The winner runs every registered rule in one session,
+    then records 'success', or 'failed' if any rule raised. Nothing here
+    may crash the drain loop: the item is already acked, so every failure
+    is logged and recorded on the job row instead.
+    """
+    session = session_factory()
+    try:
+        bind_tenant(session, settings.default_tenant_id)
+        job = collect_jobs_repo.get_job(session, job_id)
+        if job is None or not collect_jobs_repo.is_job_complete(session, job_id, job.total_items):
+            return
+        if not collect_jobs_repo.try_claim_evaluation(session, job_id):
+            # Another worker claimed it first. Roll back only our lost
+            # claim attempt; the winner commits its own.
+            session.rollback()
+            return
+        session.commit()  # the claim is durable before any rule runs
+
+        failed = False
+        for rule in sorted(RUNNERS):
+            try:
+                run_rule(session, rule)
+            except Exception:
+                failed = True
+                session.rollback()
+                logger.exception("post-collect evaluation: rule %s raised (job %s)", rule, job_id)
+        collect_jobs_repo.set_evaluation_status(session, job_id, "failed" if failed else "success")
+        session.commit()
+        logger.info(
+            "post-collect evaluation %s for job %s", "failed" if failed else "success", job_id
+        )
+    except Exception:
+        # The item is already acked; never let the chain kill the drain
+        # loop. The job row keeps evaluation_status='running' if the crash
+        # happened after the claim — visible to the operator via the
+        # status endpoint, recoverable via POST /insights/run.
+        session.rollback()
+        logger.exception("post-collect evaluation chain failed for job %s", job_id)
+    finally:
+        session.close()
 
 
 def _process_item(
@@ -209,6 +298,19 @@ def drain_once(
     outcomes: list[ItemOutcome] = []
     for r in received:
         item = r.item
+        # Orphan reconciliation (SRE-4): no job row -> the item can never
+        # be reconciled. Ack-drop it, count it, move on.
+        if not _job_exists(session_factory, item.job_id):
+            queue.ack(r.receipt)
+            record_collect_orphan_item()
+            logger.warning(
+                "dropping orphan collect item: job %s does not exist (account=%s region=%s)",
+                item.job_id,
+                item.aws_account_id,
+                item.region,
+            )
+            outcomes.append(ItemOutcome(item=item, status="dropped"))
+            continue
         if not limiter.try_acquire(item.aws_account_id):
             # Per-account cap reached: not a failure, just "not now".
             queue.nack(r.receipt, delay_seconds=BUSY_ACCOUNT_DELAY_SECONDS)
@@ -220,6 +322,9 @@ def drain_once(
             outcome = _process_item(session_factory, r, base_session=base_session)
             if outcome.status == "success":
                 queue.ack(r.receipt)
+                # SRE-1b: if this ack completed the job, exactly one
+                # worker claims and runs the rule evaluation chain.
+                _maybe_run_evaluation(session_factory, item.job_id)
             else:
                 # Region errors recorded in source_runs; retry with backoff.
                 queue.nack(r.receipt, delay_seconds=_backoff_seconds(r.attempts))

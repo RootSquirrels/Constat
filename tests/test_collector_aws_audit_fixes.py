@@ -41,7 +41,9 @@ def _scan_with(arns: list[str]):
 
 
 def _target() -> TargetAccount:
-    return TargetAccount(aws_account_id="111111111111", regions=(_REGION,))
+    # Explicit rds-only scope: the collector default is now ALL registered
+    # jobs (SRE-2b); these tests mock only the RDS scan_fn.
+    return TargetAccount(aws_account_id="111111111111", regions=(_REGION,), resource_types=("rds",))
 
 
 def _collect(session: Session, target: TargetAccount, scan_fn: Any, **kwargs: Any) -> Any:
@@ -127,7 +129,9 @@ def test_f01_unexpected_exception_still_fails_the_run(session: Session) -> None:
 def test_f01_botocore_error_counts_toward_circuit_breaker(session: Session) -> None:
     """BotoCoreError subtypes (timeouts, connection errors) feed the
     circuit breaker exactly like ClientError."""
-    target = TargetAccount(aws_account_id="111111111111", regions=("r1", "r2", "r3"))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("r1", "r2", "r3"), resource_types=("rds",)
+    )
 
     def _scan(s: Any, regions: list[str]):
         for region in regions:
@@ -147,7 +151,11 @@ def test_f01_botocore_error_counts_toward_circuit_breaker(session: Session) -> N
 def test_f01_error_classification_buckets(session: Session) -> None:
     """ClientError codes are bucketed into AccessDenied / Throttling /
     Unknown in the recorded error string."""
-    target = TargetAccount(aws_account_id="111111111111", regions=("deny", "slow", "weird"))
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("deny", "slow", "weird"),
+        resource_types=("rds",),
+    )
     from botocore.exceptions import ClientError
 
     codes = {"deny": "AccessDeniedException", "slow": "ThrottlingException", "weird": "Weird"}

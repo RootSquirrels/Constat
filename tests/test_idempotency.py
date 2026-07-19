@@ -104,7 +104,15 @@ def test_collect_aws_same_idempotency_key_returns_cached_response(
     from constat_api.orm import CollectJobORM
 
     body = {
-        "targets": [{"aws_account_id": "111111111111", "regions": ["eu-west-1"]}],
+        # Explicit rds-only scope (SRE-2b): the drain below mocks only the
+        # RDS scan; the default is now ALL registered jobs.
+        "targets": [
+            {
+                "aws_account_id": "111111111111",
+                "regions": ["eu-west-1"],
+                "resource_types": ["rds"],
+            }
+        ],
     }
     # First call: job created, item enqueued
     r1 = client.post(

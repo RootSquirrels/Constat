@@ -4,11 +4,16 @@ Committee finding: the scheduled ECS task hardcoded two `--rule` lines, so
 4 of 6 registered rules never ran automatically — the same drift class as
 the monetary extraction bug (a hardcoded list diverging from RUNNERS).
 
+SRE-review follow-up (2026-07-19): the scheduled task no longer runs the
+collector or the rules in-task at all — it ENQUEUES (cli.aws --enqueue-all
+→ SQS → worker), and rule evaluation is chained by the worker when a
+collect job completes (migration 0021). `--all` remains the manual/ops path.
+
 These tests pin both sides:
 1. `--all` runs exactly the rules registered in RUNNERS (no more, no less),
    and keeps going when one rule fails (exit code 2, others still run).
-2. infra/ecs.tf uses `--all` and contains no per-rule invocation, so the
-   hardcoded list cannot come back through Terraform.
+2. infra/ecs.tf schedules `--enqueue-all` and contains neither a targets
+   file nor an in-task run_insights, so the old drift cannot come back.
 """
 
 from __future__ import annotations
@@ -113,10 +118,22 @@ def test_one_failing_rule_does_not_stop_the_others(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ecs_task_uses_all_and_no_hardcoded_rules() -> None:
+def test_ecs_task_enqueues_instead_of_scanning_directly() -> None:
+    """SRE review (2026-07-19): the scheduled task must go through the
+    queue + persisted targets, and evaluation must come from the worker
+    chain — never from an in-task hardcoded invocation."""
     source = ECS_TF.read_text(encoding="utf-8")
-    assert "run_insights --all" in source, "infra/ecs.tf must schedule run_insights --all"
-    assert "run_insights --rule" not in source, (
-        "infra/ecs.tf hardcodes a --rule invocation again — that is the "
-        "drift that silently skipped 4 of 6 rules (see this test's docstring)"
+    # Comments mention the old world for context ("no more run_insights…")
+    # — assertions apply to executable lines only.
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    assert "--enqueue-all" in code, (
+        "infra/ecs.tf must schedule the queue path (python -m constat_api.cli.aws --enqueue-all)"
+    )
+    assert "--targets" not in code, (
+        "infra/ecs.tf reads a targets JSON file again — the scan-targets "
+        "secret path is deprecated; persisted collect_targets are the source"
+    )
+    assert "run_insights" not in code, (
+        "infra/ecs.tf runs rule evaluation in-task again — evaluation is "
+        "chained by the worker when a collect job completes (migration 0021)"
     )

@@ -38,6 +38,9 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
         role_arn=None,
         name="prod",
         regions=("eu-west-1",),
+        # Explicit rds-only scope: the collector default is now ALL
+        # registered jobs (SRE-2b); these tests mock only the RDS scan.
+        resource_types=("rds",),
     )
     base = MagicMock()
     result = collect_target(
@@ -71,7 +74,9 @@ def test_collect_writes_resource_and_facts(session: Session) -> None:
 
 def test_collect_updates_last_seen_at_on_existing_resource(session: Session) -> None:
     # First scan
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     result1 = collect_target(
         session,
         target,
@@ -102,7 +107,9 @@ def test_collect_updates_last_seen_at_on_existing_resource(session: Session) -> 
 
 
 def test_collect_dry_run_does_not_write_facts(session: Session) -> None:
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     result = collect_target(
         session,
         target,
@@ -122,7 +129,11 @@ def test_collect_dry_run_does_not_write_facts(session: Session) -> None:
 
 
 def test_collect_handles_multiple_regions(session: Session) -> None:
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1", "us-east-1"))
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("eu-west-1", "us-east-1"),
+        resource_types=("rds",),
+    )
     result = collect_target(
         session,
         target,
@@ -149,7 +160,11 @@ def test_collect_continues_on_region_error(session: Session) -> None:
                 )
             yield {"_region": region, **make_rds_db_dict()}
 
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1", "us-east-1"))
+    target = TargetAccount(
+        aws_account_id="111111111111",
+        regions=("eu-west-1", "us-east-1"),
+        resource_types=("rds",),
+    )
     result = collect_target(
         session,
         target,
@@ -174,8 +189,15 @@ def test_collect_targets_continues_on_assume_role_failure(session: Session) -> N
         )
 
     targets = [
-        TargetAccount(aws_account_id="111111111111", role_arn="arn:bad", regions=("eu-west-1",)),
-        TargetAccount(aws_account_id="222222222222", regions=("us-east-1",)),
+        TargetAccount(
+            aws_account_id="111111111111",
+            role_arn="arn:bad",
+            regions=("eu-west-1",),
+            resource_types=("rds",),
+        ),
+        TargetAccount(
+            aws_account_id="222222222222", regions=("us-east-1",), resource_types=("rds",)
+        ),
     ]
 
     def _scan(session, regions):
@@ -217,7 +239,9 @@ def test_collect_retires_resources_not_seen_in_latest_scan(session: Session) -> 
     are retired (this is the GTM promise: 'we never claim a resource is
     alive without proof')."""
     # Scan #1: see arn:1 and arn:2 in eu-west-1
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
     collect_target(
         session,
         target,
@@ -252,7 +276,9 @@ def test_collect_retires_resources_not_seen_in_latest_scan(session: Session) -> 
 def test_collect_resurrects_resource_that_comes_back(session: Session) -> None:
     """A resource that was retired but reappears in a later scan is
     resurrected (retired_at cleared, last_seen_at bumped)."""
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
 
     # Scan #1: arn:1
     collect_target(
@@ -293,7 +319,9 @@ def test_collect_uses_force_to_override_stuck_run(session: Session) -> None:
     from constat_api.repositories import accounts as accounts_repo
     from constat_api.repositories import source_runs as source_runs_repo
 
-    target = TargetAccount(aws_account_id="111111111111", regions=("eu-west-1",))
+    target = TargetAccount(
+        aws_account_id="111111111111", regions=("eu-west-1",), resource_types=("rds",)
+    )
 
     # Pre-existing stuck run
     acc = accounts_repo.get_or_create(session, "111111111111")
@@ -344,6 +372,7 @@ def test_collect_circuit_breaker_skips_after_consecutive_failures(
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("r1", "r2", "r3", "r4", "r5"),
+        resource_types=("rds",),
     )
 
     def _scan(s, regions):
@@ -398,6 +427,7 @@ def test_collect_circuit_breaker_resets_on_success(session: Session) -> None:
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("r1", "r2", "r3", "r4", "r5"),
+        resource_types=("rds",),
     )
 
     def _scan(s, regions):
@@ -434,6 +464,7 @@ def test_collect_circuit_breaker_disabled_when_max_is_high(session: Session) -> 
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("r1", "r2", "r3"),
+        resource_types=("rds",),
     )
 
     def _scan(s, regions):
@@ -463,6 +494,7 @@ def test_collect_circuit_breaker_trips_at_threshold_one(session: Session) -> Non
     target = TargetAccount(
         aws_account_id="111111111111",
         regions=("r1", "r2", "r3"),
+        resource_types=("rds",),
     )
 
     def _scan(s, regions):

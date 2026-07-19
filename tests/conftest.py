@@ -131,6 +131,15 @@ def engine() -> Iterator[Engine]:
     from constat_api.orm import Base
 
     Base.metadata.create_all(eng)
+    # Migration 0021 columns on collect_jobs. orm.py is owned by a
+    # parallel workstream and does not map them yet, so create_all cannot
+    # add them — mirror the migration here (CI's Postgres job applies the
+    # real migration). Drop this once the ORM catches up.
+    from sqlalchemy import text
+
+    with eng.begin() as conn:
+        conn.execute(text("ALTER TABLE collect_jobs ADD COLUMN enqueue_error TEXT"))
+        conn.execute(text("ALTER TABLE collect_jobs ADD COLUMN evaluation_status TEXT"))
     try:
         yield eng
     finally:

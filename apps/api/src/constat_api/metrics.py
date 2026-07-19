@@ -40,8 +40,8 @@ Cardinality budget per metric (rough):
   by route count cross method count
 - `constat_collect_items_total{outcome}` — outcome in {success, failed,
   deferred} -> 3 series
-- `constat_collect_items_in_flight`, `constat_collect_queue_depth` —
-  one series each
+- `constat_collect_items_in_flight`, `constat_collect_queue_depth`,
+  `constat_collect_orphan_items_total` — one series each
 """
 
 from __future__ import annotations
@@ -150,6 +150,14 @@ COLLECT_QUEUE_DEPTH = Gauge(
     registry=REGISTRY,
 )
 
+COLLECT_ORPHAN_ITEMS_TOTAL = Counter(
+    "constat_collect_orphan_items_total",
+    "Collect work items dropped because their collect_jobs row no longer "
+    "exists (SRE-4 orphan reconciliation). Should stay at zero; a nonzero "
+    "value means a job row was deleted while items were still queued.",
+    registry=REGISTRY,
+)
+
 
 # ----------------------------------------------------------------------------
 # HTTP metrics
@@ -203,6 +211,11 @@ def record_focus_rows(*, ingested: int, skipped: int) -> None:
 
 def record_collect_item(*, outcome: str) -> None:
     COLLECT_ITEMS_TOTAL.labels(outcome=outcome).inc()
+
+
+def record_collect_orphan_item() -> None:
+    """A queued item whose collect_jobs row is gone, dropped by the worker."""
+    COLLECT_ORPHAN_ITEMS_TOTAL.inc()
 
 
 def set_collect_items_in_flight(delta: int) -> None:
