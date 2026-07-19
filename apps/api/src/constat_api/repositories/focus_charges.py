@@ -7,6 +7,13 @@ now uses these per-row rows to split cost proportionally, not evenly.
 Migration 0020: also writes per-input-row cost to focus_charge_tags
 (billed_cost, amortized_cost, input_row_index). The resolver uses
 these for cost-weighted tag attribution, not count-weighted.
+Roadmap-consolidation §II.1: the dedup key uses
+`COALESCE(service_canonical, service)` so an AWS row and an Azure
+row for the same logical service (e.g. "Amazon RDS" + "Azure Database
+for PostgreSQL" both canonical to "managed_postgres") collapse to
+one row. Rows that pre-date the catalog have `service_canonical IS
+NULL` and dedup by their native service name. The dedup is portable
+across sqlite and postgres (`func.coalesce` works in both).
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from constat_focus.aggregator import AggregatedFocusCharge
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import FocusChargeORM, FocusChargeTagORM
@@ -29,7 +36,10 @@ def upsert_aggregated(
 ) -> tuple[int, int]:
     """Insert or update rows. Returns (inserted, updated) counts.
 
-    Natural key: (account_id, service, period_start, period_end).
+    Natural key: (account_id, COALESCE(service_canonical, service),
+    period_start, period_end). The `COALESCE` keeps the legacy
+    pre-catalog data deduped by native service name; once the catalog
+    is wired in, the canonical takes over.
     V2: per-row tags from `AggregatedFocusCharge.per_row_tag_dicts`
     are written to `focus_charge_tags` after each focus_charges
     upsert. Existing focus_charge_tags rows for the focus_charge
@@ -46,10 +56,15 @@ def upsert_aggregated(
     # default under a non-default tenant).
     tenant_id = tenant_or_default(session)
     for agg in aggregated:
+        # Dedup key: canonical when set (cross-provider merge),
+        # else native (legacy / not-in-catalog fallback). Same
+        # expression on the new row's value side.
+        dedup_service = func.coalesce(agg.service_canonical, agg.service)
         existing = session.execute(
             select(FocusChargeORM).where(
                 FocusChargeORM.account_id == account_id,
-                FocusChargeORM.service == agg.service,
+                func.coalesce(FocusChargeORM.service_canonical, FocusChargeORM.service)
+                == dedup_service,
                 FocusChargeORM.period_start == agg.period_start,
                 FocusChargeORM.period_end == agg.period_end,
             )
@@ -65,6 +80,7 @@ def upsert_aggregated(
             existing.sub_account_id = agg.sub_account_id
             existing.tags = list(agg.tags)
             existing.billing_currency = agg.billing_currency
+            existing.service_canonical = agg.service_canonical
             _write_per_row_tags(
                 session,
                 existing.id,
@@ -80,6 +96,7 @@ def upsert_aggregated(
                 period_start=agg.period_start,
                 period_end=agg.period_end,
                 service=agg.service,
+                service_canonical=agg.service_canonical,
                 region=agg.region,
                 pricing_category=agg.pricing_category,
                 billed_cost=agg.billed_cost,

@@ -215,6 +215,15 @@ class FocusChargeORM(Base):
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
     service: Mapped[str] = mapped_column(String, nullable=False)
+    # Roadmap-consolidation §II.1: the cross-provider canonical name
+    # resolved from the service catalog (e.g. "Amazon RDS" +
+    # "Azure Database for PostgreSQL" -> "managed_postgres"). Nullable
+    # so the migration is a pure add-column without backfill; pre-
+    # catalog rows dedup by `service` (the dedup key uses
+    # COALESCE(service_canonical, service)). Backfill is a one-off
+    # `UPDATE focus_charges SET service_canonical = <catalog lookup>`
+    # once the data layer has the catalog wired in.
+    service_canonical: Mapped[str | None] = mapped_column(String, nullable=True)
     region: Mapped[str | None] = mapped_column(String)
     pricing_category: Mapped[str | None] = mapped_column(String)
     billed_cost: Mapped[Decimal] = mapped_column(

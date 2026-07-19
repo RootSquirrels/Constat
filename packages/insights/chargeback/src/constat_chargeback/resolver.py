@@ -82,6 +82,13 @@ class AggregatedCost:
     # grouping is currency-aware, so one aggregate is always single-
     # currency). Surfaced in the insight payload as `billing_currency`.
     billing_currency: str = "USD"
+    # Roadmap-consolidation §II.1: the cross-provider canonical name
+    # the bucket key used (the resolver falls back to the native
+    # `service` when the canonical is None). Persisted for downstream
+    # consumers (build_insights title, UI grouping) that need the
+    # stable cross-provider name. The `service` field above remains
+    # the native name for backward compat and per-provider traceability.
+    service_canonical: str | None = None
 
     @property
     def drift_amortized_minus_billed(self) -> Decimal:
@@ -95,17 +102,34 @@ def aggregate(charges: Iterable[FocusCharge]) -> list[AggregatedCost]:
 
     Kept for backward compat / V1 'all-time' view. V1 production code
     should prefer aggregate_by_period for monthly trends.
+
+    Roadmap-consolidation §II.1: the bucket key uses
+    `service_canonical or service` so an AWS row and an Azure row
+    for the same logical service collapse to one aggregate. The
+    `service` field on the result keeps the native name (the mode
+    of the input rows); `service_canonical` carries the cross-provider
+    stable name.
     """
     buckets: dict[tuple[str, str, str], list[FocusCharge]] = defaultdict(list)
     for c in charges:
-        buckets[(c.account_id, c.service, c.billing_currency)].append(c)
+        key = (c.account_id, c.service_canonical or c.service, c.billing_currency)
+        buckets[key].append(c)
 
     results: list[AggregatedCost] = []
-    for (account_id, service, currency), rows in buckets.items():
+    for (account_id, dedup_service, currency), rows in buckets.items():
+        # The native service name is the mode of the contributing
+        # rows' native names (informational). All rows in one bucket
+        # share the same canonical by construction.
+        native_mode = _mode([c.service for c in rows]) or dedup_service
+        canonical_mode = next(
+            (c.service_canonical for c in rows if c.service_canonical is not None),
+            None,
+        )
         results.append(
             AggregatedCost(
                 account_id=account_id,
-                service=service,
+                service=native_mode,
+                service_canonical=canonical_mode,
                 billed_cost=sum((c.billed_cost for c in rows), Decimal("0")),
                 amortized_cost=sum((c.amortized_cost for c in rows), Decimal("0")),
                 charge_count=len(rows),
@@ -125,18 +149,33 @@ def aggregate_by_period(
     One row per (account, service, billing period, currency). Use this for monthly
     trends. The `tags` field carries every unique tag dict seen in the
     contributing rows, ready for downstream tag-based re-aggregation.
+
+    Roadmap-consolidation §II.1: the bucket key uses
+    `service_canonical or service` (see `aggregate`).
     """
     buckets: dict[tuple[str, str, date, date, str], list[FocusCharge]] = defaultdict(list)
     for c in charges:
-        key = (c.account_id, c.service, c.period_start, c.period_end, c.billing_currency)
+        key = (
+            c.account_id,
+            c.service_canonical or c.service,
+            c.period_start,
+            c.period_end,
+            c.billing_currency,
+        )
         buckets[key].append(c)
 
     results: list[AggregatedCost] = []
-    for (account_id, service, ps, pe, currency), rows in buckets.items():
+    for (account_id, dedup_service, ps, pe, currency), rows in buckets.items():
+        native_mode = _mode([r.service for r in rows]) or dedup_service
+        canonical_mode = next(
+            (r.service_canonical for r in rows if r.service_canonical is not None),
+            None,
+        )
         results.append(
             AggregatedCost(
                 account_id=account_id,
-                service=service,
+                service=native_mode,
+                service_canonical=canonical_mode,
                 billed_cost=sum((r.billed_cost for r in rows), Decimal("0")),
                 amortized_cost=sum((r.amortized_cost for r in rows), Decimal("0")),
                 charge_count=len(rows),
@@ -192,6 +231,10 @@ def aggregate_by_tag(
     bucket_tags: dict[tuple[str, str, date, date, str, str], list[dict[str, str]]] = defaultdict(
         list
     )
+    # Per-bucket canonical: a bucket keyed on the canonical
+    # remembers it; a bucket keyed on the native name (no canonical
+    # in the catalog) leaves the value None.
+    bucket_canonical: dict[tuple[str, str, date, date, str, str], str | None] = {}
     # First non-empty account name seen per account_id (audit F-13).
     account_names: dict[str, str] = {}
 
@@ -201,6 +244,11 @@ def aggregate_by_tag(
         if c.period_start is None or c.period_end is None:
             # Should never happen for storage rows; defensive.
             continue
+        # Roadmap-consolidation §II.1: the bucket key uses the
+        # canonical when set (cross-provider merge) and the native
+        # service name otherwise. The canonical itself is recorded
+        # on the bucket so downstream consumers can read it.
+        dedup_service = c.service_canonical or c.service
 
         if c.per_row_costs:
             # Migration 0020 path: per-row cost attribution. Iterate
@@ -217,7 +265,7 @@ def aggregate_by_tag(
                     bucket_tags_dict = {}
                 key = (
                     c.account_id,
-                    c.service,
+                    dedup_service,
                     c.period_start,
                     c.period_end,
                     c.billing_currency,
@@ -230,16 +278,21 @@ def aggregate_by_tag(
                     prev_count + 1,
                 )
                 bucket_tags[key].append(bucket_tags_dict)
+                if c.service_canonical is not None:
+                    bucket_canonical[key] = c.service_canonical
         elif c.tags:
             # Fallback for charges with tags but no per_row_costs
             # (shouldn't happen post-0020, but be defensive): use V2
             # row-count weighting on the tag dicts.
             _attribute_row_count(c, tag_key, buckets, bucket_tags)
+            for key in buckets:
+                if c.service_canonical is not None:
+                    bucket_canonical[key] = c.service_canonical
         else:
             # No per-row data at all: full cost to UNTAGGED.
             key = (
                 c.account_id,
-                c.service,
+                dedup_service,
                 c.period_start,
                 c.period_end,
                 c.billing_currency,
@@ -252,24 +305,32 @@ def aggregate_by_tag(
                 prev_count + 1,
             )
             bucket_tags[key].append({})
+            if c.service_canonical is not None:
+                bucket_canonical[key] = c.service_canonical
 
     results: list[AggregatedCost] = []
-    for (account_id, service, ps, pe, currency, tag_value), (
+    for (account_id, dedup_service, ps, pe, currency, tag_value), (
         billed,
         amortized,
         count,
     ) in buckets.items():
+        # Native name is preserved on the result for backward compat;
+        # downstream consumers (the UI, the title) read service_canonical
+        # for the cross-provider stable name.
         results.append(
             AggregatedCost(
                 account_id=account_id,
-                service=service,
+                service=dedup_service,
+                service_canonical=bucket_canonical.get(
+                    (account_id, dedup_service, ps, pe, currency, tag_value)
+                ),
                 billed_cost=billed,
                 amortized_cost=amortized,
                 charge_count=count,
                 period_start=ps,
                 period_end=pe,
                 tags=_unique_dicts_flat(
-                    bucket_tags[(account_id, service, ps, pe, currency, tag_value)]
+                    bucket_tags[(account_id, dedup_service, ps, pe, currency, tag_value)]
                 ),
                 tag_key=tag_key,
                 tag_value=tag_value,
@@ -345,6 +406,24 @@ def _first_account_name(rows: Iterable[FocusCharge]) -> str:
     return ""
 
 
+def _mode(values: Iterable[str | None]) -> str | None:
+    """Most common non-None value, or None if all are None / empty.
+
+    The resolver uses this to pick a display name for the native
+    `service` field on AggregatedCost when the bucket contains rows
+    from multiple providers (e.g. AWS RDS + Azure DB for PostgreSQL
+    both canonical to "managed_postgres" — the mode of the native
+    names is whichever provider contributed more rows).
+    """
+    counter: dict[str, int] = {}
+    for v in values:
+        if v:
+            counter[v] = counter.get(v, 0) + 1
+    if not counter:
+        return None
+    return max(counter, key=counter.get)
+
+
 def _merge_tag_lists(rows: Iterable[FocusCharge]) -> list[dict[str, str]]:
     """Flatten all per-row tag lists and return the unique dicts, first-seen order."""
     out: list[dict[str, str]] = []
@@ -403,8 +482,15 @@ def build_insights(
         if agg.tag_key is not None and agg.tag_value is not None:
             tag_suffix = f" [{agg.tag_key}={agg.tag_value}]"
 
+        # Roadmap-consolidation §II.1: the title shows the cross-
+        # provider canonical when the catalog has a mapping, else the
+        # native service name. Same fallback in the payload's
+        # `service` field. The native name stays on `service_native`
+        # for traceability.
+        display_service = agg.service_canonical or agg.service
+
         title = (
-            f"{agg.service} on {display_account} ({label}){tag_suffix}: "
+            f"{display_service} on {display_account} ({label}){tag_suffix}: "
             f"amortized {direction} by {agg.billing_currency} {abs(drift):.2f}"
         )
 
@@ -416,7 +502,9 @@ def build_insights(
                 severity=Severity.INFO,
                 title=title,
                 payload={
-                    "service": agg.service,
+                    "service": display_service,
+                    "service_native": agg.service,
+                    "service_canonical": agg.service_canonical,
                     "account_id": agg.account_id,
                     "period_label": label,
                     "period_start": agg.period_start.isoformat() if agg.period_start else None,

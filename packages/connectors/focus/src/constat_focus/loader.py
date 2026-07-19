@@ -116,6 +116,17 @@ class FocusCharge:
     tags: list[dict[str, str]]
     billing_currency: str
     per_row_costs: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    # Roadmap-consolidation §II.1: the cross-provider canonical name
+    # resolved from the service catalog (e.g. "Amazon RDS" +
+    # "Azure Database for PostgreSQL" -> "managed_postgres"). None
+    # when the (provider, service) pair is not in the catalog — the
+    # loader keeps the native name in that case so the caller can
+    # decide. The rules and the aggregator consume this field, never
+    # `service` directly (see tests/test_focus_dialect_grep_pin.py).
+    # Lives at the end of the dataclass to keep the non-default
+    # fields contiguous (Python's dataclass requires non-defaults
+    # before defaults).
+    service_canonical: str | None = None
 
 
 def _parse_date(s: str) -> date:
@@ -214,8 +225,17 @@ def _parse_tags(raw: str | None) -> dict[str, str]:
     return {str(k): str(v) for k, v in parsed.items() if v is not None}
 
 
-def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
-    """Build a FocusCharge from a dict row (CSV) or from a pyarrow Row mapping."""
+def _row_to_charge(row: dict[str, str | None], *, provider: str | None = None) -> FocusCharge:
+    """Build a FocusCharge from a dict row (CSV) or from a pyarrow Row mapping.
+
+    `provider` is the FOCUS export's provider (e.g. "aws", "azure").
+    When set, the row's `ServiceName` is resolved against the
+    service catalog to populate `service_canonical` — the cross-
+    provider stable name the rules and aggregator consume (the
+    provider's native name is preserved as `service` for traceability).
+    When `provider` is None, `service_canonical` stays None and the
+    caller treats the row as "no canonical available".
+    """
     raw_tags = _parse_tags(row.get("Tags"))
     currency = _parse_billing_currency(row.get("BillingCurrency"))
     billed = _parse_decimal(row.get("BilledCost"))
@@ -226,10 +246,19 @@ def _row_to_charge(row: dict[str, str | None]) -> FocusCharge:
     # parallel so the resolver can attribute per-row cost correctly.
     tags_for_row: list[dict[str, str]] = [raw_tags]
     per_row_costs: list[tuple[Decimal, Decimal]] = [(billed, amortized)]
+    service = str(row.get("ServiceName", "")).strip()
+    service_canonical: str | None = None
+    if provider:
+        # Lazy import to keep the loader importable without yaml
+        # (the catalog depends on it). The first row pays the cost.
+        from constat_focus.service_catalog import get_catalog
+
+        service_canonical = get_catalog().canonical_for(provider, service)
     return FocusCharge(
         account_id=str(row.get("BillingAccountId", "")).strip(),
         account_name=str(row.get("BillingAccountName", "")).strip(),
-        service=str(row.get("ServiceName", "")).strip(),
+        service=service,
+        service_canonical=service_canonical,
         region=_opt_str(row.get("RegionId")) or _opt_str(row.get("Region")),
         pricing_category=_opt_str(row.get("PricingCategory")),
         period_start=_parse_date(str(row["ChargePeriodStart"])),
@@ -261,6 +290,7 @@ def load_focus_csv(
     path: str | Path,
     *,
     on_skip: Callable[[int, Exception], None] | None = None,
+    provider: str | None = None,
 ) -> Iterator[FocusCharge]:
     """Stream FOCUS 1.0 charges from a CSV file.
 
@@ -270,14 +300,45 @@ def load_focus_csv(
     `on_skip(line_no, exc)` is called for each row that fails to parse. Use it
     to track rows_skipped in the ingest result. The caller is responsible for
     counting rows_total separately (e.g. `sum(1 for _ in open(path)) - 1`).
+
+    `provider` is the FOCUS export's provider (e.g. "aws", "azure").
+    When set, the loader populates `service_canonical` on each
+    FocusCharge via the service catalog. None means "no canonical";
+    the rules and aggregator then fall back to the native `service`.
+    The provider can also be inferred: pass `provider="auto"` to use
+    the dialect auto-detect on the first row.
     """
     path = Path(path)
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         _validate_columns(reader.fieldnames, source="CSV")
-        for line_no, row in enumerate(reader, start=2):  # header is line 1
+        if provider == "auto":
+            from constat_focus.dialects import auto_detect as _auto_detect
+
+            first_row = next(reader, None) or {}
+            dialect = _auto_detect(list(reader.fieldnames or []), first_row)
+            provider = dialect.provider_name
+            # Replay the first row through the loader with the resolved
+            # provider. Subsequent rows use the same provider.
+            if first_row:
+                try:
+                    yield _row_to_charge(first_row, provider=provider)
+                except Exception as exc:
+                    logger.warning("FOCUS CSV: skipping malformed row at line 2: %s", exc)
+                    if on_skip is not None:
+                        on_skip(2, exc)
+            # The first row is at line 2 (header is 1); the next row is line 3.
+            line_offset = 3
+        else:
+            line_offset = 2
+        if provider is not None and provider not in {"aws", "azure"}:
+            raise ValueError(
+                f"unknown FOCUS provider {provider!r}; "
+                f"supported: {sorted({'aws', 'azure'})} (or 'auto' to detect)"
+            )
+        for line_no, row in enumerate(reader, start=line_offset):
             try:
-                yield _row_to_charge(row)
+                yield _row_to_charge(row, provider=provider)
             except Exception as exc:
                 logger.warning("FOCUS CSV: skipping malformed row at line %d: %s", line_no, exc)
                 if on_skip is not None:
@@ -289,6 +350,7 @@ def load_focus_parquet(
     path: str | Path,
     *,
     on_skip: Callable[[int, Exception], None] | None = None,
+    provider: str | None = None,
 ) -> Iterator[FocusCharge]:
     """Stream FOCUS 1.0 charges from a Parquet file.
 
@@ -297,6 +359,11 @@ def load_focus_parquet(
     not a struct column, so we parse it the same way as the CSV loader.
 
     `on_skip(row_idx, exc)` is called for each row that fails to parse.
+
+    `provider` is the FOCUS export's provider (e.g. "aws", "azure",
+    or "auto" to detect from the first row). When set, the loader
+    populates `service_canonical` on each FocusCharge via the
+    service catalog.
     """
     import pyarrow.parquet as pq  # local import: pyarrow is a heavy dep
 
@@ -304,13 +371,29 @@ def load_focus_parquet(
     table = pq.read_table(path)
     _validate_columns(table.column_names, source="Parquet")
 
+    if provider == "auto":
+        first_raw = table.slice(0, 1).to_pylist()
+        if first_raw:
+            from constat_focus.dialects import auto_detect as _auto_detect
+
+            first_row: dict[str, str | None] = {
+                k: ("" if v is None else str(v)) for k, v in first_raw[0].items()
+            }
+            dialect = _auto_detect(list(table.column_names), first_row)
+            provider = dialect.provider_name
+    if provider is not None and provider not in {"aws", "azure"}:
+        raise ValueError(
+            f"unknown FOCUS provider {provider!r}; "
+            f"supported: {sorted({'aws', 'azure'})} (or 'auto' to detect)"
+        )
+
     # to_pylist() does the columnar->row conversion once; avoids per-row overhead.
     for row_idx, raw in enumerate(table.to_pylist()):
         # pyarrow returns None for missing columns; we want "" for required ones
         # to keep _row_to_charge's str() coercion happy. Same shape as csv.DictReader.
-        row: dict[str, str | None] = {k: ("" if v is None else str(v)) for k, v in raw.items()}
+        row = {k: ("" if v is None else str(v)) for k, v in raw.items()}
         try:
-            yield _row_to_charge(row)
+            yield _row_to_charge(row, provider=provider)
         except Exception as exc:
             logger.warning("FOCUS Parquet: skipping malformed row at index %d: %s", row_idx, exc)
             if on_skip is not None:
@@ -322,6 +405,7 @@ def load_focus(
     path: str | Path,
     *,
     on_skip: Callable[[int, Exception], None] | None = None,
+    provider: str | None = None,
 ) -> Iterator[FocusCharge]:
     """Dispatch to CSV or Parquet loader based on file extension.
 
@@ -329,11 +413,18 @@ def load_focus(
     Caller is responsible for `list()`-ing the iterator if it needs a list.
 
     `on_skip(line_or_index, exc)` is forwarded to the chosen loader.
+    `provider` is forwarded too — see `load_focus_csv` / `load_focus_parquet`.
+    When `provider` is None, the loader auto-detects from the file's
+    first row (ProviderName / PublisherName / InvoiceIssuerName) so
+    the service catalog is consulted by default. Pass an explicit
+    provider to bypass auto-detect (e.g. when the caller already
+    knows the file's origin).
     """
     path = Path(path)
     suffix = path.suffix.lower()
+    effective_provider = "auto" if provider is None else provider
     if suffix == ".csv":
-        return load_focus_csv(path, on_skip=on_skip)
+        return load_focus_csv(path, on_skip=on_skip, provider=effective_provider)
     if suffix == ".parquet":
-        return load_focus_parquet(path, on_skip=on_skip)
+        return load_focus_parquet(path, on_skip=on_skip, provider=effective_provider)
     raise ValueError(f"Unsupported FOCUS file extension: {suffix!r} (V1 supports .csv, .parquet)")

@@ -32,7 +32,7 @@ from constat_core.models import Fact, Observation, Resource
 from constat_focus.loader import FocusCharge, load_focus
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FOCUS_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "focus_golden_v1_0.csv"
+FOCUS_FIXTURE = REPO_ROOT / "tests" / "golden" / "focus_aws.csv"
 
 NOW = datetime.now(tz=UTC)
 ACCOUNT_ID = "111111111111"

@@ -70,6 +70,17 @@ class AggregatedFocusCharge:
     # Same for all rows in the bucket — aggregate_for_storage raises on
     # a mixed-currency bucket before producing this row.
     billing_currency: str = "USD"
+    # Roadmap-consolidation §II.1: the cross-provider canonical name
+    # resolved from the service catalog (e.g. "Amazon RDS" +
+    # "Azure Database for PostgreSQL" -> "managed_postgres"). The
+    # dedup key in `aggregate_for_storage` uses
+    # COALESCE(service_canonical, service) so rows that pre-date the
+    # catalog still aggregate by their native name (and the canonical,
+    # once populated, takes over). The rules and the chargeback
+    # resolver consume this field, never `service` directly (see
+    # tests/test_focus_dialect_grep_pin.py). Lives at the end of the
+    # dataclass to keep the non-default fields contiguous.
+    service_canonical: str | None = None
 
 
 def _mode(values: list[str]) -> str | None:
@@ -116,6 +127,15 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
     so the upsert can write one focus_charge_tags row per input row.
     See migration 0009.
 
+    Roadmap-consolidation §II.1: the dedup key uses
+    `COALESCE(service_canonical, service)` so that an AWS row and
+    an Azure row for the same logical service (e.g. "Amazon RDS" +
+    "Azure Database for PostgreSQL" both canonical to
+    "managed_postgres") aggregate together. Rows that pre-date the
+    service catalog (canonical is None) fall back to the native
+    service name. The aggregator itself does not branch on the
+    provider — it only sees FocusCharge rows.
+
     Currency: the storage natural key is (account, service, period) —
     one row per bucket, one `billing_currency` column. A bucket that
     mixes currencies (e.g. an Azure EA export with an EUR-billed and a
@@ -129,7 +149,12 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
     """
     buckets: dict[tuple[str, object, object], list[FocusCharge]] = defaultdict(list)
     for c in charges:
-        buckets[(c.service, c.period_start, c.period_end)].append(c)
+        # Roadmap-consolidation §II.1: the dedup key is the canonical
+        # when the catalog has a mapping, else the native service
+        # name. COALESCE keeps a single code path — no provider
+        # branches here, no `if c.service == "Amazon RDS"` later.
+        key = c.service_canonical or c.service
+        buckets[(key, c.period_start, c.period_end)].append(c)
 
     results: list[AggregatedFocusCharge] = []
     for (service, ps, pe), rows in buckets.items():
@@ -150,6 +175,19 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
                 flat_tag_dicts.append(t)
                 flat_per_row_costs.append(cost)
 
+        # The native service name is the mode of the contributing rows
+        # (informational — the dedup key above is the canonical, and
+        # the rules consume the canonical via AggregatedFocusCharge
+        # .service_canonical). All rows in one bucket share the same
+        # canonical by construction, but they may carry different
+        # native names (AWS + Azure for the same canonical).
+        service_native = _mode([r.service for r in rows]) or service
+        # Same for the canonical itself: should be a single value, but
+        # the mode is robust if the catalog ever changes mid-ingest.
+        service_canonical = _mode(
+            [r.service_canonical for r in rows if r.service_canonical is not None]
+        )
+
         # Fail loud on mixed currencies. The loader validates each row's
         # BillingCurrency but does NOT enforce a single currency per
         # file — an earlier version of this docstring claimed it did,
@@ -167,7 +205,8 @@ def aggregate_for_storage(charges: Iterable[FocusCharge]) -> list[AggregatedFocu
             )
         results.append(
             AggregatedFocusCharge(
-                service=service,
+                service=service_native,
+                service_canonical=service_canonical,
                 period_start=ps,
                 period_end=pe,
                 billed_cost=sum((r.billed_cost for r in rows), Decimal("0")),

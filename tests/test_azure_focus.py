@@ -54,12 +54,22 @@ from constat_focus.aggregator import AggregatedFocusCharge
 from constat_focus.loader import load_focus_csv
 from sqlalchemy.orm import Session
 
-FIXTURE = Path(__file__).parent / "fixtures" / "focus_azure_v1_0.csv"
-GOLDEN = Path(__file__).parent / "fixtures" / "focus_golden_v1_0.csv"
+FIXTURE = Path(__file__).parent / "golden" / "focus_azure.csv"
+GOLDEN = Path(__file__).parent / "golden" / "focus_aws.csv"
 
 ROW_COUNT = 18
 
 VM = "Virtual Machines"
+PG = "Azure Database for PostgreSQL"
+ST = "Storage Accounts"
+# Roadmap-consolidation §II.1: the FOCUS loader resolves each
+# provider's ServiceName to a cross-provider canonical via the
+# service catalog. The aggregator dedups by canonical, the runner
+# stores it, and the chargeback resolver emits one insight per
+# canonical (the rule never sees the provider's native name).
+CANONICAL_VM = "compute_vm"
+CANONICAL_PG = "managed_postgres"
+CANONICAL_ST = "object_storage"
 PG = "Azure Database for PostgreSQL"
 ST = "Storage Accounts"
 
@@ -276,14 +286,17 @@ def test_ingest_then_run_chargeback_emits_currency_labeled_insights(
     insights = session.query(InsightORM).filter(InsightORM.rule_name == "chargeback").all()
     assert len(insights) == 3
     by_service = {i.payload["service"]: i.payload for i in insights}
-    assert set(by_service) == {VM, PG, ST}
+    # Roadmap-consolidation §II.1: the insight's `service` field is
+    # the canonical (cross-provider stable name). The native name
+    # lives on `service_native` for traceability.
+    assert set(by_service) == {CANONICAL_VM, CANONICAL_PG, CANONICAL_ST}
     for payload in by_service.values():
         assert payload["billing_currency"] == "EUR"
-    assert by_service[VM]["billed_cost_usd"] == 1010.0
-    assert by_service[VM]["amortized_cost_usd"] == 350.0
-    assert by_service[PG]["billed_cost_usd"] == 829.5
-    assert by_service[PG]["amortized_cost_usd"] == 281.5
-    assert by_service[ST]["billed_cost_usd"] == 18.1
+    assert by_service[CANONICAL_VM]["billed_cost_usd"] == 1010.0
+    assert by_service[CANONICAL_VM]["amortized_cost_usd"] == 350.0
+    assert by_service[CANONICAL_PG]["billed_cost_usd"] == 829.5
+    assert by_service[CANONICAL_PG]["amortized_cost_usd"] == 281.5
+    assert by_service[CANONICAL_ST]["billed_cost_usd"] == 18.1
 
 
 # ---- Reconcile: Azure FOCUS rows must be a no-op ----------------------------

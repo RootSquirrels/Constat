@@ -21,7 +21,7 @@ from pathlib import Path
 
 from constat_focus.loader import load_focus_csv
 
-FIXTURE = Path(__file__).parent / "fixtures" / "focus_golden_v1_0.csv"
+FIXTURE = Path(__file__).parent / "golden" / "focus_aws.csv"
 
 # The full official FOCUS 1.0 column set, in spec (alphabetical) order.
 # https://focus.finops.org/focus-specification/v1-0/ section 2.

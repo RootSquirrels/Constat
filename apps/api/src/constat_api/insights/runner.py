@@ -332,6 +332,13 @@ def _focus_charge_to_pydantic(
         account_id=str(orm.account_id) if orm.account_id else "",
         account_name=account_name,
         service=orm.service,
+        # Roadmap-consolidation §II.1: the cross-provider canonical
+        # (e.g. "Amazon RDS" + "Azure Database for PostgreSQL" both
+        # canonical to "managed_postgres") is persisted on the row
+        # and read back here. The resolver groups by canonical
+        # through `service_canonical or service` so a single
+        # canonical bucket absorbs both providers.
+        service_canonical=orm.service_canonical,
         region=orm.region,
         pricing_category=orm.pricing_category,
         period_start=orm.period_start,
