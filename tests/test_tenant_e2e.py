@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -40,7 +39,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 DATABASE_URL = os.environ.get("CONSTAT_TEST_DATABASE_URL")
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 
 TENANT_A = UUID("00000000-0000-0000-0000-00000000000a")
 TENANT_B = UUID("00000000-0000-0000-0000-00000000000b")
@@ -60,22 +58,20 @@ def _psycopg() -> Any:
 
 @pytest.fixture(scope="module")
 def pg_migrated() -> Iterator[str]:
-    """Fresh public schema with all migrations applied (same pattern as
-    tests/test_rls.py). Yields the DSN."""
+    """Fresh public schema with the Alembic chain applied (shared helper
+    from tests.test_rls — the raw-SQL loop died with the Alembic
+    adoption, ADR-17). Yields the DSN."""
     if not DATABASE_URL:
         pytest.skip("CONSTAT_TEST_DATABASE_URL unset — tenant e2e tests need a live database")
     psycopg = _psycopg()
-    migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    assert migrations, f"no migrations found in {MIGRATIONS_DIR}"
+    from tests.test_rls import _apply_alembic_schema
+
     with psycopg.connect(
         DATABASE_URL, autocommit=True, cursor_factory=psycopg.ClientCursor
     ) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
-        for path in migrations:
-            # ClientCursor = simple query protocol, the only way to run a
-            # whole multi-statement migration file in one execute.
-            conn.execute(path.read_text(encoding="utf-8"))
+    _apply_alembic_schema(DATABASE_URL)
     yield DATABASE_URL
 
 

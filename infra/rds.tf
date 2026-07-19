@@ -18,25 +18,25 @@ resource "aws_db_subnet_group" "main" {
 resource "aws_db_instance" "main" {
   identifier = local.name
 
-  engine               = "postgres"
-  engine_version       = var.db_engine_version
-  instance_class       = "db.t4g.micro"
-  allocated_storage    = 20
-  storage_type         = "gp3"
-  storage_encrypted    = true
-  multi_az             = false
-  db_name              = "constat"
-  username             = "constat"
-  password             = var.db_password
-  port                 = 5432
+  engine            = "postgres"
+  engine_version    = var.db_engine_version
+  instance_class    = "db.t4g.micro"
+  allocated_storage = 20
+  storage_type      = "gp3"
+  storage_encrypted = true
+  multi_az          = false
+  db_name           = "constat"
+  username          = "constat"
+  password          = var.db_password
+  port              = 5432
 
   publicly_accessible    = false # reachable only from the ECS tasks' SG
   vpc_security_group_ids = [aws_security_group.db.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
 
-  backup_retention_period   = 7
-  deletion_protection       = false # pilot: allow destroy
-  skip_final_snapshot       = false # ...but always leave a final snapshot
-  final_snapshot_identifier = "${local.name}-final"
+  backup_retention_period    = 7
+  deletion_protection        = false # pilot: allow destroy
+  skip_final_snapshot        = false # ...but always leave a final snapshot
+  final_snapshot_identifier  = "${local.name}-final"
   auto_minor_version_upgrade = true
 }

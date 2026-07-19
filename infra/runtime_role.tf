@@ -24,6 +24,10 @@ resource "null_resource" "rotate_constat_app_password" {
     password   = var.db_app_password
     rds_id     = aws_db_instance.main.id
     secret_arn = aws_secretsmanager_secret.database_url.arn
+    # Referenced by the destroy provisioner via self.triggers — the
+    # only values destroy-time provisioners may legally read.
+    host            = aws_db_instance.main.address
+    master_password = var.db_password
   }
 
   depends_on = [
@@ -54,9 +58,9 @@ resource "null_resource" "rotate_constat_app_password" {
   provisioner "local-exec" {
     when    = destroy
     command = <<-EOT
-      PGPASSWORD='${var.db_password}' psql \
-        --host='${aws_db_instance.main.address}' \
-        --port='${aws_db_instance.main.port}' \
+      PGPASSWORD='${self.triggers.master_password}' psql \
+        --host='${self.triggers.host}' \
+        --port='5432' \
         --username='constat' \
         --dbname='constat' \
         -c "ALTER ROLE constat_app WITH LOGIN PASSWORD 'constat'" || true

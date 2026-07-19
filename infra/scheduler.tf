@@ -46,7 +46,7 @@ resource "aws_scheduler_schedule" "daily_scan" {
       # One retry within the hour covers transient Fargate placement/API
       # failures. Anything more persistent is a bug to look at in the
       # "scan" log stream, not something to keep retrying all day.
-      maximum_retry_attempts    = 1
+      maximum_retry_attempts       = 1
       maximum_event_age_in_seconds = 3600
     }
   }

@@ -66,8 +66,10 @@ output "api_certificate_status" {
     accept traffic. Status goes PENDING_VALIDATION → ISSUED once the
     DNS validation records are in place. Watch with:
       aws acm describe-certificate \
-        --certificate-arn ${aws_acm_certificate.main.arn} \
+        --certificate-arn <the certificate_arn output> \
         --query 'Certificate.Status' --output text
+    (terraform validate: output descriptions cannot interpolate
+    unknown resource attributes — the ARN stays a placeholder here.)
   EOT
   value       = aws_acm_certificate.main.status
 }

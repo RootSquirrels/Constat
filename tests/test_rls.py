@@ -375,26 +375,41 @@ def _count(conn: Any, table: str) -> int:
     return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
 
 
+def _apply_alembic_schema(dsn: str) -> None:
+    """Apply the Alembic chain (ADR-17) to a fresh schema.
+
+    This replaced the raw db/migrations/*.sql loop when the repo
+    adopted Alembic: the SQL files are archived history under
+    db/migrations/_archived/ — globbing db/migrations/ found nothing
+    and every Postgres test errored at setup (CI, 2026-07-19).
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    previous = os.environ.get("CONSTAT_DATABASE_URL")
+    os.environ["CONSTAT_DATABASE_URL"] = dsn  # db/alembic/env.py reads this knob
+    try:
+        cfg = Config(str(MIGRATIONS_DIR.parent / "alembic.ini"))
+        command.upgrade(cfg, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("CONSTAT_DATABASE_URL", None)
+        else:
+            os.environ["CONSTAT_DATABASE_URL"] = previous
+
+
 @pytest.fixture(scope="module")
 def pg_migrated() -> Iterator[str]:
-    """Fresh schema with migrations 0001 -> latest applied; yields the DSN."""
+    """Fresh schema with the Alembic chain applied; yields the DSN."""
     if not DATABASE_URL:
         pytest.skip("CONSTAT_TEST_DATABASE_URL unset — Postgres RLS tests need a live database")
     psycopg = _psycopg()
-    migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    assert migrations, f"no migrations found in {MIGRATIONS_DIR}"
     with psycopg.connect(
         DATABASE_URL, autocommit=True, cursor_factory=psycopg.ClientCursor
     ) as conn:
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
-        for path in migrations:
-            # ClientCursor uses the simple query protocol, which is the
-            # only way to execute a whole multi-statement migration file.
-            # It must be passed as connect()'s cursor_factory — psycopg 3's
-            # cursor() has no `factory` kwarg (the CI Postgres job proved
-            # it the hard way, 2026-07-19).
-            conn.execute(path.read_text(encoding="utf-8"))
+    _apply_alembic_schema(DATABASE_URL)
     yield DATABASE_URL
 
 

@@ -106,7 +106,7 @@ resource "aws_lb" "main" {
   #   X-Forwarded-* chain (ALB → ECS) preserves the original client
   #   IP for audit logs.
   drop_invalid_header_fields = true
-  enable_deletion_protection  = false # pilot: allow destroy
+  enable_deletion_protection = false # pilot: allow destroy
 
   tags = {
     Name = "${local.name}-alb"

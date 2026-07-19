@@ -114,8 +114,8 @@ resource "aws_ecs_service" "api" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
-    security_groups  = [aws_security_group.app.id]
+    subnets         = data.aws_subnets.default.ids
+    security_groups = [aws_security_group.app.id]
     # In sqs collect mode the API task must EGRESS to SQS (SendMessage),
     # and the pilot has no NAT gateway or VPC endpoints, so it needs a
     # public IP exactly like the scan task does for AWS API egress. This
