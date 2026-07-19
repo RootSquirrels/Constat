@@ -29,7 +29,8 @@
 
 | # | Item | Statut | Preuve |
 |---|---|---|---|
-| 3.1 | **Tenant par requête** (résolution depuis l'identité) | CODE LIVRÉ 2026-07-19 | Clé `name:role:key[:tenant_uuid[:kind]]`, `get_db` lie la session au tenant du principal, header `X-Tenant-ID` → 400 (le client ne choisit jamais son tenant), acteurs d'audit `kind:name` dans le bon tenant, e2e 2-tenants Postgres en CI. Reste : exécution staging + sceller le chemin d'écriture (les repositories doivent estampiller le tenant courant — les inserts sous GUC non-défaut sont aujourd'hui refusés fail-closed par la RLS) |
+| 3.1 | **Tenant par requête** (résolution depuis l'identité) | CODE LIVRÉ 2026-07-19 | Clé `name:role:key[:tenant_uuid[:kind]]`, `get_db` lie la session au tenant du principal, header `X-Tenant-ID` → 400 (le client ne choisit jamais son tenant), acteurs d'audit `kind:name` dans le bon tenant, e2e 2-tenants Postgres en CI. Chemin d'écriture scellé le même jour (stamping `tenant_or_default` sur tous les repositories, e2e write-leg en CI). Reste : exécution staging |
+| 3.1b | Stamping tenant des écritures | CODE LIVRÉ 2026-07-19 | commit `3d01b56` : tous les chemins d'écriture estampillent le tenant de session ; bug latent réparé au passage (`POST /insights` ne commitait pas — invisible sous Postgres) |
 | 3.3 | Audit des lectures (attribution) | CODE LIVRÉ 2026-07-18 | commit `648e239` : principal RBAC, `api.read`, `GET /compliance/audit-events` |
 | 3.4 | Immutabilité du journal (trigger) | CODE LIVRÉ 2026-07-18 | migration 0014 ; tests Postgres désormais exécutés en CI (`-m postgres` sur toute la suite, commit `b39dd93`) — le premier run CI vert date le critère |
 
@@ -40,6 +41,8 @@
 | 5 | Contrats d'adaptateurs | 6 Protocols dans `constat_core.adapters` (Inventory/Cost conformes aux connecteurs existants + tests ; Evidence/Relationship/Workflow/Action définis, jamais d'écriture directe dans les tables) | ADR-14, `tests/test_adapter_contracts.py` |
 | 6 | Commandes/projections | La brique bloquante (publication partielle) était déjà corrigée (revue SRE) ; la discipline outbox est actée comme prérequis à toute action de remédiation | ADR-15 |
 | — | Ack perdu à chaque run (workstream parallèle) | Identité d'écart stable (`stable_id_of`) distincte de l'empreinte de cycle de vie : l'ack survit au delete-and-replace | ADR-16, `tests/test_ack_carryover.py` |
+| — | Alembic adopté (workstream parallèle) | Baseline ancrée au schéma post-0021, `compare_type=True` contre la dérive ORM↔SQL ; les 21 SQL historiques sont archivés | ADR-17, `db/alembic/` |
+| — | **Readiness Azure (FOCUS)** | Verdict prouvé par golden dataset Azure-shaped : ingestion OK ; bug multi-devises du chargeback corrigé (agrégation par devise, `billing_currency` dans les payloads, refus explicite des buckets mixtes). Limite assumée : pas de collecteur Azure (ADR-14) | `tests/test_azure_focus.py`, known-issues §12 |
 
 ## Revue SRE (2026-07-19) — objections levées
 
