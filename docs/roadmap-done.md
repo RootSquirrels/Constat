@@ -20,7 +20,7 @@
 |---|---|---|---|
 | 2.1 | Tarifs par région au catalog | FAIT 2026-07-19 | commits `4c63c1d`, `ff4042b` ; grilles EBS + ES RDS sourcées (Price List API 2026-07-17), `price_region_exact` partout |
 | 2.2 | Conversion EUR datée (BCE) | FAIT 2026-07-19 | `catalog/fx.py`, doubles montants CSV + restitution, pied de page taux+date |
-| 2.3 | ESTIMATED → ACTUAL (rapprochement FOCUS) | CODE LIVRÉ 2026-07-19 | commit `966ecf9` ; affichage restitution de la part confirmée : en suivi |
+| 2.3 | ESTIMATED → ACTUAL (rapprochement FOCUS) | CODE LIVRÉ 2026-07-19, **sémantique corrigée** (P0-3, `04e48a1`) | La bascule ACTUAL était structurellement fautive (la ligne FOCUS = facture totale de la ressource, pas le supplément Extended Support). Le rapprochement attache le **contexte FOCUS informatif** (coût réel de la ressource, période, devise) à côté de l'estimation — jamais de label ACTUAL en V1 ; V2 = matcher par type de charge. Affichage restitution : en suivi |
 | 2.4 | Historique apparu/résolu | CODE LIVRÉ 2026-07-19 | `insight_events` (0017), `GET /insights/history` ; courbe web : en suivi |
 | 2.5 | Inconclusifs = file de travail | CODE LIVRÉ 2026-07-19 | owner/due_date/status (0018), PATCH + audit |
 | 2.6 | Détection FOCUS partiel + bandeau | FAIT 2026-07-19 | commit `841f478` : `GET /focus/coverage` + bandeau chargeback |
