@@ -14,8 +14,15 @@ MATCH: state="stopped" + attached_volumes present and non-empty ->
   1 insight with the summed monthly storage cost.
 NO_MATCH: any other state (running, terminated, pending, ...), or a
   proven-empty attached_volumes list (instance-store only).
-INCONCLUSIVE: missing state or attached_volumes fact, or a malformed
-  attached_volumes value.
+INCONCLUSIVE: missing state, region, or attached_volumes fact, or a
+  malformed attached_volumes value. The region fact is mandatory: EBS
+  storage pricing is not region-uniform. The attached volumes are
+  priced on the INSTANCE's region — an EBS volume only attaches to an
+  instance in its own AZ, hence always the same region, so the
+  instance's region fact covers the whole breakdown (the correlation
+  entries carry no region of their own). A region the catalog doesn't
+  cover still matches on the us-east-1 fallback grid, with
+  `price_region_exact: false` in the payload.
 
 Partial pricing (decided): if ANY attached volume's type is not in the
 catalog (e.g. a future io3), the insight is still emitted with the
@@ -42,7 +49,11 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
-from constat_core.catalog.ebs import EBS_CATALOG_VERSION, monthly_storage_cost
+from constat_core.catalog.ebs import (
+    EBS_CATALOG_VERSION,
+    ebs_price_per_gb_month,
+    price_region_exact,
+)
 from constat_core.models import Fact, Insight, Severity, ValueState
 
 RULE_NAME = "ec2_stopped_with_storage"
@@ -101,7 +112,15 @@ def evaluate(
     if state != STOPPED_STATE:
         return InsightResult()
 
-    # Gate 2: attached_volumes must be present — its existence IS the
+    # Gate 2: region must be KNOWN — the attached volumes are priced on
+    # the instance's region grid (an EBS volume only attaches within
+    # its AZ, so it is always in the instance's region).
+    region_fact = _get(idx, "aws.ec2.instance.region")
+    if region_fact is None or region_fact.value_state != ValueState.KNOWN:
+        return InsightResult(insights=[], inconclusive_reasons=["aws.ec2.instance.region"])
+    region = str(region_fact.value)
+
+    # Gate 3: attached_volumes must be present — its existence IS the
     # scope proof (written only when the region's volume scan ran).
     volumes_fact = _get(idx, "aws.ec2.instance.attached_volumes")
     if volumes_fact is None:
@@ -121,13 +140,18 @@ def evaluate(
     breakdown: list[dict[str, Any]] = []
     pricing_incomplete = False
     total = 0.0
+    pricing_regions: list[str] = []
+    all_exact = True
     for vol in attached:
         volume_id = vol.get("volume_id")
         volume_type = vol.get("volume_type")
         size_gb = vol.get("size_gb")
+        price = (
+            ebs_price_per_gb_month(str(volume_type), region) if volume_type is not None else None
+        )
         monthly = (
-            monthly_storage_cost(str(volume_type), int(size_gb))
-            if volume_type is not None and size_gb is not None
+            round(price.usd_per_gb_month * int(size_gb), 2)
+            if price is not None and size_gb is not None
             else None
         )
         if monthly is None:
@@ -136,6 +160,9 @@ def evaluate(
             pricing_incomplete = True
         else:
             total += monthly
+            assert price is not None
+            pricing_regions.append(price.region)
+            all_exact = all_exact and price_region_exact(region, price)
         breakdown.append(
             {
                 "volume_id": volume_id,
@@ -145,6 +172,11 @@ def evaluate(
             }
         )
     total = round(total, 2)
+    # Every priced volume used the same grid (same requested region,
+    # same fallback), so the first one names it; an all-unpriced
+    # breakdown has no grid to report — the requested region is the
+    # honest label then.
+    pricing_region = pricing_regions[0] if pricing_regions else region
 
     return InsightResult(
         insights=[
@@ -154,6 +186,8 @@ def evaluate(
                 volumes=breakdown,
                 pricing_incomplete=pricing_incomplete,
                 monthly_cost_usd=total,
+                pricing_region=pricing_region,
+                price_region_exact=all_exact,
             )
         ]
     )
@@ -166,6 +200,8 @@ def _make_insight(
     volumes: list[dict[str, Any]],
     pricing_incomplete: bool,
     monthly_cost_usd: float,
+    pricing_region: str,
+    price_region_exact: bool,
 ) -> Insight:
     # Same severity thresholds as ebs_unattached for dashboard
     # consistency: the operator reads INFO/WARNING/CRITICAL the same
@@ -205,6 +241,9 @@ def _make_insight(
             "pricing_incomplete": pricing_incomplete,
             "elastic_ip_cost_excluded": True,
             "value_basis": "ESTIMATED",
+            "pricing_region": pricing_region,
+            "price_region_exact": price_region_exact,
+            "source_currency": "USD",
             "recommendation": recommendation,
             "catalog_version": EBS_CATALOG_VERSION,
         },

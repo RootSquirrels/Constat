@@ -57,12 +57,14 @@ def _orphan_facts(
     tier: str | None = "standard",
     description: str | None = "manual backup before migration",
     start_time: str | None = "2026-01-01T00:00:00+00:00",
+    region: str = "us-east-1",
 ) -> list[Fact]:
     """Minimal fact set for one snapshot as the collector emits it."""
     facts = [
         _fact("state", state),
         _fact("size_gb", size_gb),
         _fact("volume_exists", volume_exists),
+        _fact("region", region),
     ]
     if tier is not None:
         facts.append(_fact("storage_tier", tier))
@@ -222,6 +224,51 @@ def test_archive_tier_prices_at_archive_rate() -> None:
     assert result.insights[0].payload["orphan_snapshot_monthly_usd"] == 12.50
 
 
+def test_missing_region_emits_inconclusive() -> None:
+    """Snapshot pricing is not region-uniform: without the region fact
+    we can't price honestly. INCONCLUSIVE, never a guessed grid."""
+    facts = [f for f in _orphan_facts() if f.key != "region"]
+    result = evaluate(uuid4(), facts, today=TODAY)
+    assert not result.is_conclusive
+    assert "aws.ec2.snapshot.region" in result.inconclusive_reasons
+
+
+# ---------------------------------------------------------------------------
+# Region-aware pricing (chantier 2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_eu_west_3_snapshot_prices_on_the_eu_west_3_grid() -> None:
+    """Hand-computed on the eu-west-3 grid (AWS Price List 2026-07-17):
+    100 GB standard = 100 * $0.053 = $5.30; archive = 100 * $0.01325."""
+    result = evaluate(uuid4(), _orphan_facts(size_gb=100, region="eu-west-3"), today=TODAY)
+    assert result.has_gap
+    payload = result.insights[0].payload
+    assert payload["orphan_snapshot_monthly_usd"] == 5.30
+    assert payload["pricing_region"] == "eu-west-3"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+    archive = evaluate(
+        uuid4(), _orphan_facts(size_gb=100, tier="archive", region="eu-west-3"), today=TODAY
+    )
+    # 100 * $0.01325 = $1.325, which Python's float round(…, 2) takes to
+    # 1.32 (1.325 is not exactly representable; the code rounds half-even).
+    assert archive.insights[0].payload["orphan_snapshot_monthly_usd"] == 1.32
+
+
+def test_uncatalogued_region_falls_back_with_exact_false() -> None:
+    """A region the catalog doesn't cover still MATCHes on the us-east-1
+    grid, but the payload admits the fallback."""
+    result = evaluate(uuid4(), _orphan_facts(size_gb=200, region="ap-southeast-2"), today=TODAY)
+    assert result.has_gap
+    payload = result.insights[0].payload
+    # us-east-1 grid: 200 * $0.05 = $10.00
+    assert payload["orphan_snapshot_monthly_usd"] == 10.00
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
+
+
 def test_malformed_start_time_emits_inconclusive() -> None:
     result = evaluate(uuid4(), _orphan_facts(start_time="not-a-date"), today=TODAY)
     assert not result.is_conclusive
@@ -249,6 +296,7 @@ def _snap_raw(
         "Description": "manual backup",
         "StorageTier": "standard",
         "Tags": [],
+        "_region": "eu-west-1",  # the collector injects this when iterating
     }
 
 
@@ -272,6 +320,8 @@ def test_snapshot_to_facts_produces_rule_inputs() -> None:
     assert by_key["volume_id"].value == "vol-1"
     assert by_key["start_time"].value_state == ValueState.KNOWN
     assert by_key["description"].value == "manual backup"
+    assert by_key["region"].value == "eu-west-1"
+    assert by_key["region"].value_state == ValueState.KNOWN
     # volume_exists is NOT a per-item fact — the post-pass writes it.
     assert "volume_exists" not in by_key
 
@@ -396,6 +446,7 @@ def test_run_snapshot_orphan_emits_insight_for_orphan(session: Session) -> None:
             "storage_tier": "standard",
             "volume_exists": False,
             "description": "weekly backup",
+            "region": "eu-west-1",
         },
     )
 
@@ -405,9 +456,11 @@ def test_run_snapshot_orphan_emits_insight_for_orphan(session: Session) -> None:
     assert result.insights_emitted == 1
     insight = session.query(InsightORM).one()
     assert insight.rule_name == "snapshot_orphan"
-    # 1000 GB * $0.05 = $50/month -> WARNING
+    # 1000 GB * $0.05 (eu-west-1 snapshot grid) = $50/month -> WARNING
     assert insight.severity == "warning"
     assert insight.payload["orphan_snapshot_monthly_usd"] == 50.00
+    assert insight.payload["pricing_region"] == "eu-west-1"
+    assert insight.payload["price_region_exact"] is True
 
 
 def test_run_snapshot_orphan_replaces_previous_insights(session: Session) -> None:
@@ -426,6 +479,7 @@ def test_run_snapshot_orphan_replaces_previous_insights(session: Session) -> Non
             "storage_tier": "standard",
             "volume_exists": False,
             "description": "weekly backup",
+            "region": "eu-west-1",
         },
     )
 

@@ -54,11 +54,12 @@ def _stopped_facts(
     *,
     state: str = "stopped",
     attached_volumes: list[dict[str, Any]] | None = None,
+    region: str = "us-east-1",
 ) -> list[Fact]:
     """Minimal fact set for one instance as the collector emits it.
     attached_volumes=None means the fact is absent (volume scope not
     proven); pass [] for a proven-empty list."""
-    facts = [_fact("state", state)]
+    facts = [_fact("state", state), _fact("region", region)]
     if attached_volumes is not None:
         facts.append(_fact("attached_volumes", attached_volumes))
     return facts
@@ -207,6 +208,64 @@ def test_malformed_attached_volumes_emits_inconclusive() -> None:
     assert "aws.ec2.instance.attached_volumes.malformed" in result.inconclusive_reasons
 
 
+def test_missing_region_emits_inconclusive() -> None:
+    """EBS storage pricing is not region-uniform: without the instance's
+    region fact we can't price the attached volumes honestly."""
+    facts = [
+        _fact("state", "stopped"),
+        _fact("region", None, value_state=ValueState.UNKNOWN),
+        _fact("attached_volumes", [{"volume_id": "v", "size_gb": 100, "volume_type": "gp2"}]),
+    ]
+    result = evaluate(uuid4(), facts)
+    assert not result.is_conclusive
+    assert "aws.ec2.instance.region" in result.inconclusive_reasons
+
+
+# ---------------------------------------------------------------------------
+# Region-aware pricing (chantier 2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_eu_west_1_volumes_price_on_the_eu_west_1_grid() -> None:
+    """Hand-computed on the eu-west-1 grid (AWS Price List 2026-07-17):
+    100 GB gp2 ($0.11) + 50 GB gp3 ($0.088) = $11.00 + $4.40 = $15.40.
+    The attached volumes carry no region of their own — they are priced
+    on the instance's region (an EBS volume only attaches within its
+    AZ, hence always the same region)."""
+    facts = _stopped_facts(
+        attached_volumes=[
+            {"volume_id": "vol-1", "size_gb": 100, "volume_type": "gp2"},
+            {"volume_id": "vol-2", "size_gb": 50, "volume_type": "gp3"},
+        ],
+        region="eu-west-1",
+    )
+    result = evaluate(uuid4(), facts)
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    assert payload["stopped_storage_monthly_usd"] == 15.40
+    assert payload["pricing_region"] == "eu-west-1"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+
+def test_uncatalogued_region_falls_back_with_exact_false() -> None:
+    """A region the catalog doesn't cover still MATCHes on the us-east-1
+    grid, but the payload admits the fallback."""
+    facts = _stopped_facts(
+        attached_volumes=[{"volume_id": "v", "size_gb": 100, "volume_type": "gp2"}],
+        region="ap-southeast-2",
+    )
+    result = evaluate(uuid4(), facts)
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    # us-east-1 grid: 100 * $0.10 = $10.00
+    assert payload["stopped_storage_monthly_usd"] == 10.00
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
+
+
 # ---------------------------------------------------------------------------
 # Connector: instance_to_facts + the correlation post-pass
 # ---------------------------------------------------------------------------
@@ -228,6 +287,7 @@ def _inst_raw(
             for i, vid in enumerate(volume_ids or [])
         ],
         "Tags": [],
+        "_region": "eu-west-1",  # the collector injects this when iterating
     }
 
 
@@ -253,6 +313,8 @@ def test_instance_to_facts_produces_block_device_volume_ids() -> None:
     assert by_key["instance_type"].value == "t3.medium"
     assert by_key["launch_time"].value_state == ValueState.KNOWN
     assert by_key["block_device_volume_ids"].value == ["vol-1", "vol-2"]
+    assert by_key["region"].value == "eu-west-1"
+    assert by_key["region"].value_state == ValueState.KNOWN
     # attached_volumes is NOT a per-item fact — the post-pass writes it.
     assert "attached_volumes" not in by_key
 
@@ -380,6 +442,7 @@ def _seed_instance_with_facts(
 def _stopped_instance_facts() -> dict[str, object]:
     return {
         "state": "stopped",
+        "region": "eu-west-1",
         "attached_volumes": [
             {"volume_id": "vol-1", "size_gb": 500, "volume_type": "gp2"},
         ],
@@ -399,9 +462,11 @@ def test_run_ec2_stopped_with_storage_emits_insight(session: Session) -> None:
     assert result.insights_emitted == 1
     insight = session.query(InsightORM).one()
     assert insight.rule_name == "ec2_stopped_with_storage"
-    # 500 GB * $0.10 = $50/month -> WARNING
+    # 500 GB * $0.11 (eu-west-1 grid) = $55/month -> WARNING
     assert insight.severity == "warning"
-    assert insight.payload["stopped_storage_monthly_usd"] == 50.00
+    assert insight.payload["stopped_storage_monthly_usd"] == 55.00
+    assert insight.payload["pricing_region"] == "eu-west-1"
+    assert insight.payload["price_region_exact"] is True
 
 
 def test_run_ec2_stopped_with_storage_replaces_previous_insights(session: Session) -> None:

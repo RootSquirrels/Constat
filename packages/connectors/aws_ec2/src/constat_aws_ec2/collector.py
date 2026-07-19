@@ -150,10 +150,14 @@ def volume_to_facts(
     """Convert an EBS volume to canonical Facts (aws.ec2.volume.*).
 
     Keys: size_gb, volume_type, state, encrypted, iops, throughput,
-    attached_instance_id, attached_device, create_time. State-derived
-    booleans (is_unattached, is_gp2) are derived in the rule, not
-    emitted as facts — the catalog doesn't know what a `is_unattached`
-    fact means, and rules should encode their own semantics.
+    attached_instance_id, attached_device, create_time, region. The
+    region fact is what lets the pricing rules pick the right catalog
+    grid (EBS pricing is not region-uniform); it comes from the
+    collector-injected `_region` key, KNOWN whenever it is present.
+    State-derived booleans (is_unattached, is_gp2) are derived in the
+    rule, not emitted as facts — the catalog doesn't know what a
+    `is_unattached` fact means, and rules should encode their own
+    semantics.
     """
     vol_type = vol.get("VolumeType")
     state = vol.get("State")
@@ -162,6 +166,7 @@ def volume_to_facts(
     throughput = vol.get("Throughput")
     encrypted = vol.get("Encrypted")
     create_time = vol.get("CreateTime")
+    region = vol.get("_region")
     attachments = vol.get("Attachments") or []
     attached_instance = attachments[0].get("InstanceId") if attachments else None
     attached_device = attachments[0].get("Device") if attachments else None
@@ -208,6 +213,7 @@ def volume_to_facts(
             create_time.isoformat() if create_time else None,
             ValueState.KNOWN if create_time else ValueState.UNKNOWN,
         ),
+        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
     ]
 
 
@@ -267,7 +273,9 @@ def snapshot_to_facts(
 ) -> list[Fact]:
     """Convert an EBS snapshot to canonical Facts (aws.ec2.snapshot.*).
 
-    Keys: state, size_gb, storage_tier, volume_id, start_time, description.
+    Keys: state, size_gb, storage_tier, volume_id, start_time,
+    description, region. The region fact lets snapshot_orphan pick the
+    right snapshot pricing grid (collector-injected `_region`).
     Cross-resource facts (volume_exists) are NOT produced here — they
     need the region's volume scan, so they are written by the
     correlation post-pass (`correlation_facts`). Same split as volumes:
@@ -279,6 +287,7 @@ def snapshot_to_facts(
     volume_id = snap.get("VolumeId")
     start_time = snap.get("StartTime")
     description = snap.get("Description")
+    region = snap.get("_region")
 
     def _fact(key: str, value: Any, state: ValueState) -> Fact:
         return Fact(
@@ -311,6 +320,7 @@ def snapshot_to_facts(
             description,
             ValueState.KNOWN if description is not None else ValueState.UNKNOWN,
         ),
+        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
     ]
 
 
@@ -385,7 +395,11 @@ def instance_to_facts(
 ) -> list[Fact]:
     """Convert an EC2 instance to canonical Facts (aws.ec2.instance.*).
 
-    Keys: state, instance_type, launch_time, block_device_volume_ids.
+    Keys: state, instance_type, launch_time, block_device_volume_ids,
+    region. The region fact lets ec2_stopped_with_storage price the
+    attached volumes on the right catalog grid — the volumes of an
+    instance are always in the instance's region (EBS volumes attach
+    within an AZ), so one region fact covers the whole breakdown.
     The cross-resource `attached_volumes` fact (volume ids resolved to
     sizes/types against the region's volume scan) is written by the
     correlation post-pass (`correlation_facts`), not here — a single
@@ -394,6 +408,7 @@ def instance_to_facts(
     state = (inst.get("State") or {}).get("Name")
     instance_type = inst.get("InstanceType")
     launch_time = inst.get("LaunchTime")
+    region = inst.get("_region")
     volume_ids = [
         ebs.get("VolumeId")
         for m in (inst.get("BlockDeviceMappings") or [])
@@ -428,6 +443,7 @@ def instance_to_facts(
         # block devices"), not a gap. Instance-store-only instances
         # legitimately have zero entries.
         _fact("block_device_volume_ids", volume_ids, ValueState.KNOWN),
+        _fact("region", region, ValueState.KNOWN if region else ValueState.UNKNOWN),
     ]
 
 

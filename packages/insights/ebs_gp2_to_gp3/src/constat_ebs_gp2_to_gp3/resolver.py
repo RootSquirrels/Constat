@@ -8,13 +8,18 @@ online, no downtime).
 
 MATCH: a volume with type=gp2 and a real saving > $0.50/month.
 NO_MATCH: any other volume type.
-INCONCLUSIVE: a fact is missing (no type, no size) or the catalog
-  can't price the volume.
+INCONCLUSIVE: a fact is missing (no type, no size, no region) or the
+  catalog can't price the volume. The region fact is mandatory — the
+  gp2/gp3 delta is not region-uniform, so a saving priced without
+  knowing the region is not defensible. A region the catalog doesn't
+  cover still matches on the us-east-1 fallback grid, with
+  `price_region_exact: false` in the payload.
 
 Payload carries the monthly saving stamped `value_basis=ESTIMATED`
-(catalog-derived until a FOCUS line confirms the actual charge).
-Price basis is US East; non-us-east-1 prospects see estimates that are
-1-3% off the real number.
+(catalog-derived until a FOCUS line confirms the actual charge), the
+region grid used (`pricing_region`), and whether that grid is the
+volume's own region (`price_region_exact`). Amounts are USD
+(`source_currency`); the EUR conversion happens at export/display.
 
 The dedupe rule "one volume = one insight" is enforced by the runner's
 delete-and-replace. Re-running the rule does not accumulate duplicates.
@@ -30,7 +35,7 @@ from uuid import UUID
 from constat_core.catalog.ebs import (
     EBS_CATALOG_VERSION,
     ebs_price_per_gb_month,
-    monthly_storage_cost,
+    price_region_exact,
 )
 from constat_core.models import Fact, Insight, Severity, ValueState
 
@@ -97,6 +102,7 @@ def evaluate(
 
     volume_type_fact = _get(idx, "aws.ec2.volume.volume_type")
     size_fact = _get(idx, "aws.ec2.volume.size_gb")
+    region_fact = _get(idx, "aws.ec2.volume.region")
 
     inconclusive: list[str] = []
 
@@ -106,6 +112,10 @@ def evaluate(
     # Gate 2: size must be KNOWN.
     if size_fact is None or size_fact.value_state != ValueState.KNOWN:
         inconclusive.append("aws.ec2.volume.size_gb")
+    # Gate 3: region must be KNOWN — the gp2/gp3 delta is not
+    # region-uniform, so we can't price honestly without it.
+    if region_fact is None or region_fact.value_state != ValueState.KNOWN:
+        inconclusive.append("aws.ec2.volume.region")
 
     if inconclusive:
         # Missing facts — never silent, always INCONCLUSIVE so the user
@@ -114,29 +124,26 @@ def evaluate(
 
     volume_type = volume_type_fact.value  # type: ignore[union-attr]
     size_gb = int(size_fact.value)  # type: ignore[arg-type]
+    region = str(region_fact.value)  # type: ignore[union-attr]
 
     # NO_MATCH for everything that isn't gp2. We only emit insights
     # for migration candidates.
     if volume_type != "gp2":
         return InsightResult()
 
-    # gp2 → gp3 comparison. Both prices must be in the catalog; if not,
-    # we don't have a defensible saving number, so INCONCLUSIVE.
-    gp2_price = ebs_price_per_gb_month("gp2")
-    gp3_price = ebs_price_per_gb_month("gp3")
+    # gp2 → gp3 comparison on the volume's region grid. Both prices
+    # must be in the catalog; if not, we don't have a defensible
+    # saving number, so INCONCLUSIVE.
+    gp2_price = ebs_price_per_gb_month("gp2", region)
+    gp3_price = ebs_price_per_gb_month("gp3", region)
     if gp2_price is None or gp3_price is None:
         return InsightResult(
             insights=[],
             inconclusive_reasons=["catalog.gp2_or_gp3_price_missing"],
         )
 
-    current_monthly = monthly_storage_cost("gp2", size_gb)
-    target_monthly = monthly_storage_cost("gp3", size_gb)
-    if current_monthly is None or target_monthly is None:
-        return InsightResult(
-            insights=[],
-            inconclusive_reasons=["catalog.monthly_storage_cost_uncomputable"],
-        )
+    current_monthly = round(gp2_price.usd_per_gb_month * size_gb, 2)
+    target_monthly = round(gp3_price.usd_per_gb_month * size_gb, 2)
     savings = round(current_monthly - target_monthly, 2)
 
     if savings < MIN_SAVINGS_USD_PER_MONTH:
@@ -153,6 +160,9 @@ def evaluate(
                 current_monthly_usd=current_monthly,
                 target_monthly_usd=target_monthly,
                 savings_monthly_usd=savings,
+                pricing_region=gp2_price.region,
+                price_region_exact=price_region_exact(region, gp2_price)
+                and price_region_exact(region, gp3_price),
             )
         ]
     )
@@ -166,6 +176,8 @@ def _make_insight(
     current_monthly_usd: float,
     target_monthly_usd: float,
     savings_monthly_usd: float,
+    pricing_region: str,
+    price_region_exact: bool,
 ) -> Insight:
     # Severity thresholds: $50/month is "a real number" the operator
     # notices; $500/month is "a fleet-level problem". The dashboard
@@ -201,6 +213,9 @@ def _make_insight(
             if current_monthly_usd > 0
             else 0.0,
             "value_basis": "ESTIMATED",
+            "pricing_region": pricing_region,
+            "price_region_exact": price_region_exact,
+            "source_currency": "USD",
             "recommendation": recommendation,
             "catalog_version": EBS_CATALOG_VERSION,
         },

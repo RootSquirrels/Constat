@@ -264,6 +264,28 @@ export function insightMonetaryKind(insight: Insight): MonetaryKind | null {
   return RULE_MONETARY[insight.rule_name]?.kind ?? null;
 }
 
+// TS mirror of packages/core/src/constat_core/catalog/fx.py — the dated
+// ECB reference rate for the display-only USD→EUR conversion. Unlike
+// RULE_MONETARY there is no pin test guarding this pair; update it when
+// fx.py is refreshed (monthly catalog review).
+export const FX_USD_TO_EUR = 0.874508; // 1 USD = 0.874508 EUR
+export const FX_RATE_DATE = "2026-07-17"; // ECB reference date
+
+function fmtUsdAmount(usd: number): string {
+  return usd.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+// "$584.00 / €510.71" — the CFO reads EUR; the USD figure stays first
+// because every catalog price is sourced in USD.
+export function formatUsdEur(usd: number | null): string {
+  if (usd === null) return "—";
+  const eur = (usd * FX_USD_TO_EUR).toLocaleString("en-US", {
+    style: "currency",
+    currency: "EUR",
+  });
+  return `${fmtUsdAmount(usd)} / ${eur}`;
+}
+
 // Direct browser URL for the CSV export (no fetch — the browser downloads it).
 // Goes through the proxy so the API key is injected server-side.
 export function insightsCsvUrl(params: ListInsightsParams = {}): string {

@@ -71,6 +71,7 @@ def _make_volume(
         "CreateTime": datetime(2024, 6, 1, tzinfo=UTC),
         "Attachments": attachments,
         "Tags": [],
+        "_region": "eu-west-1",  # the collector injects this when iterating
     }
 
 
@@ -199,13 +200,13 @@ def test_volume_to_resource_uses_volume_id_as_native_id():
 
 
 # ---------------------------------------------------------------------------
-# volume_to_facts: 9 facts (size, type, state, encrypted, iops, throughput,
-# attached_instance_id, attached_device, create_time). All KNOWN when input
-# is complete; UNKNOWN when the source field is missing.
+# volume_to_facts: 10 facts (size, type, state, encrypted, iops, throughput,
+# attached_instance_id, attached_device, create_time, region). All KNOWN when
+# input is complete; UNKNOWN when the source field is missing.
 # ---------------------------------------------------------------------------
 
 
-def test_volume_to_facts_emits_all_nine_keys_known():
+def test_volume_to_facts_emits_all_ten_keys_known():
     vol = _make_volume(
         size=500,
         volume_type="gp3",
@@ -222,7 +223,7 @@ def test_volume_to_facts_emits_all_nine_keys_known():
     facts = volume_to_facts(rid, "111111111111", vol, observed_at)
 
     by_key = {f"{f.namespace}.{f.key}": f for f in facts}
-    assert len(facts) == 9
+    assert len(facts) == 10
 
     # Every fact carries the EC2 source and the observation timestamp.
     for f in facts:
@@ -240,6 +241,7 @@ def test_volume_to_facts_emits_all_nine_keys_known():
     assert by_key["aws.ec2.volume.attached_instance_id"].value == "i-abc"
     assert by_key["aws.ec2.volume.attached_device"].value == "/dev/sda1"
     assert by_key["aws.ec2.volume.create_time"].value is not None
+    assert by_key["aws.ec2.volume.region"].value == "eu-west-1"
 
 
 def test_volume_to_facts_marks_missing_fields_unknown():

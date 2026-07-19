@@ -19,14 +19,20 @@ NO_MATCH: volume exists, any other state (pending, error, ...), or the
   orphanhood without DescribeImages. Corroborating AMI-owned snapshots
   against DescribeImages (is the AMI itself still registered?) is the
   V2 improvement.
-INCONCLUSIVE: missing state / size / volume_exists / description fact,
-  malformed values, or a storage tier not in the catalog (defensive
-  against future AWS tiers). A missing description is INCONCLUSIVE, not
-  "no AMI reference": without it we cannot rule out AMI ownership.
+INCONCLUSIVE: missing state / size / volume_exists / description /
+  region fact, malformed values, or a storage tier not in the catalog
+  (defensive against future AWS tiers). A missing description is
+  INCONCLUSIVE, not "no AMI reference": without it we cannot rule out
+  AMI ownership. The region fact is mandatory: snapshot pricing is not
+  region-uniform, so we can't price honestly without it. A region the
+  catalog doesn't cover still matches on the us-east-1 fallback grid,
+  with `price_region_exact: false` in the payload.
 
 Severity matches the ebs_unattached thresholds ($500/CRITICAL,
 $50/WARNING) for dashboard consistency. value_basis=ESTIMATED until
 FOCUS reconciles. catalog_version stamped on every insight payload.
+Amounts are USD (`source_currency`); the EUR conversion happens at
+export/display.
 """
 
 from __future__ import annotations
@@ -36,7 +42,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from uuid import UUID
 
-from constat_core.catalog.ebs import EBS_CATALOG_VERSION, ebs_snapshot_price_per_gb_month
+from constat_core.catalog.ebs import (
+    EBS_CATALOG_VERSION,
+    ebs_snapshot_price_per_gb_month,
+    price_region_exact,
+)
 from constat_core.models import Fact, Insight, Severity, ValueState
 
 RULE_NAME = "snapshot_orphan"
@@ -112,6 +122,7 @@ def evaluate(
     exists_fact = _get(idx, "aws.ec2.snapshot.volume_exists")
     description_fact = _get(idx, "aws.ec2.snapshot.description")
     start_time_fact = _get(idx, "aws.ec2.snapshot.start_time")
+    region_fact = _get(idx, "aws.ec2.snapshot.region")
 
     inconclusive: list[str] = []
 
@@ -132,6 +143,10 @@ def evaluate(
     # a destructive recommendation.
     if description_fact is None or description_fact.value_state != ValueState.KNOWN:
         inconclusive.append("aws.ec2.snapshot.description")
+    # Gate 5: region must be KNOWN — snapshot pricing is not
+    # region-uniform, so we can't price honestly without it.
+    if region_fact is None or region_fact.value_state != ValueState.KNOWN:
+        inconclusive.append("aws.ec2.snapshot.region")
 
     if inconclusive:
         # Missing facts — never silent, always INCONCLUSIVE.
@@ -165,7 +180,8 @@ def evaluate(
     tier = "standard"
     if tier_fact is not None and tier_fact.value_state == ValueState.KNOWN and tier_fact.value:
         tier = str(tier_fact.value)
-    price = ebs_snapshot_price_per_gb_month(tier)
+    region = str(region_fact.value)  # type: ignore[union-attr]
+    price = ebs_snapshot_price_per_gb_month(tier, region)
     if price is None:
         return InsightResult(
             insights=[],
@@ -194,6 +210,8 @@ def evaluate(
                 tier=tier,
                 age_days=age_days,
                 monthly_cost_usd=monthly_cost,
+                pricing_region=price.region,
+                price_region_exact=price_region_exact(region, price),
             )
         ]
     )
@@ -207,6 +225,8 @@ def _make_insight(
     tier: str,
     age_days: int | None,
     monthly_cost_usd: float,
+    pricing_region: str,
+    price_region_exact: bool,
 ) -> Insight:
     # Same severity thresholds as ebs_unattached for dashboard
     # consistency: the operator reads INFO/WARNING/CRITICAL the same
@@ -244,6 +264,9 @@ def _make_insight(
             "state": COMPLETED_STATE,
             "orphan_snapshot_monthly_usd": monthly_cost_usd,
             "value_basis": "ESTIMATED",
+            "pricing_region": pricing_region,
+            "price_region_exact": price_region_exact,
+            "source_currency": "USD",
             "recommendation": recommendation,
             "catalog_version": EBS_CATALOG_VERSION,
         },

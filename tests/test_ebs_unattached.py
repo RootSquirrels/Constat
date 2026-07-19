@@ -49,13 +49,18 @@ def _fact(key: str, value, *, value_state: ValueState = ValueState.KNOWN) -> Fac
 
 
 def _available_facts(
-    *, size_gb: int = 100, volume_type: str = "gp2", state: str = "available"
+    *,
+    size_gb: int = 100,
+    volume_type: str = "gp2",
+    state: str = "available",
+    region: str = "us-east-1",
 ) -> list[Fact]:
     """Minimal fact set for one EBS volume in a given state."""
     return [
         _fact("state", state),
         _fact("size_gb", size_gb),
         _fact("volume_type", volume_type),
+        _fact("region", region),
     ]
 
 
@@ -168,6 +173,53 @@ def test_unknown_volume_type_emits_inconclusive() -> None:
     assert "catalog.volume_type_price_missing" in result.inconclusive_reasons
 
 
+def test_missing_region_emits_inconclusive() -> None:
+    """EBS pricing is not region-uniform: without the region fact we
+    can't price honestly. INCONCLUSIVE, never a guessed grid."""
+    facts = [
+        _fact("state", "available"),
+        _fact("size_gb", 100),
+        _fact("volume_type", "gp2"),
+        _fact("region", None, value_state=ValueState.UNKNOWN),
+    ]
+    result = evaluate(uuid4(), facts)
+    assert not result.is_conclusive
+    assert "aws.ec2.volume.region" in result.inconclusive_reasons
+
+
+# ---------------------------------------------------------------------------
+# Region-aware pricing (chantier 2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_eu_west_3_volume_prices_on_the_eu_west_3_grid() -> None:
+    """Hand-computed: 100 GB gp2 in eu-west-3 = 100 * $0.116 = $11.60,
+    priced on the exact eu-west-3 grid (AWS Price List 2026-07-17)."""
+    result = evaluate(uuid4(), _available_facts(size_gb=100, volume_type="gp2", region="eu-west-3"))
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    assert payload["monthly_waste_usd"] == 11.60
+    assert payload["pricing_region"] == "eu-west-3"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+
+def test_uncatalogued_region_falls_back_with_exact_false() -> None:
+    """A region the catalog doesn't cover (ap-southeast-2) still MATCHes
+    on the us-east-1 grid, but the payload admits the fallback."""
+    result = evaluate(
+        uuid4(), _available_facts(size_gb=100, volume_type="gp2", region="ap-southeast-2")
+    )
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    # us-east-1 grid: 100 * $0.10 = $10.00
+    assert payload["monthly_waste_usd"] == 10.00
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
+
+
 # ---------------------------------------------------------------------------
 # Runner: registration + source + end-to-end
 # ---------------------------------------------------------------------------
@@ -241,7 +293,8 @@ def _seed_volume_with_facts(
 
 
 def test_run_ebs_unattached_emits_insight_for_available_volume(session: Session) -> None:
-    """End-to-end: a 1000 GB gp2 available volume emits one insight."""
+    """End-to-end: a 1000 GB gp2 available volume in eu-west-1 emits one
+    insight priced on the eu-west-1 grid."""
     acc = _seed_account(session)
     _seed_ec2_scope_proof(session, acc, region="eu-west-1")
     _seed_volume_with_facts(
@@ -249,7 +302,7 @@ def test_run_ebs_unattached_emits_insight_for_available_volume(session: Session)
         acc,
         "eu-west-1",
         "vol-1",
-        {"state": "available", "size_gb": 1000, "volume_type": "gp2"},
+        {"state": "available", "size_gb": 1000, "volume_type": "gp2", "region": "eu-west-1"},
     )
 
     result = run_ebs_unattached(session)
@@ -258,9 +311,11 @@ def test_run_ebs_unattached_emits_insight_for_available_volume(session: Session)
     assert result.insights_emitted == 1
     assert result.inconclusive_emitted == 0
     insight = session.query(InsightORM).one()
-    # 1000 GB * $0.10 = $100/month -> WARNING
+    # 1000 GB * $0.11 (eu-west-1 grid) = $110/month -> WARNING
     assert insight.severity == "warning"
-    assert insight.payload["monthly_waste_usd"] == 100.00
+    assert insight.payload["monthly_waste_usd"] == 110.00
+    assert insight.payload["pricing_region"] == "eu-west-1"
+    assert insight.payload["price_region_exact"] is True
 
 
 def test_run_ebs_unattached_emits_inconclusive_without_ec2_scope(session: Session) -> None:
@@ -273,7 +328,7 @@ def test_run_ebs_unattached_emits_inconclusive_without_ec2_scope(session: Sessio
         acc,
         "eu-west-1",
         "vol-1",
-        {"state": "available", "size_gb": 100, "volume_type": "gp2"},
+        {"state": "available", "size_gb": 100, "volume_type": "gp2", "region": "eu-west-1"},
     )
 
     result = run_ebs_unattached(session)

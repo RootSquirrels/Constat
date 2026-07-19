@@ -9,12 +9,18 @@ NO_MATCH: any other state (in-use, creating, deleting, error, deleted).
   still costs money, but we don't know if it's "transiently broken" or
   "permanently dead" — the operator can investigate from the inventory
   view.
-INCONCLUSIVE: missing state / size / type fact, or a volume type not in
-  the catalog (defensive against future AWS types).
+INCONCLUSIVE: missing state / size / type / region fact, or a volume
+  type not in the catalog (defensive against future AWS types). The
+  region fact is mandatory: EBS storage pricing is not region-uniform,
+  so a waste figure priced without knowing the region is not
+  defensible. A region the catalog doesn't cover still matches, on the
+  us-east-1 fallback grid, with `price_region_exact: false` — the
+  payload says which grid priced it (`pricing_region`).
 
 Severity matches the gp2_to_gp3 thresholds ($500/CRITICAL, $50/WARNING)
 for dashboard consistency. value_basis=ESTIMATED until FOCUS reconciles.
-catalog_version stamped on every insight payload.
+catalog_version stamped on every insight payload. Amounts are USD
+(`source_currency`); the EUR conversion happens at export/display.
 """
 
 from __future__ import annotations
@@ -24,7 +30,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
 
-from constat_core.catalog.ebs import EBS_CATALOG_VERSION, monthly_storage_cost
+from constat_core.catalog.ebs import (
+    EBS_CATALOG_VERSION,
+    ebs_price_per_gb_month,
+    price_region_exact,
+)
 from constat_core.models import Fact, Insight, Severity, ValueState
 
 RULE_NAME = "ebs_unattached"
@@ -76,6 +86,7 @@ def evaluate(
     state_fact = _get(idx, "aws.ec2.volume.state")
     size_fact = _get(idx, "aws.ec2.volume.size_gb")
     type_fact = _get(idx, "aws.ec2.volume.volume_type")
+    region_fact = _get(idx, "aws.ec2.volume.region")
 
     inconclusive: list[str] = []
 
@@ -88,6 +99,10 @@ def evaluate(
     # Gate 3: type must be KNOWN (we can't price without it).
     if type_fact is None or type_fact.value_state != ValueState.KNOWN:
         inconclusive.append("aws.ec2.volume.volume_type")
+    # Gate 4: region must be KNOWN — EBS pricing is not region-uniform,
+    # so we can't price honestly without knowing the region.
+    if region_fact is None or region_fact.value_state != ValueState.KNOWN:
+        inconclusive.append("aws.ec2.volume.region")
 
     if inconclusive:
         # Missing facts — never silent, always INCONCLUSIVE.
@@ -103,15 +118,17 @@ def evaluate(
 
     size_gb = int(size_fact.value)  # type: ignore[arg-type]
     volume_type = type_fact.value  # type: ignore[union-attr]
+    region = str(region_fact.value)  # type: ignore[union-attr]
 
-    monthly_waste = monthly_storage_cost(volume_type, size_gb)
-    if monthly_waste is None:
+    price = ebs_price_per_gb_month(volume_type, region)
+    if price is None:
         # Volume type not in the catalog (e.g. a future io3). Don't
         # emit a "free" insight; surface the catalog gap.
         return InsightResult(
             insights=[],
             inconclusive_reasons=["catalog.volume_type_price_missing"],
         )
+    monthly_waste = round(price.usd_per_gb_month * size_gb, 2)
 
     return InsightResult(
         insights=[
@@ -121,6 +138,8 @@ def evaluate(
                 volume_type=volume_type,
                 size_gb=size_gb,
                 monthly_waste_usd=monthly_waste,
+                pricing_region=price.region,
+                price_region_exact=price_region_exact(region, price),
             )
         ]
     )
@@ -133,6 +152,8 @@ def _make_insight(
     volume_type: str,
     size_gb: int,
     monthly_waste_usd: float,
+    pricing_region: str,
+    price_region_exact: bool,
 ) -> Insight:
     # Same severity thresholds as gp2_to_gp3 for dashboard consistency:
     # operator reads "INFO/WARNING/CRITICAL" the same way across all
@@ -167,6 +188,9 @@ def _make_insight(
             "state": UNATTACHED_STATE,
             "monthly_waste_usd": monthly_waste_usd,
             "value_basis": "ESTIMATED",
+            "pricing_region": pricing_region,
+            "price_region_exact": price_region_exact,
+            "source_currency": "USD",
             "recommendation": recommendation,
             "catalog_version": EBS_CATALOG_VERSION,
         },

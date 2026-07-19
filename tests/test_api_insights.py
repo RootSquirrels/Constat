@@ -207,6 +207,9 @@ def test_export_insights_csv(client: TestClient, session) -> None:
         "resource_id",
         "account_id",
         "monthly_cost_usd",
+        "monthly_cost_eur",
+        "fx_rate",
+        "fx_date",
         "value_basis",
         "computed_at",
     ]
@@ -215,11 +218,17 @@ def test_export_insights_csv(client: TestClient, session) -> None:
     chargeback, rds = rows[1], rows[2]
     assert chargeback[0] == "chargeback"
     assert chargeback[5] == "42.50"
-    assert chargeback[6] == "ACTUAL"  # FOCUS-confirmed drift
+    # 42.50 / 1.1435 = 37.1666 -> 37.17 at the ECB rate of 2026-07-17
+    assert chargeback[6] == "37.17"
+    assert chargeback[7] == "0.874508"
+    assert chargeback[8] == "2026-07-17"
+    assert chargeback[9] == "ACTUAL"  # FOCUS-confirmed drift
     assert rds[0] == "rds_eol"
     assert rds[2] == "RDS PostgreSQL 11 is in Extended Support"
     assert rds[5] == "584.00"
-    assert rds[6] == "ESTIMATED"  # catalog pricing, not yet FOCUS-confirmed
+    # 584 / 1.1435 = 510.7127 -> 510.71
+    assert rds[6] == "510.71"
+    assert rds[9] == "ESTIMATED"  # catalog pricing, not yet FOCUS-confirmed
 
 
 def test_export_insights_csv_filters_by_rule(client: TestClient, session) -> None:
@@ -230,3 +239,32 @@ def test_export_insights_csv_filters_by_rule(client: TestClient, session) -> Non
     rows = list(csv.reader(io.StringIO(response.text)))
     assert len(rows) == 2
     assert rows[1][0] == "rds_eol"
+
+
+def test_export_insights_csv_eur_columns_empty_without_usd_amount(
+    client: TestClient, session
+) -> None:
+    """A rule with no monetary payload key (not in MONETARY) exports
+    empty USD/EUR/FX cells — never a fabricated conversion."""
+    acc = _make_account(session)
+    session.add(
+        InsightORM(
+            id=uuid4(),
+            rule_name="no_such_rule",
+            account_id=acc.id,
+            severity="info",
+            title="no amount",
+            payload={},
+            computed_at=datetime(2026, 7, 18, tzinfo=UTC),
+        )
+    )
+    session.commit()
+
+    response = client.get("/insights/export.csv")
+    assert response.status_code == 200
+    rows = list(csv.reader(io.StringIO(response.text)))
+    assert len(rows) == 2
+    assert rows[1][5] == ""  # monthly_cost_usd
+    assert rows[1][6] == ""  # monthly_cost_eur
+    assert rows[1][7] == ""  # fx_rate
+    assert rows[1][8] == ""  # fx_date

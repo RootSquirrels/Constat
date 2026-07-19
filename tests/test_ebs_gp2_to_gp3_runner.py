@@ -129,6 +129,17 @@ def _seed_volume(
             source="aws_ec2",
             observed_at=datetime.now(tz=UTC),
         ),
+        FactORM(
+            tenant_id=DEFAULT_TENANT_ID,
+            resource_id=res.id,
+            account_id=account.id,
+            namespace="aws.ec2.volume",
+            key="region",
+            value=region,
+            value_state="KNOWN",
+            source="aws_ec2",
+            observed_at=datetime.now(tz=UTC),
+        ),
     ]
     session.add_all(facts)
     session.commit()
@@ -192,14 +203,17 @@ def test_run_ebs_gp2_to_gp3_emits_match_for_gp2_volume(session: Session) -> None
     assert result.inconclusive_emitted == 0
 
     insight = session.query(InsightORM).filter_by(resource_id=res.id).one()
-    assert insight.severity == "info"  # 100 GB = $2 savings = below $50 = INFO
-    assert insight.payload["savings_monthly_usd"] == 2.00
+    # 100 GB in eu-west-1: 100 * ($0.11 - $0.088) = $2.20 -> below $50 = INFO
+    assert insight.severity == "info"
+    assert insight.payload["savings_monthly_usd"] == 2.20
     assert insight.payload["current_volume_type"] == "gp2"
     assert insight.payload["target_volume_type"] == "gp3"
+    assert insight.payload["pricing_region"] == "eu-west-1"
+    assert insight.payload["price_region_exact"] is True
 
 
 def test_run_ebs_gp2_to_gp3_emits_warning_for_3000gb(session: Session) -> None:
-    """3000 GB gp2: $60 saved/month -> WARNING severity."""
+    """3000 GB gp2 in eu-west-1: 3000 * $0.022 = $66 saved/month -> WARNING."""
     acc = _seed_account(session)
     _seed_ec2_scope_proof(session, acc, region="eu-west-1")
     _seed_volume(session, acc, "eu-west-1", "vol-big", _gp2_volume_dict("vol-big", 3000))
@@ -210,8 +224,8 @@ def test_run_ebs_gp2_to_gp3_emits_warning_for_3000gb(session: Session) -> None:
     assert result.insights_emitted == 1
     insight = session.query(InsightORM).one()
     assert insight.severity == "warning"
-    # 3000 * 0.02 = $60
-    assert insight.payload["savings_monthly_usd"] == 60.00
+    # 3000 * (0.11 - 0.088) = $66
+    assert insight.payload["savings_monthly_usd"] == 66.00
 
 
 def test_run_ebs_gp2_to_gp3_skips_gp3_volumes(session: Session) -> None:

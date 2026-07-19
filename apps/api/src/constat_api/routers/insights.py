@@ -6,6 +6,7 @@ import csv
 import io
 from uuid import UUID
 
+from constat_core.catalog.fx import usd_to_eur
 from constat_core.models import Insight, Severity
 from constat_core.monetary import monthly_cost_and_basis
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -106,7 +107,13 @@ def export_insights_csv_endpoint(
 ) -> Response:
     """CSV export of the current insights — the artifact a prospect's
     champion circulates internally. Same filters as GET /insights,
-    capped at 500 rows (V1 pilot volume)."""
+    capped at 500 rows (V1 pilot volume).
+
+    Amounts are USD (the catalog/billing currency). `monthly_cost_eur`
+    is a convenience conversion at the dated ECB reference rate from
+    constat_core.catalog.fx — the `fx_rate` / `fx_date` columns make
+    the conversion auditable ("1 USD = fx_rate EUR on fx_date"). The
+    three EUR-side columns are empty for rows without a USD amount."""
     insights = repo.list_insights(
         session,
         rule_name=rule_name,
@@ -125,12 +132,20 @@ def export_insights_csv_endpoint(
             "resource_id",
             "account_id",
             "monthly_cost_usd",
+            "monthly_cost_eur",
+            "fx_rate",
+            "fx_date",
             "value_basis",
             "computed_at",
         ]
     )
     for insight in insights:
         monthly_cost, value_basis = _monthly_cost_and_basis(insight)
+        if monthly_cost is not None:
+            eur, fx_rate, fx_date = usd_to_eur(monthly_cost)
+            eur_col, rate_col, date_col = f"{eur:.2f}", str(fx_rate), fx_date.isoformat()
+        else:
+            eur_col = rate_col = date_col = ""
         writer.writerow(
             [
                 insight.rule_name,
@@ -139,6 +154,9 @@ def export_insights_csv_endpoint(
                 str(insight.resource_id) if insight.resource_id else "",
                 insight.account_id or "",
                 f"{monthly_cost:.2f}" if monthly_cost is not None else "",
+                eur_col,
+                rate_col,
+                date_col,
                 value_basis,
                 insight.computed_at.isoformat(),
             ]

@@ -37,7 +37,7 @@ def test_gp2_pricing_is_correct():
     assert p is not None
     assert p.usd_per_gb_month == 0.10
     assert p.volume_type == "gp2"
-    assert p.review_date == "2026-07-18"
+    assert p.review_date == "2026-07-19"
 
 
 def test_gp3_pricing_is_correct():

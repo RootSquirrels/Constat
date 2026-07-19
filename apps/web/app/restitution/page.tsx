@@ -1,6 +1,9 @@
 import {
   api,
   ApiError,
+  formatUsdEur,
+  FX_RATE_DATE,
+  FX_USD_TO_EUR,
   insightMonetaryKind,
   insightMonthlyCostUsd,
   insightValueBasis,
@@ -145,7 +148,7 @@ export default async function RestitutionPage() {
               <th style={{ padding: "0.5rem 0.75rem" }}>Insight</th>
               <th style={{ padding: "0.5rem 0.75rem" }}>Severity</th>
               <th style={{ padding: "0.5rem 0.75rem", textAlign: "right" }}>
-                Cost / month
+                Cost / month ($ / €)
               </th>
               <th style={{ padding: "0.5rem 0.75rem" }}>Basis</th>
             </tr>
@@ -171,7 +174,7 @@ export default async function RestitutionPage() {
                   {i.severity}
                 </td>
                 <td style={{ padding: "0.5rem 0.75rem", textAlign: "right" }}>
-                  {fmtUsd(insightMonthlyCostUsd(i))}
+                  {formatUsdEur(insightMonthlyCostUsd(i))}
                 </td>
                 <td style={{ padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>
                   {insightValueBasis(i)}
@@ -188,7 +191,7 @@ export default async function RestitutionPage() {
                 Total — avoidable savings (estimates; accounting deltas excluded)
               </td>
               <td style={{ padding: "0.5rem 0.75rem", textAlign: "right" }}>
-                {fmtUsd(totalMonthly)}
+                {formatUsdEur(totalMonthly)}
               </td>
               <td style={{ padding: "0.5rem 0.75rem" }} />
             </tr>
@@ -330,6 +333,11 @@ export default async function RestitutionPage() {
           {lastRun
             ? ` Every figure above is backed by a recorded source_run — most recently ${lastRun.resource_type} in ${lastRun.region} (account ${lastRun.account_external_id ?? "unknown"}), finished ${lastRun.finished_at ? new Date(lastRun.finished_at).toLocaleString() : "—"} with status ${lastRun.status}.`
             : " No source_run recorded yet — figures will appear after the first scan."}
+        </p>
+        <p style={{ margin: "0.5rem 0 0" }}>
+          Taux BCE&nbsp;: 1 USD = {FX_USD_TO_EUR} EUR au {FX_RATE_DATE}.
+          Montants sources en USD (grilles tarifaires AWS), conversion EUR
+          indicative.
         </p>
       </footer>
     </main>

@@ -30,11 +30,12 @@ def _fact(key: str, value, *, value_state: ValueState = ValueState.KNOWN) -> Fac
     )
 
 
-def _gp2_facts(size_gb: int, volume_type: str = "gp2") -> list[Fact]:
+def _gp2_facts(size_gb: int, volume_type: str = "gp2", region: str = "us-east-1") -> list[Fact]:
     """Minimal fact set for one EBS volume."""
     return [
         _fact("size_gb", size_gb),
         _fact("volume_type", volume_type),
+        _fact("region", region),
     ]
 
 
@@ -221,6 +222,54 @@ def test_unknown_size_emits_inconclusive():
     assert "aws.ec2.volume.size_gb" in result.inconclusive_reasons
 
 
+def test_missing_region_emits_inconclusive():
+    """The gp2/gp3 delta is not region-uniform: without the region fact
+    we can't price honestly. INCONCLUSIVE, never a guessed grid."""
+    facts = [
+        _fact("size_gb", 100, value_state=ValueState.KNOWN),
+        _fact("volume_type", "gp2", value_state=ValueState.KNOWN),
+        _fact("region", None, value_state=ValueState.UNKNOWN),
+    ]
+    result = evaluate(uuid4(), facts)
+
+    assert not result.is_conclusive
+    assert "aws.ec2.volume.region" in result.inconclusive_reasons
+
+
+# ---------------------------------------------------------------------------
+# Region-aware pricing (chantier 2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_eu_west_3_gp2_prices_on_the_eu_west_3_grid():
+    """Hand-computed on the eu-west-3 grid (AWS Price List 2026-07-17):
+    100 GB gp2 = 100 * $0.116 = $11.60; gp3 = 100 * $0.0928 = $9.28;
+    saving $2.32/month (still 20% — the ratio holds across regions)."""
+    result = evaluate(uuid4(), _gp2_facts(100, region="eu-west-3"))
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    assert payload["current_monthly_usd"] == 11.60
+    assert payload["target_monthly_usd"] == 9.28
+    assert payload["savings_monthly_usd"] == 2.32
+    assert payload["savings_pct"] == 20.0
+    assert payload["pricing_region"] == "eu-west-3"
+    assert payload["price_region_exact"] is True
+    assert payload["source_currency"] == "USD"
+
+
+def test_uncatalogued_region_falls_back_with_exact_false():
+    """A region the catalog doesn't cover still MATCHes on the us-east-1
+    grid, but the payload admits the fallback."""
+    result = evaluate(uuid4(), _gp2_facts(100, region="ap-southeast-2"))
+
+    assert result.has_gap
+    payload = result.insights[0].payload
+    assert payload["savings_monthly_usd"] == 2.00
+    assert payload["pricing_region"] == "us-east-1"
+    assert payload["price_region_exact"] is False
+
+
 def test_no_facts_emits_inconclusive():
     """An empty fact list = we know nothing about this resource.
     INCONCLUSIVE, not silent."""
@@ -230,6 +279,7 @@ def test_no_facts_emits_inconclusive():
     assert set(result.inconclusive_reasons) == {
         "aws.ec2.volume.volume_type",
         "aws.ec2.volume.size_gb",
+        "aws.ec2.volume.region",
     }
 
 
