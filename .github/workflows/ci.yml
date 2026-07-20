@@ -56,7 +56,9 @@ jobs:
 
       - name: Import contracts (import-linter)
         # AGENTS.md ownership rules enforced by the tool (I.4).
-        run: uv run lint-imports
+        # --config pyproject.toml is explicit: it is the single source
+        # for contracts (a stray .importlinter INI must never shadow it).
+        run: uv run lint-imports --config pyproject.toml
 
       - name: Apply migrations
         # Alembic (db/alembic/, see ADR-17). Catches broken migration
