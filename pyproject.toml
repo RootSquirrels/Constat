@@ -115,6 +115,18 @@ module = "constat_core.*"
 strict = true
 
 [[tool.mypy.overrides]]
+# I.5: the orchestrator (apps/api) is also strict-checked. The code
+# was audited and confirmed strict-clean (0 errors on 59 files /
+# ~9.1k LOC, 2026-07-20). The override pins the contract: a
+# future refactor that introduces implicit `Any`, untyped `def`,
+# or `no-untyped-def` in apps/api fails the CI type-check. The
+# boto3 / botocore / pyarrow `ignore_missing_imports` overrides
+# below stay local — the strictness is per-module, the missing-
+# import tolerance is per-3rd-party.
+module = "constat_api.*"
+strict = true
+
+[[tool.mypy.overrides]]
 module = "boto3.*"
 ignore_missing_imports = true
 
