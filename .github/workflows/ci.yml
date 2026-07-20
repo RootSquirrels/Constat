@@ -72,6 +72,17 @@ jobs:
       - name: Test
         run: uv run pytest -v
 
+      - name: Bench regression alert (V)
+        # Roadmap-consolidation §V: the bench e2e is a time series with
+        # a >20% regression alert. We run a small (1000-resource) bench
+        # here so the PR gate stays fast (~1-2s) and write the row to
+        # the gitignored `scripts/.bench_history.jsonl`. The `--check`
+        # flag compares the latest row to the median of the previous 5
+        # rows; a regression exits non-zero. First runs (no baseline
+        # yet) exit 0 — the baseline accumulates over the first few
+        # CI runs and stabilizes after ~5.
+        run: uv run --frozen python scripts/bench_runner.py --resources 1000 --check
+
       - name: Supply-chain audit (pip-audit)
         # Advisory until the findings baseline is triaged — flip
         # continue-on-error to false once the baseline is clean.

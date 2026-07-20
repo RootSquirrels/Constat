@@ -44,6 +44,12 @@ data/
 *.sqlite
 *.db
 
+# Bench history (V): local time series, never committed. Each
+# developer's bench runs append a JSONL row to this file; CI
+# appends its own. The alert math (median vs latest) reads
+# whatever is in the file regardless of where it came from.
+scripts/.bench_history.jsonl
+
 # Docker volumes (if mounted)
 volumes/
 
