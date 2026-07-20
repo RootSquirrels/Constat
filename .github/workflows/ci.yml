@@ -50,8 +50,13 @@ jobs:
       - name: Lint format check (ruff)
         run: uv run ruff format --check .
 
-      - name: Type-check core
-        run: uv run mypy packages/core/src
+      - name: Type-check (mypy)
+        # Config-driven (pyproject): packages/core strict + apps/api (I.5).
+        run: uv run mypy
+
+      - name: Import contracts (import-linter)
+        # AGENTS.md ownership rules enforced by the tool (I.4).
+        run: uv run lint-imports
 
       - name: Apply migrations
         # Alembic (db/alembic/, see ADR-17). Catches broken migration

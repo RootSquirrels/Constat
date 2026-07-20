@@ -187,6 +187,8 @@ Notes:
 uv run pytest -v                    # tests
 uv run ruff check .                 # lint
 uv run ruff format .                # format
+uv run mypy                         # types (core strict + apps/api)
+uv run lint-imports                 # import contracts (AGENTS.md boundaries)
 uv run python -m constat_api        # API on http://localhost:8000
 cd apps/web && npm install && npm run dev   # web on http://localhost:3000
 
