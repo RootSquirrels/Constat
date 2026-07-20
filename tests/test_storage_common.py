@@ -161,7 +161,9 @@ def test_all_required_facts_unknown_emits_inconclusive(config, required_facts) -
         ),
     ],
 )
-def test_severity_thresholds_are_shared(config, match_facts, expected_at_50, expected_at_500) -> None:
+def test_severity_thresholds_are_shared(
+    config, match_facts, expected_at_50, expected_at_500
+) -> None:
     """Same severity scale across the V1 storage rules: >= $500 =
     CRITICAL, >= $50 = WARNING, else INFO. The shared function
     applies the thresholds; the rules declare them in their
@@ -185,10 +187,7 @@ def test_severity_thresholds_are_shared(config, match_facts, expected_at_50, exp
     assert result.insights[0].severity == Severity.CRITICAL
 
     # Below the WARNING threshold
-    facts_i = [
-        f if f.key != "size_gb" else _fact(f.namespace, f.key, 100)
-        for f in match_facts()
-    ]
+    facts_i = [f if f.key != "size_gb" else _fact(f.namespace, f.key, 100) for f in match_facts()]
     result = evaluate_storage(uuid4(), facts_i, config, today=date(2026, 7, 18))
     assert result.has_gap
     assert result.insights[0].severity == Severity.INFO
@@ -209,7 +208,9 @@ def test_size_gb_x_usd_per_gb_month_is_the_only_arithmetic() -> None:
     test pins the same arithmetic for a 100 GB volume; this test
     adds the shared-side check across rules.
     """
-    result = evaluate_storage(uuid4(), _unattached_match(), UNATTACHED_CONFIG, today=date(2026, 7, 18))
+    result = evaluate_storage(
+        uuid4(), _unattached_match(), UNATTACHED_CONFIG, today=date(2026, 7, 18)
+    )
     assert len(result.insights) == 1
     assert result.insights[0].payload["monthly_waste_usd"] == 100.00
 
@@ -219,7 +220,9 @@ def test_savings_arithmetic_uses_two_prices() -> None:
     arithmetic (savings = gp2 - gp3). Pinned here because the
     shared function never sees the subtraction — it's the rule's
     compute_cost that returns the savings as the monthly_usd."""
-    result = evaluate_storage(uuid4(), _gp2_to_gp3_match(), GP2_TO_GP3_CONFIG, today=date(2026, 7, 18))
+    result = evaluate_storage(
+        uuid4(), _gp2_to_gp3_match(), GP2_TO_GP3_CONFIG, today=date(2026, 7, 18)
+    )
     assert len(result.insights) == 1
     payload = result.insights[0].payload
     # 1000 GB gp2 = $100, gp3 = $80, savings = $20
@@ -261,10 +264,7 @@ def test_unattached_no_match_for_in_use() -> None:
 def test_snapshot_orphan_no_match_for_volume_exists() -> None:
     """volume_exists=True -> NO_MATCH (volume still there)."""
     facts = _snapshot_orphan_match()
-    facts = [
-        f if f.key != "volume_exists" else _fact(f.namespace, f.key, True)
-        for f in facts
-    ]
+    facts = [f if f.key != "volume_exists" else _fact(f.namespace, f.key, True) for f in facts]
     result = evaluate_storage(uuid4(), facts, SNAPSHOT_ORPHAN_CONFIG, today=date(2026, 7, 18))
     assert result.is_conclusive
     assert not result.has_gap

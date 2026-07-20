@@ -126,11 +126,7 @@ def _compute_cost(idx: dict[str, Fact], today: date) -> StorageCost:
 
     tier_fact = idx.get("aws.ec2.snapshot.storage_tier")
     tier = "standard"
-    if (
-        tier_fact is not None
-        and tier_fact.value_state == ValueState.KNOWN
-        and tier_fact.value
-    ):
+    if tier_fact is not None and tier_fact.value_state == ValueState.KNOWN and tier_fact.value:
         tier = str(tier_fact.value)
     region = cast(str, idx["aws.ec2.snapshot.region"].value)
     price = ebs_snapshot_price_per_gb_month(tier, region)
@@ -140,9 +136,7 @@ def _compute_cost(idx: dict[str, Fact], today: date) -> StorageCost:
 
     start_time_fact = idx.get("aws.ec2.snapshot.start_time")
     try:
-        age_days = _age_days(
-            start_time_fact.value if start_time_fact is not None else None, today
-        )
+        age_days = _age_days(start_time_fact.value if start_time_fact is not None else None, today)
     except ValueError as exc:
         raise StorageInconclusiveError("aws.ec2.snapshot.start_time.malformed") from exc
 

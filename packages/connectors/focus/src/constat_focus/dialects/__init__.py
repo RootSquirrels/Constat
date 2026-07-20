@@ -59,4 +59,4 @@ def auto_detect(
     return best
 
 
-__all__ = ["Dialect", "REGISTRY", "auto_detect", "get_dialect"]
+__all__ = ["REGISTRY", "Dialect", "auto_detect", "get_dialect"]

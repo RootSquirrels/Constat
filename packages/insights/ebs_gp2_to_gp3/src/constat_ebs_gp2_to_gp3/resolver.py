@@ -94,8 +94,7 @@ def _compute_cost(idx: dict[str, Fact], today: date) -> StorageCost | None:
         monetary_payload_key="savings_monthly_usd",
         pricing_region=gp2_price.region,
         price_region_exact=(
-            price_region_exact(region, gp2_price)
-            and price_region_exact(region, gp3_price)
+            price_region_exact(region, gp2_price) and price_region_exact(region, gp3_price)
         ),
         extras={
             "volume_size_gb": size_gb,

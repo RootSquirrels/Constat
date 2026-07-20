@@ -29,8 +29,7 @@ class Dialect(Protocol):
     """
 
     @property
-    def provider_name(self) -> str:
-        ...
+    def provider_name(self) -> str: ...
 
     def detect(self, fieldnames: list[str], first_row: dict[str, str | None]) -> float:
         """Return a confidence in [0.0, 1.0] that this dialect applies.

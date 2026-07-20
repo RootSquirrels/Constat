@@ -121,9 +121,7 @@ def test_bool_payload_key_yields_none_cost(rule_name, bool_value) -> None:
         max_value=1_000_000.0,
     ),
 )
-def test_numeric_payload_extracts_as_float_with_registered_basis(
-    rule_name, value
-) -> None:
+def test_numeric_payload_extracts_as_float_with_registered_basis(rule_name, value) -> None:
     """∀ registered rule, ∀ finite float at the payload key —
     cost equals float(value) and basis equals the registered
     value_basis (V2 contract: this function never flips to ACTUAL)."""
@@ -160,9 +158,7 @@ def test_shared_payload_keys_agree_on_basis_and_kind() -> None:
     wrong by half)."""
     by_key: dict[str, list[tuple[str, ValueBasis, MonetaryKind]]] = {}
     for rule_name, entry in MONETARY.items():
-        by_key.setdefault(entry.payload_key, []).append(
-            (rule_name, entry.value_basis, entry.kind)
-        )
+        by_key.setdefault(entry.payload_key, []).append((rule_name, entry.value_basis, entry.kind))
     for key, rules in by_key.items():
         if len(rules) == 1:
             continue

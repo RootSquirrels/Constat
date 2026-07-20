@@ -194,7 +194,9 @@ def _mysql_facts(
     ]
 
 
-def _aurora_mysql_facts(*, version: str = "3.08.1", vcpu: int = 4, region: str = "us-east-1") -> list[Fact]:
+def _aurora_mysql_facts(
+    *, version: str = "3.08.1", vcpu: int = 4, region: str = "us-east-1"
+) -> list[Fact]:
     return [
         _fact("aws.rds", "engine", "aurora-mysql"),
         _fact("aws.rds", "engine_version", version),
@@ -274,9 +276,7 @@ def test_engine_not_in_rule_returns_empty() -> None:
     """A NO_MATCH engine (e.g. rds_eol evaluating an `oracle` engine)
     returns an empty InsightResult — no insight, no inconclusive.
     The rule has nothing to say about that engine."""
-    result = evaluate_eol(
-        uuid4(), _pg_facts(engine="oracle"), PG_CONFIG, today=date(2026, 7, 18)
-    )
+    result = evaluate_eol(uuid4(), _pg_facts(engine="oracle"), PG_CONFIG, today=date(2026, 7, 18))
     assert result.insights == []
     assert result.inconclusive_reasons == []
 
@@ -364,7 +364,11 @@ def test_vcpu_x_tier_rate_x_730h_is_the_only_monthly_arithmetic() -> None:
     """
     cases = [
         (PG_CONFIG, _pg_facts(version="11.22", vcpu=4, region="us-east-1"), Decimal("584.00")),
-        (MYSQL_CONFIG, _mysql_facts(version="5.7.42", vcpu=4, region="us-east-1"), Decimal("584.00")),
+        (
+            MYSQL_CONFIG,
+            _mysql_facts(version="5.7.42", vcpu=4, region="us-east-1"),
+            Decimal("584.00"),
+        ),
     ]
     for config, facts, expected in cases:
         result = evaluate_eol(uuid4(), facts, config, today=date(2026, 9, 1))

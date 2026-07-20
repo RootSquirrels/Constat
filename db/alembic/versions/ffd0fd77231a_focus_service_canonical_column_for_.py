@@ -18,6 +18,7 @@ that would change the storage key). A follow-up backfill
 can run as a separate one-off; until then, new ingests set the
 column and old rows dedup by their native name.
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa

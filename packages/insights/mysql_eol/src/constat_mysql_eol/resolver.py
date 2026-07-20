@@ -46,11 +46,7 @@ def _parse_mysql_major(raw: str) -> str | None:
     the inconclusive reason.
     """
     parts = raw.split(".")
-    if (
-        len(parts) < 2
-        or not parts[0].isdigit()
-        or not parts[1].isdigit()
-    ):
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
         return None
     return f"{parts[0]}.{parts[1]}"
 

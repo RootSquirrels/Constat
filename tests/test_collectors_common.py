@@ -145,9 +145,7 @@ def test_paginate_aws_supports_nested_extractors() -> None:
             service="ec2",
             operation="describe_instances",
             items_extractor=lambda page: (
-                inst
-                for res in page.get("Reservations", [])
-                for inst in res.get("Instances", [])
+                inst for res in page.get("Reservations", []) for inst in res.get("Instances", [])
             ),
         )
     )

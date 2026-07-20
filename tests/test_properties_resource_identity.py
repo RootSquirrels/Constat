@@ -79,15 +79,19 @@ def _count_active(session: Session, account_id, region, resource_type, native_id
     there is at most 1 such row. Multiple retired rows are allowed
     (they are historical records) — they just don't count toward
     the active set."""
-    rows = session.execute(
-        select(ResourceORM).where(
-            ResourceORM.account_id == account_id,
-            ResourceORM.region == region,
-            ResourceORM.resource_type == resource_type,
-            ResourceORM.native_id == native_id,
-            ResourceORM.retired_at.is_(None),
+    rows = (
+        session.execute(
+            select(ResourceORM).where(
+                ResourceORM.account_id == account_id,
+                ResourceORM.region == region,
+                ResourceORM.resource_type == resource_type,
+                ResourceORM.native_id == native_id,
+                ResourceORM.retired_at.is_(None),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return len(rows)
 
 
@@ -98,14 +102,18 @@ def _count_total(session: Session, account_id, region, resource_type, native_id)
     The upsert reuses the existing row; the resurrection path is
     the only way to have a row whose `retired_at` was set then cleared
     — and that's still ONE row, not multiple."""
-    rows = session.execute(
-        select(ResourceORM).where(
-            ResourceORM.account_id == account_id,
-            ResourceORM.region == region,
-            ResourceORM.resource_type == resource_type,
-            ResourceORM.native_id == native_id,
+    rows = (
+        session.execute(
+            select(ResourceORM).where(
+                ResourceORM.account_id == account_id,
+                ResourceORM.region == region,
+                ResourceORM.resource_type == resource_type,
+                ResourceORM.native_id == native_id,
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return len(rows)
 
 
@@ -136,20 +144,15 @@ def test_upsert_preserves_natural_key_uniqueness(session: Session, sequence) -> 
         # must be exactly 1 row (or 0 if the key was never seen
         # in this sequence — checked by the next iteration or the
         # post-loop invariant).
-        assert _count_active(
-            session, account_id, region, resource_type, native_id
-        ) <= 1, (
-            f"duplicate active resource for "
-            f"({account_id}, {region}, {resource_type}, {native_id})"
+        assert _count_active(session, account_id, region, resource_type, native_id) <= 1, (
+            f"duplicate active resource for ({account_id}, {region}, {resource_type}, {native_id})"
         )
 
     # Post-loop: for every natural key seen in the sequence,
     # at most 1 total row exists (active + retired).
     seen_keys = set(sequence)
     for account_id, region, resource_type, native_id in seen_keys:
-        assert _count_total(
-            session, account_id, region, resource_type, native_id
-        ) <= 1, (
+        assert _count_total(session, account_id, region, resource_type, native_id) <= 1, (
             f"more than 1 row for "
             f"({account_id}, {region}, {resource_type}, {native_id}) — "
             f"upsert should reuse, not duplicate"
