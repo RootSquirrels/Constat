@@ -49,6 +49,8 @@ dev-dependencies = [
     "boto3>=1.34",  # transitively imported by constat_api.settings at module load (alembic env needs it)
     "boto3-stubs[rds]>=1.34",
     "alembic>=1.13",
+    "import-linter>=2.0",
+    "hypothesis>=6.100",  # property-based tests for the core invariants (§IV.1)
 ]
 
 [tool.pytest.ini_options]
@@ -90,8 +92,147 @@ ignore = ["E501"]  # handled by formatter
 [tool.mypy]
 python_version = "3.13"
 strict = false
-files = ["packages/core/src"]
+files = ["packages/core/src", "apps/api/src"]
+mypy_path = [
+    "packages/core/src",
+    "packages/connectors/aws_rds/src",
+    "packages/connectors/aws_ec2/src",
+    "packages/connectors/focus/src",
+    "packages/insights/rds_eol/src",
+    "packages/insights/mysql_eol/src",
+    "packages/insights/aurora_eol/src",
+    "packages/insights/ebs_gp2_to_gp3/src",
+    "packages/insights/ebs_unattached/src",
+    "packages/insights/snapshot_orphan/src",
+    "packages/insights/ec2_stopped_with_storage/src",
+    "packages/insights/chargeback/src",
+    "apps/api/src",
+]
+
+[[tool.mypy.overrides]]
+# AGENTS.md invariant: core is the stable contract — it is strict-checked.
+module = "constat_core.*"
+strict = true
 
 [[tool.mypy.overrides]]
 module = "boto3.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "botocore.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pyarrow.*"
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# import-linter (chantier I.4): AGENTS.md ownership rules, enforced by the
+# tool in CI — not by convention. Run: uv run lint-imports
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = [
+    "constat_core",
+    "constat_api",
+    "constat_aws_rds",
+    "constat_aws_ec2",
+    "constat_focus",
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+
+[[tool.importlinter.contracts]]
+name = "core imports nothing from the project"
+type = "forbidden"
+source_modules = ["constat_core"]
+forbidden_modules = [
+    "constat_api",
+    "constat_aws_rds",
+    "constat_aws_ec2",
+    "constat_focus",
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+
+[[tool.importlinter.contracts]]
+name = "packages never import the app"
+type = "forbidden"
+source_modules = [
+    "constat_core",
+    "constat_aws_rds",
+    "constat_aws_ec2",
+    "constat_focus",
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+forbidden_modules = ["constat_api"]
+
+[[tool.importlinter.contracts]]
+name = "connectors are independent"
+type = "independence"
+modules = ["constat_aws_rds", "constat_aws_ec2", "constat_focus"]
+
+[[tool.importlinter.contracts]]
+name = "insights are independent"
+type = "independence"
+modules = [
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+
+[[tool.importlinter.contracts]]
+name = "connectors do not import insights"
+type = "forbidden"
+source_modules = ["constat_aws_rds", "constat_aws_ec2", "constat_focus"]
+forbidden_modules = [
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+
+[[tool.importlinter.contracts]]
+name = "insights do not import connectors"
+type = "forbidden"
+source_modules = [
+    "constat_rds_eol",
+    "constat_mysql_eol",
+    "constat_aurora_eol",
+    "constat_ebs_gp2_to_gp3",
+    "constat_ebs_unattached",
+    "constat_snapshot_orphan",
+    "constat_ec2_stopped_with_storage",
+    "constat_chargeback",
+]
+forbidden_modules = ["constat_aws_rds", "constat_aws_ec2", "constat_focus"]
+# Documented exception (V1): the chargeback resolver reads the canonical
+# FocusCharge from the FOCUS loader — the only cross-group import.
+ignore_imports = ["constat_chargeback.resolver -> constat_focus.loader"]
