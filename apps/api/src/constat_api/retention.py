@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from constat_api.orm import (
@@ -168,7 +169,7 @@ def apply_retention(
             col < cutoff,
         )
 
-    result = session.execute(stmt)
+    result = cast(CursorResult[Any], session.execute(stmt))
     return int(result.rowcount or 0)
 
 

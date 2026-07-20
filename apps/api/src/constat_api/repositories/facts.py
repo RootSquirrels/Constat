@@ -14,7 +14,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from constat_core.models import Fact, ValueState
+from constat_core.models import Fact
+from constat_core.namespaces import ValueState
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

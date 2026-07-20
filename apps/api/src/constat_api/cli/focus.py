@@ -76,7 +76,7 @@ def _count_rows_total(path: Path) -> int:
             import pyarrow.parquet as pq  # local import: heavy dep
 
             md = pq.read_metadata(path)
-            return md.num_rows
+            return int(md.num_rows)
         except Exception as exc:
             logger.warning("Could not read Parquet metadata for %s: %s", path, exc)
             return -1  # sentinel: unknown

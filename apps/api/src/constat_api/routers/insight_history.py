@@ -115,7 +115,13 @@ def insight_history_endpoint(
         },
         row_count=len(events),
     )
+    # Explicit field construction: the repo returns dict[str, float | int];
+    # unpacking it with ** would type every int field as float | int.
     return InsightHistoryOut(
         events=[_to_out(e) for e in events],
-        summary=InsightHistorySummary(**summary),
+        summary=InsightHistorySummary(
+            appeared_count=int(summary["appeared_count"]),
+            resolved_count=int(summary["resolved_count"]),
+            resolved_monthly_usd_total=float(summary["resolved_monthly_usd_total"]),
+        ),
     )

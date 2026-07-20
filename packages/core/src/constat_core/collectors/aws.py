@@ -33,13 +33,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import boto3
 from botocore.config import Config as BotoConfig
 
-from constat_core.models import Fact, ValueState
+from constat_core.models import Fact
+from constat_core.namespaces import ValueState
 
 # Default region set. Same default for both V1 connectors
 # (`aws_rds`, `aws_ec2`); tunable per tenant via the function
@@ -124,7 +125,11 @@ def paginate_aws(
     paginate_args = paginate_args or {}
     config = retry_config if retry_config is not None else ADAPTIVE_RETRY_CONFIG
     for region in regions:
-        client = session.client(service, region_name=region, config=config)
+        # boto3-stubs only overloads Session.client() for literal service
+        # names; this helper dispatches on a runtime string by design, so
+        # no literal overload can match. The client is only used through
+        # get_paginator, which every service client has — hence Any.
+        client: Any = session.client(cast(Any, service), region_name=region, config=config)
         paginator = client.get_paginator(operation)
         for page in paginator.paginate(**paginate_args):
             for item in items_extractor(page):
@@ -157,6 +162,7 @@ def make_fact_builder(
     call per resource type; the per-fact emissions are
     one-liners.
     """
+
     def _build(resource_id: UUID, key: str, value: Any, state: ValueState) -> Fact:
         return Fact(
             resource_id=resource_id,

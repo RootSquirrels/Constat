@@ -25,13 +25,13 @@ import io
 import re
 from typing import Any
 
+from constat_core.collectors.aws import DEFAULT_REGIONS
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from constat_api.audit import get_audit_db, record_event, record_read
 from constat_api.auth import Principal, require_operator, verify_api_key
-from constat_api.collectors.aws import DEFAULT_REGIONS
 from constat_api.db import get_db
 from constat_api.repositories import collect_targets as collect_targets_repo
 

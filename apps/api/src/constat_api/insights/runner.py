@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 from constat_aurora_eol.resolver import evaluate as aurora_eol_evaluate
 from constat_chargeback.resolver import (
@@ -214,7 +215,7 @@ def _emit_inconclusive(
     session: Session,
     *,
     rule_name: str,
-    resource_id,
+    resource_id: UUID,
     account_id: str | None,
     missing_facts: list[str],
     reason: str,
@@ -520,7 +521,7 @@ def run_resource_rule(
     inconclusive_repo.delete_inconclusive_for_rule(session, rule_name)
 
     # F-16: one bulk query for all resources' facts, grouped in memory.
-    facts_by_resource: dict = {}
+    facts_by_resource: dict[UUID | None, list[Fact]] = {}
     for fact in facts_repo.list_facts_for_resources(session, [r.id for r in resources]):
         facts_by_resource.setdefault(fact.resource_id, []).append(fact)
 

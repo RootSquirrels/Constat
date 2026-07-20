@@ -24,6 +24,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import boto3
 from sqlalchemy.orm import Session
@@ -56,7 +57,7 @@ def run_aws_collect(
     targets: list[TargetAccount],
     base_session: boto3.Session,
     dry_run: bool = False,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     results = collect_targets(session, targets, base_session=base_session, dry_run=dry_run)
     return [
         {

@@ -30,7 +30,8 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
-from constat_core.models import Fact, Insight, Severity, ValueState
+from constat_core.models import Fact, Insight, Severity
+from constat_core.namespaces import ValueState
 
 # 730h = average month (365.25 * 24 / 12). The whole EOL cost
 # estimate is built from this constant; the 3 V1 rules all imported
@@ -167,9 +168,7 @@ def _get(idx: dict[str, Fact], dotted_key: str) -> Fact | None:
     return idx.get(dotted_key)
 
 
-def _select_matcher(
-    config: EolRuleConfig, engine_value: str
-) -> EngineEolMatcher | None:
+def _select_matcher(config: EolRuleConfig, engine_value: str) -> EngineEolMatcher | None:
     """Pick the matcher whose `engine_value` equals the resource's
     engine fact. None when the engine is not in the rule's set
     (a definitive NO_MATCH — the rule has nothing to say)."""
@@ -345,9 +344,7 @@ def evaluate_eol(
     try:
         vcpu_count = int(vcpu.value)
     except (TypeError, ValueError):
-        return EolInsightResult(
-            insights=[], inconclusive_reasons=["aws.rds.vcpu.malformed"]
-        )
+        return EolInsightResult(insights=[], inconclusive_reasons=["aws.rds.vcpu.malformed"])
 
     eol_info = matcher.lookup_eol_info(major)
     if eol_info is None:
@@ -414,9 +411,7 @@ def evaluate_eol(
                     days_to_event=days_to_eol,
                     severity=Severity.CRITICAL,
                     title=f"{display} {formatted_major} is in Extended Support",
-                    recommendation=(
-                        f"Upgrade to {target} now to stop Extended Support fees"
-                    ),
+                    recommendation=(f"Upgrade to {target} now to stop Extended Support fees"),
                     catalog_version=catalog_version,
                 )
             ]
@@ -438,9 +433,7 @@ def evaluate_eol(
                 days_to_event=days_to_eol,
                 severity=Severity.WARNING,
                 title=f"{display} {formatted_major} reaches EOL in {days_to_eol} days",
-                recommendation=(
-                    f"Plan upgrade to {target} before {eol_info.eol_date.isoformat()}"
-                ),
+                recommendation=(f"Plan upgrade to {target} before {eol_info.eol_date.isoformat()}"),
                 catalog_version=catalog_version,
             )
         ]

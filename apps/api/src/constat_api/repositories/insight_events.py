@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from constat_core.monetary import monthly_cost_and_basis
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InsightEventORM, InsightORM
@@ -115,7 +116,13 @@ def diff_and_record_events(
     return appeared, resolved
 
 
-def _filtered(stmt, *, rule_name, since, event):
+def _filtered(
+    stmt: Select[Any],
+    *,
+    rule_name: str | None,
+    since: datetime | None,
+    event: str | None,
+) -> Select[Any]:
     if rule_name is not None:
         stmt = stmt.where(InsightEventORM.rule_name == rule_name)
     if since is not None:

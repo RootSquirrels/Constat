@@ -29,7 +29,7 @@ import json
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ def get_cached_or_none(scope: str, key: str) -> dict[str, Any] | None:
     if body is None:
         return None
     try:
-        return json.loads(body)
+        return cast(dict[str, Any], json.loads(body))
     except json.JSONDecodeError:
         logger.warning("Idempotency cache: corrupted body for key %s", full_key)
         return None

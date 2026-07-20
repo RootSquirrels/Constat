@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from constat_core.models import Insight, Severity
 from sqlalchemy import select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InsightORM
@@ -104,7 +105,7 @@ def delete_insights_for_rule(session: Session, rule_name: str) -> int:
     from sqlalchemy import delete as sa_delete
 
     stmt = sa_delete(InsightORM).where(InsightORM.rule_name == rule_name)
-    result = session.execute(stmt)
+    result = cast(CursorResult[Any], session.execute(stmt))
     return int(result.rowcount or 0)
 
 
@@ -256,7 +257,10 @@ def snapshot_acks(session: Session, rule_name: str) -> dict[str, tuple[str, date
             InsightORM.ack_status.is_not(None),
         )
     ).scalars()
-    return {_ack_snapshot_key(r): (r.ack_status, r.ack_at, r.ack_by) for r in rows}
+    return {
+        _ack_snapshot_key(r): (cast(str, r.ack_status), cast(datetime, r.ack_at), r.ack_by)
+        for r in rows
+    }
 
 
 def apply_acks_to_rule(

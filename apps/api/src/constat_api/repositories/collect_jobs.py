@@ -24,10 +24,11 @@ attribute access; the function contracts stay.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import bindparam, select, text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from constat_api.orm import GUID, CollectJobORM, SourceRunORM
@@ -153,8 +154,8 @@ def try_claim_evaluation(session: Session, job_id: UUID) -> bool:
         "UPDATE collect_jobs SET evaluation_status = 'running' "
         "WHERE job_id = :job_id AND evaluation_status IS NULL"
     ).bindparams(bindparam("job_id", type_=GUID()))
-    result = session.execute(stmt, {"job_id": job_id})
-    return result.rowcount == 1  # type: ignore[union-attr]
+    result = cast(CursorResult[Any], session.execute(stmt, {"job_id": job_id}))
+    return result.rowcount == 1
 
 
 def set_evaluation_status(session: Session, job_id: UUID, status: str) -> None:

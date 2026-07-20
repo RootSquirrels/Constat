@@ -8,11 +8,12 @@ status) written by PATCH /inconclusives/{id} only.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from constat_core.models import Inconclusive
 from sqlalchemy import select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from constat_api.orm import InconclusiveORM
@@ -156,7 +157,7 @@ def delete_inconclusive_for_rule(session: Session, rule_name: str) -> int:
     from sqlalchemy import delete as sa_delete
 
     stmt = sa_delete(InconclusiveORM).where(InconclusiveORM.rule_name == rule_name)
-    result = session.execute(stmt)
+    result = cast(CursorResult[Any], session.execute(stmt))
     return int(result.rowcount or 0)
 
 
@@ -178,5 +179,5 @@ def delete_older_than(session: Session, *, older_than_days: int) -> int:
 
     cutoff = datetime.now(tz=UTC) - timedelta(days=older_than_days)
     stmt = sa_delete(InconclusiveORM).where(InconclusiveORM.computed_at < cutoff)
-    result = session.execute(stmt)
+    result = cast(CursorResult[Any], session.execute(stmt))
     return int(result.rowcount or 0)

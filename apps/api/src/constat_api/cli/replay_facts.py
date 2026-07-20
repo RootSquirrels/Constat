@@ -31,6 +31,7 @@ import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 from constat_aws_rds.collector import db_to_facts
 from sqlalchemy import select
@@ -124,7 +125,7 @@ def replay_observations(
 
     facts_upserted = 0
     skipped = 0
-    seen_observation_ids: set = set()
+    seen_observation_ids: set[UUID] = set()
     for obs in observations:
         if obs.id in seen_observation_ids:
             continue

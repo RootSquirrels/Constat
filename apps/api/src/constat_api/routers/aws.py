@@ -31,13 +31,14 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from constat_core.collectors.aws import DEFAULT_REGIONS
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from constat_api.auth import Principal, require_operator, verify_api_key
 from constat_api.collect_queue import WorkItem, get_queue
-from constat_api.collectors.aws import DEFAULT_REGIONS, JOB_REGISTRY
+from constat_api.collectors.aws import JOB_REGISTRY
 from constat_api.db import get_db
 from constat_api.idempotency import cache_response, get_cached_or_none
 from constat_api.repositories import collect_jobs as collect_jobs_repo

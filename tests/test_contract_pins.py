@@ -12,6 +12,10 @@ real. Existing pins (kept in their own files, not duplicated here):
 - JOB_REGISTRY default scope: tests/test_collect_async.py
 - RLS_TABLES <-> migration policies: tests/test_rls.py
 - FX_USD_TO_EUR / FX_RATE_DATE (TS) <-> catalog fx.py: tests/test_fx_mirror.py
+- ADAPTIVE_RETRY_CONFIG / DEFAULT_REGIONS values: single-homed in
+  constat_core.collectors.aws since III.3, pinned by
+  tests/test_collectors_common.py (the two-connector duplication this
+  file used to pin is gone — the refactor removed the drift class)
 """
 
 from __future__ import annotations
@@ -83,29 +87,6 @@ def test_focus_loader_column_sets_exist_in_golden_fixture() -> None:
     assert header >= FOCUS_OPTIONAL_COLUMNS
     # At least one accepted region column name must be spec-conformant.
     assert set(FOCUS_REGION_COLUMNS) & header
-
-
-# ---------------------------------------------------------------------------
-# ADAPTIVE_RETRY_CONFIG: lives in constat_core.collectors.aws (§III.3)
-# ---------------------------------------------------------------------------
-
-
-def test_adaptive_retry_config_lives_in_constat_core_collectors() -> None:
-    """Chantier III.3: the retry policy is stated ONCE in the lib
-    (`constat_core.collectors.aws`) and consumed by both AWS
-    inventory connectors. Drift was the original failure mode
-    (the policy was duplicated in `constat_aws_rds.collector`
-    AND `constat_aws_ec2.collector`, with a drift pin guarding
-    equality). The refactor makes drift structurally impossible:
-    both connectors import the same object from the lib, and a
-    new connector (e.g. Azure Resource Graph) gets the policy
-    for free.
-    """
-    from constat_core.collectors.aws import ADAPTIVE_RETRY_CONFIG as LIB_CONFIG
-
-    assert LIB_CONFIG.retries == {"mode": "adaptive", "max_attempts": 10}
-    assert LIB_CONFIG.connect_timeout == 10
-    assert LIB_CONFIG.read_timeout == 30
 
 
 # ---------------------------------------------------------------------------
